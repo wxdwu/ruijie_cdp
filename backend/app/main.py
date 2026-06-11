@@ -12,7 +12,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.routers import customer_list, customer_detail, ai_chat
+from app.routers import customer_list, customer_detail, ai_chat, campaign, review
 from app.services.etl_scheduler import start_scheduler, stop_scheduler
 
 logger = logging.getLogger(__name__)
@@ -56,6 +56,8 @@ app.add_middleware(
 app.include_router(customer_list.router)
 app.include_router(customer_detail.router)
 app.include_router(ai_chat.router)
+app.include_router(campaign.router)
+app.include_router(review.router)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
