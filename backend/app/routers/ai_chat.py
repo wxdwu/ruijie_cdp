@@ -33,12 +33,20 @@ router = APIRouter(prefix="/api/ai", tags=["ai"])
 # ─────────────────────────────────────────────────────────────────────────────
 
 class ParseRequest(BaseModel):
-    query: str
+    query: Optional[str] = None
+    text: Optional[str] = None
+
+    def get_query(self) -> str:
+        return self.query or self.text or ""
 
 
 class ChatRequest(BaseModel):
-    query: str
+    query: Optional[str] = None
+    text: Optional[str] = None
     history: Optional[List[Dict[str, Any]]] = None
+
+    def get_query(self) -> str:
+        return self.query or self.text or ""
 
 
 class ChatExportRequest(BaseModel):
@@ -306,9 +314,12 @@ def parse_natural_language(
     db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
     """Parse natural language query and extract entities."""
-    entities = extract_entities(request.query)
+    q = request.get_query()
+    if not q:
+        return {"query": "", "entities": {}}
+    entities = extract_entities(q)
     return {
-        "query": request.query,
+        "query": q,
         "entities": entities.dict(exclude_none=True),
     }
 
@@ -320,7 +331,10 @@ def chat(
 ) -> Dict[str, Any]:
     """Process chat query and return AI response + customer results."""
     # Extract entities
-    entities = extract_entities(request.query)
+    q = request.get_query()
+    if not q:
+        return {"entities": {}, "results": [], "total": 0, "response": "请输入查询内容"}
+    entities = extract_entities(q)
 
     # Query customers
     result = query_customers_by_entities(db, entities)

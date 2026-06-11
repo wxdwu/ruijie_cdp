@@ -1,10 +1,6 @@
 """
-Customer 360 query service.
-
-Provides get_customer_list() and get_filter_options() for the customer
-list / search UI.
+Customer 360 query service - refactored for actual dws_customer_360 schema.
 """
-
 from __future__ import annotations
 
 import logging
@@ -15,81 +11,61 @@ from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Customer list
-# ─────────────────────────────────────────────────────────────────────────────
+ALLOWED_SORT = {
+    "customer_name", "industry", "intent_score", "interaction_count_30d",
+    "interaction_count_total", "last_interaction_time", "active_opp_amount",
+    "won_amount", "updated_at",
+}
 
 def get_customer_list(
     db: Session,
     *,
     keyword: Optional[str] = None,
     industry: Optional[str] = None,
-    region: Optional[str] = None,
-    min_engagement_score: Optional[float] = None,
-    max_engagement_score: Optional[float] = None,
-    min_opportunity_amount: Optional[float] = None,
-    active_days_30d_min: Optional[int] = None,
-    tags: Optional[List[str]] = None,
-    sort_by: str = "engagement_score",
+    owner: Optional[str] = None,
+    stage: Optional[str] = None,
+    intent_level: Optional[str] = None,
+    interaction_min: Optional[int] = None,
+    channel: Optional[str] = None,
+    sort_by: str = "intent_score",
     sort_order: str = "DESC",
     page: int = 1,
     page_size: int = 50,
 ) -> Dict[str, Any]:
-    """Query dws_customer_360 with flexible filters and pagination.
-
-    Returns:
-        Dict with items, total, page, page_size.
-    """
     where_parts: List[str] = ["1=1"]
     params: Dict[str, Any] = {}
 
     if keyword:
-        where_parts.append(
-            "(customer_name LIKE :kw OR company_name LIKE :kw OR customer_id LIKE :kw)"
-        )
-        params["kw"] = f"%{keyword}%"
+        where_parts.append("customer_name LIKE :keyword")
+        params["keyword"] = f"%{keyword}%"
     if industry:
         where_parts.append("industry = :industry")
         params["industry"] = industry
-    if region:
-        where_parts.append("region = :region")
-        params["region"] = region
-    if min_engagement_score is not None:
-        where_parts.append("engagement_score >= :min_eng")
-        params["min_eng"] = min_engagement_score
-    if max_engagement_score is not None:
-        where_parts.append("engagement_score <= :max_eng")
-        params["max_eng"] = max_engagement_score
-    if min_opportunity_amount is not None:
-        where_parts.append("opportunity_amount >= :min_opp")
-        params["min_opp"] = min_opportunity_amount
-    if active_days_30d_min is not None:
-        where_parts.append("active_days_30d >= :min_active")
-        params["min_active"] = active_days_30d_min
-    if tags:
-        # JSON_CONTAINS for each tag; OR-combined
-        tag_clauses = []
-        for i, tag in enumerate(tags):
-            key = f"tag{i}"
-            tag_clauses.append(f"JSON_CONTAINS(tags, :{key})")
-            params[key] = f'"{tag}"'
-        where_parts.append(f"({' OR '.join(tag_clauses)})")
+    if owner:
+        where_parts.append("owner_name = :owner")
+        params["owner"] = owner
+    if stage:
+        where_parts.append("purchase_stage = :stage")
+        params["stage"] = stage
+    if intent_level:
+        where_parts.append("intent_level = :intent_level")
+        params["intent_level"] = intent_level
+    if interaction_min is not None:
+        where_parts.append("interaction_count_30d >= :imin")
+        params["imin"] = interaction_min
+    if channel:
+        where_parts.append("last_interaction_channel = :channel")
+        params["channel"] = channel
 
     where_sql = " AND ".join(where_parts)
 
     # Count
     count_sql = text(f"SELECT COUNT(*) FROM dws_customer_360 WHERE {where_sql}")
-    total: int = db.execute(count_sql, params).scalar() or 0
+    total = db.execute(count_sql, params).scalar() or 0
 
-    # Data
-    allowed_sort = {
-        "engagement_score", "customer_name", "company_name",
-        "total_interactions", "last_interaction_time", "opportunity_amount",
-        "active_days_30d", "updated_at",
-    }
-    if sort_by not in allowed_sort:
-        sort_by = "engagement_score"
+    # Sort validation
+    if sort_by not in ALLOWED_SORT:
+        sort_by = "intent_score"
     order_dir = "ASC" if sort_order.upper() == "ASC" else "DESC"
 
     offset = (max(1, page) - 1) * page_size
@@ -103,88 +79,31 @@ def get_customer_list(
     params["offset"] = offset
 
     rows = db.execute(data_sql, params).mappings().all()
-    items: List[Dict[str, Any]] = []
-    for r in rows:
-        row = dict(r)
-        # Ensure tags is a list (may come back as JSON string)
-        if isinstance(row.get("tags"), str):
-            import json
-            try:
-                row["tags"] = json.loads(row["tags"])
-            except (json.JSONDecodeError, TypeError):
-                row["tags"] = []
-        items.append(row)
+    items = [dict(r) for r in rows]
 
-    return {
-        "items": items,
-        "total": total,
-        "page": page,
-        "page_size": page_size,
-    }
+    return {"items": items, "total": total, "page": page, "page_size": page_size}
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Filter options (facets for the search UI)
-# ─────────────────────────────────────────────────────────────────────────────
 
 def get_filter_options(db: Session) -> Dict[str, Any]:
-    """Return distinct values for all filterable facets.
-
-    Used to populate dropdown / multi-select controls in the frontend.
-
-    Returns:
-        Dict with keys: industries, regions, tags, engagement_score_range,
-        opportunity_amount_range.
-    """
-    industries = _distinct_values(db, "dws_customer_360", "industry")
-    regions = _distinct_values(db, "dws_customer_360", "region")
-
-    # Tags – extract from JSON array column
-    tags_sql = text(
-        "SELECT DISTINCT jt.tag "
-        "FROM dws_customer_360, "
-        "     JSON_TABLE(tags, '$[*]' COLUMNS (tag VARCHAR(128) PATH '$')) AS jt "
-        "WHERE jt.tag IS NOT NULL AND jt.tag != '' "
-        "ORDER BY jt.tag"
-    )
-    try:
-        tag_rows = db.execute(tags_sql).fetchall()
-        tags = [r[0] for r in tag_rows]
-    except Exception:
-        tags = []
-
-    # Numeric ranges
-    ranges_sql = text(
-        "SELECT "
-        "  MIN(engagement_score) AS min_eng, MAX(engagement_score) AS max_eng, "
-        "  MIN(opportunity_amount) AS min_opp, MAX(opportunity_amount) AS max_opp "
-        "FROM dws_customer_360"
-    )
-    range_row = db.execute(ranges_sql).mappings().fetchone() or {}
+    industries = _distinct_values(db, "industry")
+    owners = _distinct_values(db, "owner_name")
+    stages = _distinct_values(db, "purchase_stage")
+    intent_levels = _distinct_values(db, "intent_level")
+    channels = _distinct_values(db, "last_interaction_channel")
 
     return {
         "industries": industries,
-        "regions": regions,
-        "tags": tags,
-        "engagement_score_range": {
-            "min": float(range_row.get("min_eng") or 0),
-            "max": float(range_row.get("max_eng") or 0),
-        },
-        "opportunity_amount_range": {
-            "min": float(range_row.get("min_opp") or 0),
-            "max": float(range_row.get("max_opp") or 0),
-        },
+        "owners": owners,
+        "stages": stages,
+        "intent_levels": intent_levels,
+        "channels": channels,
     }
 
 
-# ── Helpers ─────────────────────────────────────────────────────────────────
-
-def _distinct_values(db: Session, table: str, column: str) -> List[str]:
-    """Return sorted distinct non-null values for a column."""
+def _distinct_values(db: Session, column: str) -> List[str]:
     sql = text(
-        f"SELECT DISTINCT {column} FROM {table} "
-        f"WHERE {column} IS NOT NULL AND {column} != '' "
-        f"ORDER BY {column}"
+        f"SELECT DISTINCT {column} FROM dws_customer_360 "
+        f"WHERE {column} IS NOT NULL AND {column} != '' ORDER BY {column}"
     )
     rows = db.execute(sql).fetchall()
     return [r[0] for r in rows]

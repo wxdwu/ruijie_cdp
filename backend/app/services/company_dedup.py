@@ -24,7 +24,6 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
-from rapidfuzz.distance.Levenshtein import distance as levenshtein_distance
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
@@ -329,6 +328,19 @@ def find_similar_pairs(
 # Rule-based Similarity Score
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _levenshtein(s1: str, s2: str) -> int:
+    if len(s1) < len(s2):
+        return _levenshtein(s2, s1)
+    if not s2:
+        return len(s1)
+    prev = list(range(len(s2) + 1))
+    for i, c1 in enumerate(s1):
+        curr = [i + 1]
+        for j, c2 in enumerate(s2):
+            curr.append(min(prev[j+1] + 1, curr[j] + 1, prev[j] + (c1 != c2)))
+        prev = curr
+    return prev[-1]
+
 def calculate_rule_score(name_a: str, name_b: str) -> float:
     """
     Calculate rule-based similarity score.
@@ -361,7 +373,7 @@ def calculate_rule_score(name_a: str, name_b: str) -> float:
     # 1. Levenshtein distance based similarity
     max_len = max(len(norm_a), len(norm_b))
     if max_len > 0:
-        lev_dist = levenshtein_distance(norm_a, norm_b)
+        lev_dist = _levenshtein(norm_a, norm_b)
         lev_score = (1 - lev_dist / max_len) * 100
         scores.append(lev_score * 0.4)
 

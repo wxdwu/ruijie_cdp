@@ -183,7 +183,11 @@ def export_customers(
         db,
         keyword=keyword,
         industry=industry,
-        region=owner,  # mapping owner to region for export service (uses different param names)
+        owner=owner,
+        stage=stage,
+        intent_level=intent_level,
+        interaction_min=interaction_min,
+        channel=channel,
         sort_by=sort_by,
         sort_order=sort_order,
     )

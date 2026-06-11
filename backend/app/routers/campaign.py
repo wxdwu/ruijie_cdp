@@ -41,12 +41,12 @@ def get_campaign_kpis(db: Session = Depends(get_db)) -> Dict[str, Any]:
 
     # Total opportunities
     total_opportunities = db.execute(text(
-        "SELECT COUNT(*) FROM dws_customer_360 WHERE opportunity_amount > 0"
+        "SELECT COUNT(*) FROM dws_customer_360 WHERE active_opp_amount > 0"
     )).scalar() or 0
 
     # Won amount
     won_amount = db.execute(text(
-        "SELECT COALESCE(SUM(opportunity_amount), 0) FROM dws_customer_360 "
+        "SELECT COALESCE(SUM(active_opp_amount), 0) FROM dws_customer_360 "
         "WHERE purchase_stage = 'Closed Won'"
     )).scalar() or 0
 
@@ -149,7 +149,7 @@ def get_role_coverage(db: Session = Depends(get_db)) -> Dict[str, Any]:
     result = db.execute(text(
         "SELECT owner_name as role, COUNT(*) as customer_count, "
         "SUM(interaction_count_30d) as total_interactions, "
-        "SUM(opportunity_amount) as total_opportunity_value "
+        "SUM(active_opp_amount) as total_opportunity_value "
         "FROM dws_customer_360 "
         "WHERE owner_name IS NOT NULL AND owner_name != '' "
         "GROUP BY owner_name "
@@ -232,7 +232,7 @@ def get_customers_by_stage(db: Session = Depends(get_db)) -> Dict[str, Any]:
         "    company_name, "
         "    intent_level, "
         "    engagement_score, "
-        "    opportunity_amount "
+        "    active_opp_amount "
         "FROM dws_customer_360 "
         "WHERE purchase_stage IS NOT NULL AND purchase_stage != '' "
         "ORDER BY "
@@ -256,7 +256,7 @@ def get_customers_by_stage(db: Session = Depends(get_db)) -> Dict[str, Any]:
             "company_name": row.company_name,
             "intent_level": row.intent_level,
             "engagement_score": float(row.engagement_score or 0),
-            "opportunity_amount": float(row.opportunity_amount or 0)
+            "active_opp_amount": float(row.active_opp_amount or 0)
         }
         for row in result
     ]

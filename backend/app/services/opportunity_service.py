@@ -13,9 +13,25 @@ from typing import Any, Dict, List, Optional
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from app.services.etl_sync import FORECAST_STAGE, STAGE_MAP
-
 logger = logging.getLogger(__name__)
+
+# Stage mappings (standalone, no external dependency)
+STAGE_MAP = {
+    "阶段0：未接触上客户": "未接触",
+    "阶段1：接触上客户，初步交流；": "问题识别",
+    "阶段2：正式交流，价值认可": "解决方案探索",
+    "阶段3：测试/入围，愿意尝试": "解决方案探索",
+    "阶段4：拿到门票，进入招投标": "需求构建",
+    "阶段5：已中标，等待采购": "需求构建",
+    "阶段6：完成采购，实现进入": "已完成",
+}
+
+FORECAST_STAGE = {
+    "线索": "问题识别", "机会-": "问题识别", "机会": "问题识别",
+    "机会+": "解决方案探索", "可能-": "解决方案探索",
+    "可能": "需求构建", "可能+": "需求构建",
+    "优势": "需求构建", "确保": "需求构建",
+}
 
 
 def get_opportunities(
