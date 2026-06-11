@@ -231,7 +231,7 @@ def get_customers_by_stage(db: Session = Depends(get_db)) -> Dict[str, Any]:
         "    customer_name, "
         "    company_name, "
         "    intent_level, "
-        "    engagement_score, "
+        "    intent_score, "
         "    active_opp_amount "
         "FROM dws_customer_360 "
         "WHERE purchase_stage IS NOT NULL AND purchase_stage != '' "
