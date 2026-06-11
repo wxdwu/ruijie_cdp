@@ -9,17 +9,19 @@ export const useCustomerStore = defineStore('customer', () => {
   const current = ref(null)
 
   const filters = ref({
-    specialProject: '企业彩光ICT',
     keyword: '',
     industry: '',
     owner: '',
-    interactionCount: null,
-    interactionType: '',
+    stage: '',
+    intent_level: '',
+    interaction_min: null,
+    channel: '',
+    sort: '',
     page: 1,
-    pageSize: 20,
+    size: 20,
   })
 
-  const totalPages = computed(() => Math.ceil(total.value / filters.value.pageSize) || 1)
+  const totalPages = computed(() => Math.ceil(total.value / filters.value.size) || 1)
 
   async function fetchList() {
     loading.value = true
@@ -31,9 +33,12 @@ export const useCustomerStore = defineStore('customer', () => {
           params[key] = value
         }
       })
+      // Map frontend params to backend param names
+      if (params.size) params.size = params.size
 
       const res = await customerApi.list(params)
-      list.value = res.items ?? res.data ?? []
+      // Backend returns {items: [], total: N} or {items: [], total: N, ...}
+      list.value = res.items ?? []
       total.value = res.total ?? list.value.length
     } catch (e) {
       console.error('fetchList', e)
@@ -72,14 +77,16 @@ export const useCustomerStore = defineStore('customer', () => {
 
   function reset() {
     filters.value = {
-      specialProject: '企业彩光ICT',
       keyword: '',
       industry: '',
       owner: '',
-      interactionCount: null,
-      interactionType: '',
+      interaction_min: null,
+      channel: '',
+      stage: '',
+      intent_level: '',
+      sort: '',
       page: 1,
-      pageSize: 20,
+      size: 20,
     }
   }
 

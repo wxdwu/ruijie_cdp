@@ -1,7 +1,7 @@
 <script setup>
 import { ref, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
-import { customerApi, aiApi } from '../api'
+import { customerApi } from '../api'
 import OverviewTab from '../components/detail/OverviewTab.vue'
 import ContactsTab from '../components/detail/ContactsTab.vue'
 
@@ -19,17 +19,22 @@ const opportunities = ref([])
 async function fetchAllData() {
   loading.value = true
   try {
-    const [detailRes, eventsRes, summaryRes] = await Promise.all([
+    const [
+      detailRes, contactsRes, interactionsRes,
+      oppsRes, aiRes
+    ] = await Promise.all([
       customerApi.get(customerId),
-      customerApi.events(customerId),
-      aiApi.summary(customerId),
+      customerApi.contacts(customerId),
+      customerApi.interactions(customerId),
+      customerApi.opportunities(customerId),
+      customerApi.aiInsight(customerId),
     ])
 
     customer.value = detailRes
-    interactions.value = eventsRes.interactions || []
-    contacts.value = eventsRes.contacts || []
-    aiInsight.value = summaryRes
-    opportunities.value = eventsRes.opportunities || []
+    contacts.value = contactsRes
+    interactions.value = interactionsRes
+    opportunities.value = oppsRes
+    aiInsight.value = aiRes
   } catch (e) {
     console.error('fetchAllData', e)
   } finally {

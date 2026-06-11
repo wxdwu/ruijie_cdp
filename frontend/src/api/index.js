@@ -17,36 +17,43 @@ http.interceptors.response.use(
 export const customerApi = {
   list: (params) => http.get('/customers', { params }),
   get: (id) => http.get(`/customers/${id}`),
-  events: (id) => http.get(`/customers/${id}/events`),
-  tags: (id) => http.get(`/customers/${id}/tags`),
-  update: (id, data) => http.put(`/customers/${id}`, data),
+  contacts: (id) => http.get(`/customers/${id}/contacts`),
+  interactions: (id, params) => http.get(`/customers/${id}/interactions`, { params }),
+  opportunities: (id) => http.get(`/customers/${id}/opportunities`),
+  aiInsight: (id) => http.get(`/customers/${id}/ai-insight`),
+  priorityContact: (id) => http.get(`/customers/${id}/priority-contact`),
   filterOptions: () => http.get('/customers/filter-options'),
   export: (params) => http.get('/customers/export', { params, responseType: 'blob' }),
 }
 
 export const campaignApi = {
-  list: (params) => http.get('/campaigns', { params }),
-  get: (id) => http.get(`/campaigns/${id}`),
-  create: (data) => http.post('/campaigns', data),
-  update: (id, data) => http.put(`/campaigns/${id}`, data),
-  launch: (id) => http.post(`/campaigns/${id}/launch`),
+  kpis: () => http.get('/campaign/kpis'),
+  funnelDistribution: () => http.get('/campaign/funnel-distribution'),
+  channelDistribution: () => http.get('/campaign/channel-distribution'),
+  roleCoverage: () => http.get('/campaign/role-coverage'),
+  contentEffect: () => http.get('/campaign/content-effect'),
+  customersByStage: () => http.get('/campaign/customers-by-stage'),
 }
 
 export const aiApi = {
+  parse: (data) => http.post('/ai/parse', data),
   chat: (data) => http.post('/ai/chat', data),
-  summary: (customerId) => http.get(`/ai/summary/${customerId}`),
-  suggest: (data) => http.post('/ai/suggest', data),
+  chatExport: (data) => http.post('/ai/chat/export', data, { responseType: 'blob' }),
 }
 
 export const reviewApi = {
-  list: (params) => http.get('/reviews', { params }),
-  approve: (id) => http.post(`/reviews/${id}/approve`),
-  reject: (id, data) => http.post(`/reviews/${id}/reject`, data),
+  list: (params) => http.get('/review', { params }),
+  stats: () => http.get('/review/stats'),
+  approve: (id) => http.post(`/review/${id}/approve`),
+  reject: (id) => http.post(`/review/${id}/reject`),
+  batchApprove: (ids) => http.post('/review/batch-approve', { ids }),
+  batchReject: (ids) => http.post('/review/batch-reject', { ids }),
+  runDedup: () => http.post('/review/run-dedup'),
+  dedupProgress: () => http.get('/review/dedup-progress'),
 }
 
-export const exportApi = {
-  customers: (params) => http.get('/export/customers', { params, responseType: 'blob' }),
-  campaign: (id) => http.get(`/export/campaigns/${id}`, { responseType: 'blob' }),
+export const adminApi = {
+  runEtl: () => http.post('/admin/etl/run'),
 }
 
 export default http

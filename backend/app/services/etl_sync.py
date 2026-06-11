@@ -151,7 +151,22 @@ def _load_contact_mapping() -> Dict[str, int]:
     logger.info("Truncating dws_contact_mapping for full reload…")
     _exec("TRUNCATE TABLE dws_contact_mapping")
 
-    # ── a. CRM contacts (6.8K rows) ─────────────────────────────────────
+    # ── a. Zhique contacts first (BASE / anchor - 2.4K ICP customers) ────
+    n = _exec(
+        "INSERT IGNORE INTO dws_contact_mapping "
+        "  (customer_name, contact_name, mobile, email, department, "
+        "   position, source_table, etl_time) "
+        "SELECT "
+        "  z.related_company, z.contact_name, z.mobile, z.email, z.department, "
+        "  z.position, "
+        "  'zhique', NOW() "
+        "FROM ods_zhique_contact_day z "
+        "WHERE z.related_company IS NOT NULL AND z.related_company != ''"
+    )
+    stats["zhique"] = n
+    logger.info("[a] Zhique contacts (BASE): %d rows (anchor for ICP)", n)
+
+    # ── b. CRM contacts — only those matching zhique by company or mobile ──
     role_case = " ".join(
         f"WHEN c.purchase_role = '{k}' THEN '{v}'"
         for k, v in ROLE_MAP.items()
@@ -167,10 +182,12 @@ def _load_contact_mapping() -> Dict[str, int]:
         f"  CASE {role_case} ELSE '未知' END, "
         "  'crm', NOW() "
         "FROM ods_crm_contact_day c "
-        "WHERE c.customer_name IS NOT NULL AND c.customer_name != ''"
+        "WHERE c.customer_name IS NOT NULL AND c.customer_name != '' "
+        "  AND ( c.customer_name IN (SELECT related_company FROM ods_zhique_contact_day) "
+        "     OR c.mobile IN (SELECT mobile FROM ods_zhique_contact_day WHERE mobile IS NOT NULL) )"
     )
     stats["crm"] = n
-    logger.info("[a] CRM contacts → contact_mapping: %d rows", n)
+    logger.info("[b] CRM contacts (matched to zhique): %d rows", n)
 
     # ── b. Zhique contacts (2.4K rows) ──────────────────────────────────
     n = _exec(

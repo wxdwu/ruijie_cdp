@@ -59,7 +59,7 @@ const roleData = ref({ roles: [], total_customers: 0 })
 const contentData = ref({ data: [] })
 const customerData = ref({ flat: [] })
 
-const API_BASE = 'http://localhost:8000/api/campaign'
+const API_BASE = '/api/campaign'
 
 const fetchData = async () => {
   try {

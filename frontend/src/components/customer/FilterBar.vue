@@ -4,22 +4,22 @@ import { customerApi } from '../../api'
 
 const emit = defineEmits(['apply'])
 
-const specialProject = ref('企业彩光ICT')
 const keyword = ref('')
 const industry = ref('')
 const owner = ref('')
-const interactionCount = ref(null)
-const interactionType = ref('')
+const specialProject = ref(null)
+const channel = ref('')
 
 const industries = ref([])
 const owners = ref([])
 const loading = ref(false)
 
-const interactionTypes = [
+const channels = [
   { value: '', label: '全部' },
-  { value: 'live', label: '直播' },
   { value: 'email', label: '邮件' },
-  { value: 'website', label: '官网' },
+  { value: 'web', label: '官网' },
+  { value: 'event', label: '直播/活动' },
+  { value: 'wechat', label: '微信' },
 ]
 
 async function fetchFilterOptions() {
@@ -34,12 +34,11 @@ async function fetchFilterOptions() {
 
 function handleApply() {
   emit('apply', {
-    specialProject: specialProject.value,
     keyword: keyword.value,
     industry: industry.value,
     owner: owner.value,
-    interactionCount: interactionCount.value,
-    interactionType: interactionType.value,
+    interaction_min: interaction_min.value,
+    channel: channel.value,
   })
 }
 
@@ -54,8 +53,7 @@ onMounted(() => {
       <!-- 专项 -->
       <div class="flex flex-col gap-1.5">
         <label class="text-xs font-medium text-[var(--muted)]">专项</label>
-        <select
-          v-model="specialProject"
+        <select disabled
           class="rounded-lg border border-[var(--line)] bg-[var(--bg1)] px-3 py-2 text-sm text-[var(--text)] focus:border-[var(--brand)] focus:outline-none"
         >
           <option value="企业彩光ICT">企业彩光ICT</option>
@@ -101,7 +99,7 @@ onMounted(() => {
       <div class="flex flex-col gap-1.5">
         <label class="text-xs font-medium text-[var(--muted)]">近30天互动 ≥</label>
         <input
-          v-model.number="interactionCount"
+          v-model.number="interaction_min"
           type="number"
           min="0"
           placeholder="0"
@@ -113,10 +111,10 @@ onMounted(() => {
       <div class="flex flex-col gap-1.5">
         <label class="text-xs font-medium text-[var(--muted)]">互动方式</label>
         <select
-          v-model="interactionType"
+          v-model="channel"
           class="rounded-lg border border-[var(--line)] bg-[var(--bg1)] px-3 py-2 text-sm text-[var(--text)] focus:border-[var(--brand)] focus:outline-none"
         >
-          <option v-for="item in interactionTypes" :key="item.value" :value="item.value">{{ item.label }}</option>
+          <option v-for="item in channels" :key="item.value" :value="item.value">{{ item.label }}</option>
         </select>
       </div>
     </div>
