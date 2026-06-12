@@ -229,7 +229,6 @@ def get_customers_by_stage(db: Session = Depends(get_db)) -> Dict[str, Any]:
         "SELECT "
         "    purchase_stage as stage, "
         "    customer_name, "
-        "    company_name, "
         "    intent_level, "
         "    intent_score, "
         "    active_opp_amount "
@@ -237,25 +236,21 @@ def get_customers_by_stage(db: Session = Depends(get_db)) -> Dict[str, Any]:
         "WHERE purchase_stage IS NOT NULL AND purchase_stage != '' "
         "ORDER BY "
         "    CASE purchase_stage "
-        "        WHEN 'Awareness' THEN 1 "
-        "        WHEN 'Consideration' THEN 2 "
-        "        WHEN 'Decision' THEN 3 "
-        "        WHEN 'Proposal' THEN 4 "
-        "        WHEN 'Negotiation' THEN 5 "
-        "        WHEN 'Closed Won' THEN 6 "
-        "        WHEN 'Closed Lost' THEN 7 "
-        "        ELSE 8 "
+        "        WHEN '问题识别' THEN 1 "
+        "        WHEN '解决方案探索' THEN 2 "
+        "        WHEN '需求构建' THEN 3 "
+        "        WHEN '已完成' THEN 4 "
+        "        ELSE 5 "
         "    END, "
-        "    engagement_score DESC"
+        "    intent_score DESC"
     )).fetchall()
 
     customers = [
         {
             "stage": row.stage,
             "customer_name": row.customer_name,
-            "company_name": row.company_name,
             "intent_level": row.intent_level,
-            "engagement_score": float(row.engagement_score or 0),
+            "intent_score": float(row.intent_score or 0),
             "active_opp_amount": float(row.active_opp_amount or 0)
         }
         for row in result

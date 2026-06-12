@@ -73,19 +73,38 @@ def get_customer_contacts(
     id: str,
     db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
-    """Get customer contacts list from dws_contact_mapping."""
-    # First get customer_name from dws_customer_360
+    """Get customer contacts list from dws_contact_360 with interaction data."""
+    # Get customer_name
     customer_name = _get_customer_name(db, id)
 
-    # Then query dws_contact_mapping by customer_name
+    # Query dws_contact_360 which already has interaction counts aggregated
     rows = db.execute(
         text(
-            "SELECT * FROM dws_contact_mapping "
-            "WHERE customer_name = :cname "
-            "ORDER BY contact_name"
+            "SELECT contact_name, mobile, email, department, position, "
+            "       purchase_role, role_category, interaction_count, "
+            "       interaction_count_30d, last_interaction_time, "
+            "       top_content_types, product_interests, activity_level, "
+            "       intent_level, linkflow_contact_id "
+            "FROM dws_contact_360 "
+            "WHERE customer_id = :cid "
+            "ORDER BY interaction_count DESC"
         ),
-        {"cname": customer_name},
+        {"cid": id},
     ).mappings().all()
+
+    # If dws_contact_360 is empty (not built yet), fall back to dws_contact_mapping
+    if not rows:
+        rows = db.execute(
+            text(
+                "SELECT contact_name, mobile, email, department, position, "
+                "       purchase_role, role_category, source_table, "
+                "       linkflow_contact_id "
+                "FROM dws_contact_mapping "
+                "WHERE customer_name = :cname "
+                "ORDER BY contact_name"
+            ),
+            {"cname": customer_name},
+        ).mappings().all()
 
     return {
         "customer_id": id,
