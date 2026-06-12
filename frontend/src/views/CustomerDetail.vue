@@ -31,9 +31,9 @@ async function fetchAllData() {
     ])
 
     customer.value = detailRes
-    contacts.value = contactsRes
-    interactions.value = interactionsRes
-    opportunities.value = oppsRes
+    contacts.value = Array.isArray(contactsRes) ? contactsRes : (contactsRes.contacts || [])
+    interactions.value = Array.isArray(interactionsRes) ? interactionsRes : (interactionsRes.interactions || [])
+    opportunities.value = Array.isArray(oppsRes) ? oppsRes : (oppsRes.opportunities || [])
     aiInsight.value = aiRes
   } catch (e) {
     console.error('fetchAllData', e)
@@ -54,22 +54,22 @@ onMounted(() => {
       <div class="flex items-center justify-between">
         <div class="flex items-center gap-4">
           <div>
-            <h1 class="text-xl font-semibold text-[var(--text)]">{{ customer.name || '加载中...' }}</h1>
+            <h1 class="text-xl font-semibold text-[var(--text)]">{{ customer.customer_name || '加载中...' }}</h1>
             <div class="flex items-center gap-3 mt-1">
               <span class="text-xs px-2 py-0.5 rounded bg-[var(--brand)]/10 text-[var(--brand)]">
-                {{ customer.specialProject || '-' }}
+                {{ customer.campaign_tag || '-' }}
               </span>
               <span class="text-xs text-[var(--muted)]">{{ customer.industry }}</span>
               <span class="text-xs text-[var(--muted)]">|</span>
               <span class="text-xs text-[var(--muted)]">{{ customer.region }}</span>
               <span class="text-xs text-[var(--muted)]">|</span>
-              <span class="text-xs text-[var(--muted)]">客户经理: {{ customer.owner }}</span>
+              <span class="text-xs text-[var(--muted)]">客户经理: {{ customer.owner_name }}</span>
             </div>
           </div>
         </div>
         <div class="text-right">
           <div class="text-xs text-[var(--muted)]">最近互动</div>
-          <div class="text-sm text-[var(--text)]">{{ customer.lastInteraction || '-' }}</div>
+          <div class="text-sm text-[var(--text)]">{{ customer.last_interaction_time || '-' }}</div>
         </div>
       </div>
 
