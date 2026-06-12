@@ -91,6 +91,245 @@ Step 4: 联系人360   │ dws_contact_360    │ 120,235行
 
 ### 各步骤详细逻辑
 
+#### ODS 表原始字段与抽取逻辑
+
+##### 1. ods_zhique_contact_day (基准表 - 致趣联系人)
+
+**作用**：提供 ICP 客户名单（1,012个去重客户，2,263行联系人记录）
+
+**原始字段**：
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| id | bigint | 自增主键 |
+| related_company | varchar(255) | 关联公司名称（客户名） |
+| contact_name | varchar(64) | 联系人姓名 |
+| mobile | varchar(32) | 手机号 |
+| email | varchar(128) | 邮箱 |
+| department | varchar(128) | 部门 |
+| position | varchar(128) | 职务 |
+| industry | varchar(64) | 行业 |
+| ruijie_region | varchar(64) | 锐捷区域 |
+| attribute | varchar(32) | 属性 (H/M/L) |
+
+**抽取SQL**：
+```sql
+-- 建ICP客户过滤表
+CREATE TABLE tmp_icp_customers AS
+SELECT DISTINCT related_company as customer_name
+FROM ods_zhique_contact_day
+WHERE related_company IS NOT NULL AND related_company != ''
+```
+
+**抽取结果**：1,012 个唯一客户名
+
+---
+
+##### 2. ods_zhique_behavior_list_day (致趣行为)
+
+**作用**：提供互动行为数据（致趣渠道的邮件打开、直播参与、资料下载等）
+
+**原始字段**：
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| id | bigint | 自增主键 |
+| contact_name | varchar(255) | 联系人姓名 |
+| mobile_phone | varchar(64) | 手机号 |
+| email | varchar(255) | 邮箱 |
+| company_name | varchar(255) | 公司名称 |
+| behavior_type | varchar(255) | 行为类型（打开邮件/下载资料/报名会议等） |
+| behavior_name | varchar(255) | 行为名称/内容标题 |
+| behavior_time | datetime | 行为时间 |
+
+**抽取SQL**：
+```sql
+SELECT company_name, contact_name, mobile_phone, email,
+       behavior_type, behavior_name, behavior_time, id as source_id
+FROM ods_zhique_behavior_list_day
+WHERE company_name IN (SELECT customer_name FROM tmp_icp_customers)
+```
+
+**过滤条件**：仅保留 `company_name` 在 ICP 客户名单中的记录
+**抽取结果**：4,744 行互动记录
+
+---
+
+##### 3. ods_crm_contact_day (CRM联系人)
+
+**作用**：补充 CRM 系统中的联系人信息（销售姓名、采购角色、行业等）
+
+**原始字段**：
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| id | bigint | 自增主键 |
+| customer_name | varchar(255) | 客户名称 |
+| contact_name | varchar(64) | 联系人姓名 |
+| mobile | varchar(32) | 手机号 |
+| email | varchar(128) | 电子邮件 |
+| department | varchar(128) | 部门 |
+| position | varchar(128) | 职务 |
+| purchase_role | varchar(64) | 采购角色（拍板者/决策者/评估者等） |
+| industry | varchar(64) | 行业归属 |
+| sales_name | varchar(64) | 销售姓名（负责人） |
+| ruijie_region | varchar(128) | 锐捷区域 |
+| attribute | varchar(32) | 属性 |
+
+**抽取SQL**：
+```sql
+SELECT customer_name, contact_name, mobile, email,
+       department, position, purchase_role, industry,
+       sales_name, ruijie_region, attribute
+FROM ods_crm_contact_day
+WHERE customer_name IN (SELECT customer_name FROM tmp_icp_customers)
+   OR mobile IN (SELECT mobile FROM tmp_icp_customers)
+```
+
+**过滤条件**：`customer_name` 匹配 ICP 客户 **或** `mobile` 匹配 ICP 客户联系人手机号
+**抽取结果**：2,938 行（去重后）
+
+---
+
+##### 4. ods_crm_opportunity_day (CRM商机)
+
+**作用**：提供商机数据（采购阶段、商机金额、预测类别等）
+
+**原始字段**：
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| id | bigint | 自增主键 |
+| customer_name | varchar(255) | 客户名称 |
+| opp_name | varchar(500) | 业务机会名称 |
+| opp_code | varchar(64) | 业务机会编码 |
+| customer_stage | varchar(64) | 客户进入阶段 |
+| forecast_type | varchar(32) | 预测类别（线索/机会/可能/优势/确保） |
+| amount_10k | decimal(20,4) | 金额(万元) |
+| win_rate | decimal(5,2) | 赢率(%) |
+| actual_order_amount_10k | decimal(20,4) | 实际下单金额(万元) |
+| is_funnel | varchar(16) | 是否进入漏斗 |
+| is_cancel_lost | varchar(16) | 是否取消/丢单 |
+| is_active | tinyint | 是否活动中 |
+| industry | varchar(64) | 行业归属 |
+| owner_name | varchar(64) | 业务机会所有人 |
+| region | varchar(64) | 大区 |
+
+**抽取SQL**（在客户360构建时直接使用，不单独抽取到DWS）：
+```sql
+SELECT customer_name, customer_stage, forecast_type, amount_10k,
+       win_rate, actual_order_amount_10k, is_funnel, is_cancel_lost,
+       is_active, industry, owner_name, region
+FROM ods_crm_opportunity_day
+WHERE customer_name IN (SELECT customer_name FROM tmp_icp_customers)
+```
+
+**过滤条件**：`customer_name` 匹配 ICP 客户名单
+**抽取结果**：约 5,000 行（51,797 中匹配 ICP 的部分）
+
+---
+
+##### 5. ods_marketing_lead_day (营销线索)
+
+**作用**：补充营销渠道联系人信息
+
+**原始字段**：
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| id | bigint | 自增主键 |
+| customer_company | varchar(500) | 客户单位 |
+| final_company_name | varchar(500) | 最终公司名称 |
+| customer_name | varchar(255) | 客户姓名 |
+| contact_phone | varchar(64) | 联系电话 |
+| email | varchar(255) | 邮箱 |
+| industry | varchar(128) | 行业 |
+| province | varchar(64) | 省份 |
+| product_line | varchar(255) | 产品线 |
+
+**抽取SQL**：
+```sql
+SELECT customer_company, final_company_name, customer_name,
+       contact_phone, email, industry, province, product_line
+FROM ods_marketing_lead_day
+WHERE customer_company IN (SELECT customer_name FROM tmp_icp_customers)
+   OR contact_phone IN (SELECT mobile FROM tmp_icp_customers)
+```
+
+**过滤条件**：客户单位匹配 ICP 客户 **或** 联系电话匹配 ICP 联系人手机
+**抽取结果**：32,961 行
+
+---
+
+##### 6. ods_linkflow_contacts_day + ods_linkflow_events_day (Linkflow)
+
+**作用**：提供官网/营销活动互动数据
+
+**Linkflow 联系人**：
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| id | bigint | 自增主键 |
+| contact_id | bigint | 联系人ID（事件关联用） |
+| name | varchar(255) | 联系人姓名 |
+| mobile_phone | varchar(64) | 手机号 |
+| email | varchar(255) | 邮箱 |
+| company | varchar(255) | 公司 |
+
+**Linkflow 事件**：
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| id | bigint | 自增主键 |
+| contact_id | bigint | 联系人ID（关联联系人表） |
+| event_name | varchar(255) | 事件名称（WEBSITE__PAGE_VIEW等） |
+| event_date_ms | bigint | 事件发生时间戳（毫秒） |
+
+**抽取SQL**：
+```sql
+-- 先通过手机号找到匹配ICP客户的Linkflow联系人
+SELECT contact_id, name, mobile_phone, email, company
+FROM ods_linkflow_contacts_day
+WHERE mobile_phone IN (
+  SELECT DISTINCT mobile FROM dws_contact_mapping WHERE mobile IS NOT NULL
+)
+
+-- 再通过这些 contact_id 抽取事件
+SELECT id, contact_id, event_name, event_date_ms
+FROM ods_linkflow_events_day
+WHERE contact_id IN (上述匹配到的 contact_id 列表)
+```
+
+**过滤条件**：`mobile_phone` 匹配已导入联系人的手机号 → 获取 `contact_id` → 过滤事件
+**抽取结果**：101 行联系人 + 8,187 行事件
+
+---
+
+##### 7. ods_tianrun_session_day (天润客服会话)
+
+**作用**：提供在线客服互动数据
+
+**原始字段**：
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| id | bigint | 自增主键 |
+| customer_name | varchar(255) | 客户名称 |
+| visitor_name | varchar(255) | 访客姓名 |
+| visitor_mobile_phone | varchar(128) | 访客手机号 |
+| visitor_email | varchar(255) | 访客邮箱 |
+| contact_type_name | varchar(255) | 渠道类型 |
+| start_time_sec | bigint | 会话开始时间戳（秒） |
+| end_time_sec | bigint | 会话结束时间戳（秒） |
+| total_duration | bigint | 会话时长（秒） |
+| total_duration_pretty | varchar(64) | 会话时长（格式化） |
+| province | varchar(128) | 省份 |
+
+**抽取SQL**：
+```sql
+SELECT customer_name, visitor_name, visitor_mobile_phone, visitor_email,
+       contact_type_name, start_time_sec, total_duration, total_duration_pretty
+FROM ods_tianrun_session_day
+WHERE customer_name IN (SELECT customer_name FROM tmp_icp_customers)
+```
+
+**过滤条件**：`customer_name` 匹配 ICP 客户名单
+**抽取结果**：10,000 行（从 776,937 行中筛选）
+
+---
+
 #### Step 1: 联系人映射 (dws_contact_mapping)
 
 **数据来源顺序**（优先级从高到低）：
@@ -110,13 +349,32 @@ Step 4: 联系人360   │ dws_contact_360    │ 120,235行
 
 #### Step 2: 互动行为 (dws_interaction_detail)
 
-**数据来源**：
+**数据来源与字段映射**：
 
-| 来源 | 匹配条件 | 过滤逻辑 | 行数 |
+| dws字段 | 致趣行为映射 | 天润会话映射 | Linkflow事件映射 |
 |---|---|---|---|
-| 致趣行为 | `company_name IN (tmp_icp_customers)` | 仅 ICP 客户的互动 | 4,744 |
-| 天润会话 | `customer_name IN (tmp_icp_customers)` | 仅 ICP 客户的会话 | 10,000 |
-| Linkflow事件 | `contact_id IN (linkflow接触点)` | 仅已关联联系人的事件 | 8,187 |
+| customer_name | `company_name` | `customer_name` | 通过contact_id→mobile→customer_name |
+| contact_name | `contact_name` | `visitor_name` | NULL |
+| mobile | `mobile_phone` | `visitor_mobile_phone` | NULL |
+| source_table | 'zhique' | 'tianrun' | 'linkflow' |
+| channel | behavior_type→channel映射 | '客服' | event_name→channel映射 |
+| behavior_type | `behavior_type` | `contact_type_name` | `event_name` |
+| content | `behavior_name` | '会话: duration' | `event_name` |
+| event_time | `behavior_time` | FROM_UNIXTIME(start_time_sec) | FROM_UNIXTIME(event_date_ms/1000) |
+| is_high_value | 表单/咨询/留资=1 | 0 | 表单提交=1 |
+| source_id | ODS行id | ODS行id | ODS行id（用于去重） |
+
+**channel 映射规则**：
+```
+打开邮件/点击邮件链接 → email
+观看直播/报名会议/参会 → event
+访问落地页/下载资料 → web
+```
+
+**过滤逻辑**：
+1. 致趣行为：`company_name IN tmp_icp_customers` → 4,744行
+2. 天润会话：`customer_name IN tmp_icp_customers` → 10,000行
+3. Linkflow事件：`contact_id IN 已匹配联系人contact_id` → 8,187行
 
 **字段映射**：
 
