@@ -11,19 +11,20 @@ const props = defineProps({
 const searchQuery = ref('')
 const selectedRole = ref('')
 
-const roles = ['拍板者', '决策者', '技术评估者', '使用者', '其他']
+const roles = ['决策者', '拍板者', '技术评估者', '使用者', '其他']
 
 const filteredContacts = computed(() => {
   let result = props.contacts
 
   if (searchQuery.value) {
     result = result.filter(c =>
-      c.name?.toLowerCase().includes(searchQuery.value.toLowerCase())
+      c.contact_name?.toLowerCase().includes(searchQuery.value.toLowerCase()) ||
+      c.mobile?.includes(searchQuery.value)
     )
   }
 
   if (selectedRole.value) {
-    result = result.filter(c => c.role === selectedRole.value)
+    result = result.filter(c => c.role_category === selectedRole.value)
   }
 
   return result

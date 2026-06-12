@@ -1,7 +1,7 @@
 <script setup>
 const props = defineProps({
-  lastInteraction: { type: String, default: '-' },
-  preferredChannels: { type: Array, default: () => [] },
+  lastInteraction: { type: [String, Date, Object], default: '-' },
+  preferredChannels: { type: [String, Array], default: () => [] },
 })
 
 const channelMap = {
@@ -13,8 +13,22 @@ const channelMap = {
   offline: '线下',
 }
 
-function formatChannel(code) {
-  return channelMap[code] || code
+function formatChannels() {
+  let channels = props.preferredChannels
+  // Handle JSON string
+  if (typeof channels === 'string') {
+    try { channels = JSON.parse(channels) } catch (e) { return [channels] }
+  }
+  if (!Array.isArray(channels)) return []
+  return channels.map(c => channelMap[c] || c)
+}
+
+function formatTime(val) {
+  if (!val || val === '-') return '-'
+  try {
+    const d = new Date(val)
+    return d.toLocaleString('zh-CN', { hour12: false })
+  } catch (e) { return val }
 }
 </script>
 
@@ -24,19 +38,19 @@ function formatChannel(code) {
     <div class="space-y-4">
       <div>
         <div class="text-xs text-[var(--muted)] mb-1">最近互动</div>
-        <div class="text-sm text-[var(--text)]">{{ lastInteraction || '-' }}</div>
+        <div class="text-sm text-[var(--text)]">{{ formatTime(lastInteraction) }}</div>
       </div>
       <div>
         <div class="text-xs text-[var(--muted)] mb-2">偏好渠道</div>
         <div class="flex flex-wrap gap-2">
           <span
-            v-for="(channel, idx) in preferredChannels"
+            v-for="(channel, idx) in formatChannels()"
             :key="idx"
             class="inline-flex items-center rounded-full bg-[var(--brand)]/10 text-[var(--brand)] border border-[var(--brand)]/20 px-2.5 py-0.5 text-xs"
           >
-            {{ formatChannel(channel) }}
+            {{ channel }}
           </span>
-          <span v-if="!preferredChannels || preferredChannels.length === 0" class="text-xs text-[var(--muted)]">暂无偏好渠道数据</span>
+          <span v-if="formatChannels().length === 0" class="text-xs text-[var(--muted)]">-</span>
         </div>
       </div>
     </div>
