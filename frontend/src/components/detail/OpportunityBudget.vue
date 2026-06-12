@@ -1,9 +1,20 @@
 <script setup>
-defineProps({
+const props = defineProps({
   funnelCount: { type: Number, default: 0 },
   highestStage: { type: String, default: '-' },
-  recentDeals: { type: Array, default: () => [] },
+  recentDeals: { type: [Number, String], default: 0 },
 })
+
+function formatAmount(val) {
+  if (val === null || val === undefined || val === 0) return '-'
+  const num = typeof val === 'string' ? parseFloat(val) : val
+  if (isNaN(num)) return '-'
+  // Convert to 万元 (assuming the raw value is in yuan)
+  if (num >= 10000) {
+    return `${(num / 10000).toFixed(1).replace(/\.0$/, '')}万元`
+  }
+  return `${num}元`
+}
 </script>
 
 <template>
@@ -21,18 +32,8 @@ defineProps({
         </div>
       </div>
       <div class="pt-4 border-t border-[var(--line)]">
-        <div class="text-xs text-[var(--muted)] mb-2">最近成交</div>
-        <div class="space-y-2">
-          <div
-            v-for="(deal, idx) in recentDeals"
-            :key="idx"
-            class="flex items-center justify-between text-sm"
-          >
-            <span class="text-[var(--text)]">{{ deal.name }}</span>
-            <span class="text-[var(--muted)]">{{ deal.date }}</span>
-          </div>
-          <span v-if="!recentDeals || recentDeals.length === 0" class="text-xs text-[var(--muted)]">-</span>
-        </div>
+        <div class="text-xs text-[var(--muted)] mb-2">成交金额</div>
+        <div class="text-lg font-bold text-[var(--brand)]">{{ formatAmount(recentDeals) }}</div>
       </div>
     </div>
   </div>

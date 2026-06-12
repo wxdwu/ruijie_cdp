@@ -19,10 +19,10 @@ defineProps({
   <div class="space-y-6">
     <!-- KPI Cards -->
     <KpiCards
-      :intent="customer.intent"
-      :interaction-count="customer.interactionCount || 0"
-      :stage="customer.stage"
-      :key-roles="customer.keyRoles"
+      :intent="customer.intent_level"
+      :interaction-count="customer.interaction_count_30d || 0"
+      :stage="customer.purchase_stage"
+      :key-roles="customer.role_coverage"
       :opportunity-count="opportunities?.length || 0"
     />
 
@@ -33,28 +33,28 @@ defineProps({
         <CustomerProfile
           :industry="customer.industry"
           :region="customer.region"
-          :owner="customer.owner"
-          :telecom-address="customer.telecomAddress"
-          :is-existing-customer="customer.isExistingCustomer"
+          :owner="customer.owner_name"
+          :telecom-address="customer.region"
+          :is-existing-customer="customer.is_existing_customer"
         />
         <BusinessTags
-          :demand-types="customer.demandTypes"
-          :business-scenarios="customer.businessScenarios"
-          :pain-points="customer.painPoints"
-          :product-categories="customer.productCategories"
+          :demand-types="customer.product_categories"
+          :business-scenarios="customer.industry"
+          :pain-points="[]"
+          :product-categories="customer.product_categories"
         />
       </div>
 
       <!-- Right Column -->
       <div class="space-y-6">
         <FollowupStatus
-          :last-interaction="customer.lastInteraction"
-          :preferred-channels="customer.preferredChannels"
+          :last-interaction="customer.last_interaction_time"
+          :preferred-channels="customer.top_channels"
         />
         <OpportunityBudget
-          :funnel-count="opportunities?.length || 0"
-          :highest-stage="opportunities?.[0]?.stage || '-'"
-          :recent-deals="customer.recentDeals"
+          :funnel-count="customer.funnel_opp_count || 0"
+          :highest-stage="customer.forecast_type || '-'"
+          :recent-deals="customer.won_amount"
         />
       </div>
     </div>
@@ -63,9 +63,9 @@ defineProps({
     <div class="grid grid-cols-2 gap-6">
       <BehaviorTimeline :interactions="interactions" />
       <AiInsight
-        :business-conclusion="aiInsight.businessConclusion"
-        :top-contacts="aiInsight.topContacts"
-        :evidence-chain="aiInsight.evidenceChain"
+        :business-conclusion="aiInsight.business_conclusion"
+        :top-contacts="aiInsight.contact_insights"
+        :evidence-chain="aiInsight.evidence"
       />
     </div>
   </div>
