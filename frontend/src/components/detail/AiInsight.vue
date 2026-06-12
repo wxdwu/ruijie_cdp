@@ -1,9 +1,23 @@
 <script setup>
 defineProps({
-  businessConclusion: { type: String, default: '-' },
+  businessConclusion: { type: Array, default: () => [] },
   topContacts: { type: Array, default: () => [] },
-  evidenceChain: { type: Array, default: () => [] },
+  evidenceChain: { type: Object, default: () => ({}) },
 })
+
+function evidenceLabel(key) {
+  const map = {
+    intent_score: '意向分',
+    intent_level: '意向等级',
+    interaction_count: '互动次数',
+    opportunity_count: '商机数',
+    contact_count: '联系人',
+    mobile_count: '手机号',
+    last_interaction_time: '最近互动',
+    last_interaction_channel: '最近渠道',
+  }
+  return map[key] || key
+}
 </script>
 
 <template>
@@ -16,8 +30,17 @@ defineProps({
       <!-- 业务结论 -->
       <div>
         <div class="text-xs text-[var(--muted)] mb-2">业务结论</div>
-        <div class="text-sm text-[var(--text)] bg-white/5 rounded-lg p-3">
-          {{ businessConclusion }}
+        <div class="space-y-2">
+          <div
+            v-for="(line, idx) in businessConclusion"
+            :key="idx"
+            class="text-sm text-[var(--text)] bg-white/5 rounded-lg p-3"
+          >
+            {{ line }}
+          </div>
+          <div v-if="!businessConclusion || businessConclusion.length === 0" class="text-xs text-[var(--muted)] bg-white/5 rounded-lg p-3">
+            暂无业务结论
+          </div>
         </div>
       </div>
 
@@ -30,8 +53,7 @@ defineProps({
             :key="idx"
             class="inline-flex items-center gap-1 rounded-full bg-[var(--brand)]/10 text-[var(--brand)] border border-[var(--brand)]/20 px-3 py-1 text-sm"
           >
-            <span>{{ contact.name }}</span>
-            <span class="text-xs opacity-70">({{ contact.role }})</span>
+            {{ contact }}
           </span>
           <span v-if="!topContacts || topContacts.length === 0" class="text-xs text-[var(--muted)]">-</span>
         </div>
@@ -40,16 +62,18 @@ defineProps({
       <!-- 证据链 -->
       <div>
         <div class="text-xs text-[var(--muted)] mb-2">证据链</div>
-        <div class="space-y-2">
+        <div class="grid grid-cols-2 gap-2">
           <div
-            v-for="(evidence, idx) in evidenceChain"
-            :key="idx"
-            class="flex items-start gap-2 text-sm"
+            v-for="(val, key) in evidenceChain"
+            :key="key"
+            class="flex items-center gap-2 text-sm bg-white/5 rounded-lg px-3 py-2"
           >
-            <span class="text-[var(--brand)]">•</span>
-            <span class="text-[var(--muted)]">{{ evidence }}</span>
+            <span class="text-[var(--muted)] text-xs">{{ evidenceLabel(key) }}:</span>
+            <span class="text-[var(--text)] font-medium">{{ val }}</span>
           </div>
-          <span v-if="!evidenceChain || evidenceChain.length === 0" class="text-xs text-[var(--muted)]">-</span>
+        </div>
+        <div v-if="Object.keys(evidenceChain).length === 0" class="text-xs text-[var(--muted)] mt-2">
+          暂无证据
         </div>
       </div>
     </div>

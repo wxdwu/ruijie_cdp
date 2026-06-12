@@ -2,6 +2,17 @@
 defineProps({
   interactions: { type: Array, default: () => [] },
 })
+
+function formatTime(dt) {
+  if (!dt) return '-'
+  const d = new Date(dt)
+  return d.toLocaleString('zh-CN', { hour12: false })
+}
+
+function channelLabel(ch) {
+  const map = { email: '邮件', web: '官网', event: '直播/活动', wechat: '微信' }
+  return map[ch] || ch || '其他'
+}
 </script>
 
 <template>
@@ -18,11 +29,12 @@ defineProps({
         </div>
         <div class="flex-1 min-w-0">
           <div class="flex items-center gap-2 mb-1">
-            <span class="text-xs text-[var(--muted)]">{{ item.time }}</span>
-            <span class="text-xs px-2 py-0.5 rounded bg-white/5 text-[var(--muted)]">{{ item.source }}</span>
+            <span class="text-xs text-[var(--muted)]">{{ formatTime(item.event_time) }}</span>
+            <span class="text-xs px-2 py-0.5 rounded bg-white/5 text-[var(--muted)]">{{ channelLabel(item.channel) }}</span>
+            <span class="text-xs text-[var(--muted)]/50">{{ item.source_table }}</span>
           </div>
-          <div class="text-sm text-[var(--text)] mb-1">{{ item.who }}</div>
-          <div class="text-sm text-[var(--muted)]">{{ item.content }}</div>
+          <div class="text-sm text-[var(--text)] mb-1">{{ item.contact_name || '未识别联系人' }}</div>
+          <div class="text-sm text-[var(--muted)]">{{ item.content || item.behavior_type || '无互动内容' }}</div>
         </div>
       </div>
       <div v-if="!interactions || interactions.length === 0" class="text-center py-8 text-[var(--muted)]">
