@@ -76,35 +76,35 @@ function handleRowClick(customer) {
             class="border-b border-[var(--line)] cursor-pointer transition-colors hover:bg-white/5"
           >
             <td class="px-4 py-3">
-              <div class="font-medium text-[var(--text)]">{{ customer.name }}</div>
+              <div class="font-medium text-[var(--text)]">{{ customer.customer_name }}</div>
             </td>
             <td class="px-4 py-3">
-              <div class="text-sm text-[var(--muted)]">{{ customer.specialProject }}</div>
+              <div class="text-sm text-[var(--muted)]">{{ customer.campaign_tag }}</div>
               <div class="text-xs text-[var(--muted)]/70">{{ customer.industry }}</div>
             </td>
             <td class="px-4 py-3">
               <span
                 class="inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-medium"
-                :class="getStageClass(customer.stage)"
+                :class="getStageClass(customer.purchase_stage)"
               >
-                {{ customer.stage }}
+                {{ customer.purchase_stage }}
               </span>
             </td>
             <td class="px-4 py-3">
-              <div class="text-sm text-[var(--text)]">{{ customer.keyRoles || '-' }}</div>
+              <div class="text-sm text-[var(--text)]">{{ customer.role_coverage || '-' }}</div>
             </td>
             <td class="px-4 py-3">
               <span
-                v-if="customer.intent"
+                v-if="customer.intent_level"
                 class="inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-medium"
-                :class="getIntentClass(customer.intent)"
+                :class="getIntentClass(customer.intent_level)"
               >
-                {{ customer.intent }}
+                {{ customer.intent_level }}
               </span>
               <span v-else class="text-[var(--muted)]">-</span>
             </td>
             <td class="px-4 py-3">
-              <div class="text-sm text-[var(--muted)]">{{ customer.lastInteraction || '-' }}</div>
+              <div class="text-sm text-[var(--muted)]">{{ customer.last_interaction_time || '-' }}</div>
             </td>
             <td class="px-4 py-3">
               <button
