@@ -217,48 +217,113 @@ def _semantic_hash(text: str, dim: int = 64) -> np.ndarray:
 
 def compute_embeddings_batch(names: List[str]) -> List[np.ndarray]:
     """
-    Compute embeddings for a batch of company names.
-    Uses caching to avoid recomputation.
+    Compute embeddings for a batch of company names using real API.
+    Results cached in SQLite to avoid recomputation.
 
     Args:
         names: List of company names
 
     Returns:
-        List of embedding vectors
+        List of embedding vectors (1536-dim for text-embedding-3-small)
     """
+    from app.config import settings
+
     init_embeddings_cache()
 
     embeddings: List[np.ndarray] = []
+    uncached_indices: List[int] = []  # indices with no cache hit
+    uncached_names: List[str] = []    # names needing real embedding
 
-    for name in names:
-        # Try cache first
+    for i, name in enumerate(names):
         cached = get_cached_embedding(name)
         if cached is not None:
             embeddings.append(cached)
-            continue
+        else:
+            embeddings.append(None)  # placeholder, will fill below
+            uncached_indices.append(i)
+            uncached_names.append(name)
 
-        # Compute new embedding
-        normalized = normalize_company_name(name)
+    # If all cached, return immediately
+    if not uncached_names:
+        return embeddings
 
-        # Base semantic hash
-        semantic_vector = _semantic_hash(normalized, dim=64)
+    # Compute real embeddings for uncached names via API
+    api_key = settings.LLM_API_KEY
+    base_url = settings.LLM_BASE_URL
 
-        # Add some random noise for uniqueness (deterministic based on name)
-        seed = int(hashlib.md5(normalized.encode('utf-8')).hexdigest(), 16) % (2**32)
-        rng = np.random.RandomState(seed)
-        noise_vector = rng.randn(64).astype(np.float32) * 0.1
+    if not api_key or not base_url:
+        logger.warning("LLM API not configured, falling back to rule-based embedding")
+        # Fallback: use normalized name hash (deterministic but meaningful)
+        for idx in uncached_indices:
+            name = names[idx]
+            normalized = normalize_company_name(name)
+            # Simple char-frequency vector (128-dim)
+            vec = np.zeros(128, dtype=np.float32)
+            for ch in normalized[:200]:
+                vec[hash(ch) % 128] += 0.1
+            # L2 normalize
+            norm = np.linalg.norm(vec)
+            if norm > 0:
+                vec = vec / norm
+            cache_embedding(name, normalized, vec)
+            embeddings[idx] = vec
+        return embeddings
 
-        # Combine
-        embedding = semantic_vector + noise_vector
+    # Call real embedding API in batches
+    batch_size = 100
+    resolved_url = f"{base_url.rstrip('/')}/embeddings"
 
-        # Normalize to unit length
-        norm = np.linalg.norm(embedding)
-        if norm > 0:
-            embedding = embedding / norm
+    for batch_start in range(0, len(uncached_names), batch_size):
+        batch_names = uncached_names[batch_start:batch_start + batch_size]
+        batch_indices = uncached_indices[batch_start:batch_start + batch_size]
 
-        # Cache it
-        cache_embedding(name, normalized, embedding)
-        embeddings.append(embedding)
+        try:
+            with httpx.Client(timeout=60.0) as client:
+                resp = client.post(
+                    resolved_url,
+                    headers={
+                        "Authorization": f"Bearer {api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "model": "text-embedding-3-small",
+                        "input": batch_names,
+                        "encoding_format": "float",
+                    },
+                )
+                resp.raise_for_status()
+                data = resp.json()
+
+                for item in data.get("data", []):
+                    pos = item.get("index", 0)
+                    global_idx = batch_indices[pos]
+                    emb = np.array(item["embedding"], dtype=np.float32)
+                    # L2 normalize
+                    norm = np.linalg.norm(emb)
+                    if norm > 0:
+                        emb = emb / norm
+                    name = names[global_idx]
+                    normalized = normalize_company_name(name)
+                    cache_embedding(name, normalized, emb)
+                    embeddings[global_idx] = emb
+
+                logger.info(f"  Embedded batch {batch_start // batch_size + 1}: "
+                          f"{len(batch_names)} names")
+
+        except Exception as e:
+            logger.warning(f"Embedding API call failed for batch {e}, "
+                          f"falling back to hash embedding")
+            for idx in batch_indices:
+                name = names[idx]
+                normalized = normalize_company_name(name)
+                vec = np.zeros(128, dtype=np.float32)
+                for ch in normalized[:200]:
+                    vec[hash(ch) % 128] += 0.1
+                norm = np.linalg.norm(vec)
+                if norm > 0:
+                    vec = vec / norm
+                cache_embedding(name, normalized, vec)
+                embeddings[idx] = vec
 
     return embeddings
 
@@ -481,7 +546,7 @@ def calculate_evidence_score(name_a: str, name_b: str, db: Session) -> float:
 # LLM Judge
 # ─────────────────────────────────────────────────────────────────────────────
 
-DEFAULT_LLM_MODEL = "gpt-4o-mini"
+DEFAULT_LLM_MODEL = "qwen3.6-plus"
 
 def llm_judge(name_a: str, name_b: str,
               rule_score: float, evidence_score: float,
