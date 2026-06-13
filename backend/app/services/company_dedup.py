@@ -16,6 +16,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import httpx
 import re
 import sqlite3
 import threading
@@ -30,6 +31,12 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 
 logger = logging.getLogger(__name__)
+
+# Data source priority (higher = more trusted)
+SOURCE_PRIORITY = {
+    'crm': 6, 'lead': 5, 'tianrun_session': 4,
+    'zhique_behavior': 3, 'linkflow': 2, 'email_click': 1,
+}
 
 # Global dedup progress tracking
 _dedup_progress = {
@@ -471,36 +478,141 @@ def calculate_evidence_score(name_a: str, name_b: str, db: Session) -> float:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# LLM Judge
+# ─────────────────────────────────────────────────────────────────────────────
+
+DEFAULT_LLM_MODEL = "gpt-4o-mini"
+
+def llm_judge(name_a: str, name_b: str,
+              rule_score: float, evidence_score: float,
+              api_key: str = "", base_url: str = "") -> tuple[float, str]:
+    """
+    Use LLM to determine if two company names refer to the same entity.
+
+    Args:
+        name_a, name_b: Company names to compare
+        rule_score, evidence_score: Pre-calculated scores (0-100)
+        api_key, base_url: LLM API configuration
+
+    Returns:
+        (llm_score 0-1, explanation_text)
+    """
+    # Fallback: if no API key provided, use rule+evidence as proxy
+    if not api_key:
+        proxy = (rule_score * 0.5 + evidence_score * 0.5) / 100.0
+        return (min(1.0, max(0.0, proxy)),
+                "LLM not configured; score derived from rule + evidence")
+
+    prompt = f"""You are a company-name matching expert. Determine whether the following
+two company names refer to the same business entity.
+
+Company A: "{name_a}"
+Company B: "{name_b}"
+
+Consider these aspects:
+1. ABBREVIATION / FULL NAME — e.g. "阿里" vs "阿里巴巴集团控股有限公司" → likely same
+2. SUBSIDIARY RELATIONSHIPS — e.g. "字节跳动" vs "北京字节跳动科技有限公司" → likely same
+3. DISTINCT LEGAL ENTITIES — e.g. "华为技术有限公司" vs "华为投资控股有限公司" → different entities
+   (same brand, different legal persons)
+4. EVIDENCE — shared phones/emails suggest the same entity
+
+Pre-computed similarity hints:
+- Rule-based name similarity (0-100): {rule_score}/100
+- Evidence-based contact overlap (0-100): {evidence_score}/100
+
+Output ONLY a single number between 0 and 1 representing your confidence
+that these are the same company, followed by a brief explanation on the
+same line, separated by a pipe character "|".
+
+Examples:
+0.95 | Same entity: full name vs abbreviation
+0.30 | Different legal entities under the same brand
+0.85 | Subsidiary relationship with shared evidence
+0.10 | Completely unrelated companies
+"""
+
+    try:
+        resolved_base_url = base_url or "https://api.openai.com/v1"
+        with httpx.Client(timeout=30.0) as client:
+            resp = client.post(
+                f"{resolved_base_url.rstrip('/')}/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": DEFAULT_LLM_MODEL,
+                    "messages": [
+                        {"role": "user", "content": prompt}
+                    ],
+                    "temperature": 0.1,
+                    "max_tokens": 100,
+                },
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            content = data["choices"][0]["message"]["content"].strip()
+    except Exception as e:
+        logger.warning(f"LLM judge call failed: {e}")
+        # Fallback on error
+        proxy = (rule_score * 0.5 + evidence_score * 0.5) / 100.0
+        return (min(1.0, max(0.0, proxy)), f"LLM call failed ({e}); fallback score")
+
+    # Parse response: expect "0.95 | explanation"
+    if "|" in content:
+        score_str, explanation = content.split("|", 1)
+        score_str = score_str.strip()
+        explanation = explanation.strip()
+    else:
+        # Try to extract a number from the first token
+        tokens = content.split()
+        score_str = tokens[0] if tokens else "0"
+        explanation = content
+
+    try:
+        llm_score = float(score_str)
+        llm_score = min(1.0, max(0.0, llm_score))
+    except (ValueError, TypeError):
+        llm_score = (rule_score * 0.5 + evidence_score * 0.5) / 100.0
+        explanation = f"Could not parse LLM output; fallback score"
+
+    return (llm_score, explanation)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Final Score Calculation
 # ─────────────────────────────────────────────────────────────────────────────
 
 def calculate_final_score(
     rule_score: float,
     evidence_score: float,
-    embedding_similarity: float
+    embedding_similarity: float,
+    llm_score: float = 0
 ) -> float:
     """
     Calculate weighted final score.
 
-    Weights:
-    - Rule-based: 40%
+    Weights (matching document section 10.2):
+    - Rule-based: 30%
     - Evidence-based: 30%
-    - Embedding similarity: 30%
+    - LLM score: 40%
+
+    ``llm_score`` replaces ``embedding_similarity`` as the primary differentiator.
+    Embedding remains available as supplementary data only.
 
     Args:
         rule_score: Rule-based score (0-100)
         evidence_score: Evidence-based score (0-100)
-        embedding_similarity: Embedding cosine similarity (0-1)
+        embedding_similarity: Embedding cosine similarity (0-1, supplementary)
+        llm_score: LLM confidence score (0-100, default 0)
 
     Returns:
         Final score between 0 and 100
     """
-    embedding_score = embedding_similarity * 100
-
     final_score = (
-        rule_score * 0.4 +
+        rule_score * 0.3 +
         evidence_score * 0.3 +
-        embedding_score * 0.3
+        llm_score * 0.4
     )
 
     return round(min(100.0, final_score), 2)
@@ -532,21 +644,21 @@ def fetch_all_company_names(db: Session) -> List[Dict[str, Any]]:
     # Source 1: dws_customer_360
     try:
         sql1 = text("""
-            SELECT DISTINCT company_name, customer_id
+            SELECT DISTINCT customer_name, id
             FROM dws_customer_360
-            WHERE company_name IS NOT NULL AND company_name != ''
+            WHERE customer_name IS NOT NULL AND customer_name != ''
         """)
         result1 = db.execute(sql1).fetchall()
-        for company_name, customer_id in result1:
-            if company_name not in companies:
-                companies[company_name] = {
-                    "name": company_name,
-                    "customer_id": customer_id,
+        for row_name, row_id in result1:
+            if row_name not in companies:
+                companies[row_name] = {
+                    "name": row_name,
+                    "customer_id": row_id,
                     "sources": ["dws_customer_360"]
                 }
             else:
-                if "dws_customer_360" not in companies[company_name]["sources"]:
-                    companies[company_name]["sources"].append("dws_customer_360")
+                if "dws_customer_360" not in companies[row_name]["sources"]:
+                    companies[row_name]["sources"].append("dws_customer_360")
         logger.info(f"Found {len(result1)} companies from dws_customer_360")
     except Exception as e:
         logger.warning(f"Error fetching from dws_customer_360: {e}")
@@ -669,7 +781,7 @@ def fetch_all_company_names(db: Session) -> List[Dict[str, Any]]:
 
 def generate_review_pairs(db: Session) -> Dict[str, Any]:
     """
-    Generate all potential duplicate pairs and insert into review_candidate.
+    Generate all potential duplicate pairs and insert into dws_review_queue.
 
     Args:
         db: Database session
@@ -718,24 +830,38 @@ def generate_review_pairs(db: Session) -> Dict[str, Any]:
 
         # Calculate scores
         rule_score = calculate_rule_score(company_a["name"], company_b["name"])
-        evidence_score, _ = calculate_evidence_score(company_a["name"], company_b["name"], db)
-        final_score = calculate_final_score(rule_score, evidence_score, similarity)
+        evidence_score, shared_count = calculate_evidence_score(
+            company_a["name"], company_b["name"], db
+        )
 
-        # Determine status
-        if final_score >= 90:
+        # LLM judgment (uses empty api_key by default → rule+evidence fallback)
+        llm_score_01, explanation = llm_judge(
+            company_a["name"], company_b["name"],
+            rule_score, evidence_score
+        )
+        llm_score_100 = round(llm_score_01 * 100, 2)
+
+        # Final score uses: rule 30%, evidence 30%, llm 40%
+        final_score = calculate_final_score(
+            rule_score, evidence_score, similarity, llm_score_100
+        )
+
+        # Determine status (thresholds per document section 10.2)
+        if final_score > 85:
             status = "auto_merged"
             auto_merged_count += 1
-        elif final_score >= 75:
+        elif final_score > 60:
             status = "need_review"
             need_review_count += 1
         else:
-            status = "pending"
+            # Below threshold — skip insertion entirely
+            continue
 
-        # Check if pair already exists
+        # Check if pair already exists in dws_review_queue
         check_sql = text("""
-            SELECT COUNT(*) FROM review_candidate
-            WHERE (candidate_a_name = :a_name AND candidate_b_name = :b_name)
-               OR (candidate_a_name = :b_name AND candidate_b_name = :a_name)
+            SELECT COUNT(*) FROM dws_review_queue
+            WHERE (candidate_a = :a_name AND candidate_b = :b_name)
+               OR (candidate_a = :b_name AND candidate_b = :a_name)
         """)
 
         exists = db.execute(check_sql, {
@@ -746,37 +872,32 @@ def generate_review_pairs(db: Session) -> Dict[str, Any]:
         if exists > 0:
             continue
 
-        # Prepare evidence JSON
+        # Prepare evidence JSON (extended structure)
         evidence = {
             "rule_score": rule_score,
             "evidence_score": evidence_score,
+            "llm_score": llm_score_100,
             "embedding_similarity": round(similarity, 4),
             "sources_a": company_a["sources"],
             "sources_b": company_b["sources"],
-            "shared_contacts_count": 0,
+            "shared_contacts_count": shared_count,
+            "llm_explanation": explanation,
         }
 
-        # Insert into review_candidate
+        # Insert into dws_review_queue
         insert_sql = text("""
-            INSERT INTO review_candidate
-            (review_type, candidate_a_id, candidate_a_name, candidate_b_id, candidate_b_name,
-             match_score, rule_score, evidence_score, llm_score, status, evidence)
-            VALUES (:type, :a_id, :a_name, :b_id, :b_name,
-                    :match, :rule, :evidence, :llm, :status, :evidence_json)
+            INSERT INTO dws_review_queue
+            (review_type, candidate_a, candidate_b, match_score, evidence, status)
+            VALUES (:type, :a_name, :b_name, :match, :evidence_json, :status)
         """)
 
         db.execute(insert_sql, {
             "type": "company_merge",
-            "a_id": company_a["customer_id"] or f"GEN_{idx_a}",
             "a_name": company_a["name"],
-            "b_id": company_b["customer_id"] or f"GEN_{idx_b}",
             "b_name": company_b["name"],
             "match": final_score,
-            "rule": rule_score,
-            "evidence": evidence_score,
-            "llm": similarity * 100,
-            "status": status,
             "evidence_json": json.dumps(evidence, ensure_ascii=False),
+            "status": status,
         })
 
         new_pairs_count += 1
@@ -810,9 +931,9 @@ def auto_merge_high_confidence(db: Session, threshold: float = 90.0) -> int:
         Number of pairs auto-merged
     """
     update_sql = text("""
-        UPDATE review_candidate
+        UPDATE dws_review_queue
         SET status = 'auto_merged',
-            reviewed_by = 'system',
+            reviewer = 'system',
             reviewed_at = NOW()
         WHERE status IN ('pending', 'need_review')
           AND match_score >= :threshold
