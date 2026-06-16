@@ -26,32 +26,33 @@ defineProps({
       :opportunity-count="opportunities?.length || 0"
     />
 
-    <!-- Two Column Layout -->
-    <div class="grid grid-cols-2 gap-6">
-      <!-- Left Column -->
-      <div class="space-y-6">
+    <!-- Detail Matrix -->
+    <div class="space-y-6">
+      <div class="grid grid-cols-1 gap-6 xl:grid-cols-2">
         <CustomerProfile
+          class="h-full"
           :industry="customer.industry"
           :region="customer.region"
           :owner="customer.owner_name"
           :telecom-address="customer.region"
           :is-existing-customer="customer.is_existing_customer"
         />
+        <FollowupStatus
+          class="h-full"
+          :last-interaction="customer.last_interaction_time"
+          :preferred-channels="customer.top_channels"
+        />
+      </div>
+      <div class="grid grid-cols-1 gap-6 xl:grid-cols-2">
         <BusinessTags
+          class="h-full"
           :demand-types="customer.product_categories"
           :business-scenarios="customer.industry"
           :pain-points="[]"
           :product-categories="customer.product_categories"
         />
-      </div>
-
-      <!-- Right Column -->
-      <div class="space-y-6">
-        <FollowupStatus
-          :last-interaction="customer.last_interaction_time"
-          :preferred-channels="customer.top_channels"
-        />
         <OpportunityBudget
+          class="h-full"
           :funnel-count="customer.funnel_opp_count || 0"
           :highest-stage="customer.forecast_type || '-'"
           :recent-deals="customer.won_amount"
@@ -60,9 +61,10 @@ defineProps({
     </div>
 
     <!-- Bottom Section -->
-    <div class="grid grid-cols-2 gap-6">
-      <BehaviorTimeline :interactions="interactions" />
+    <div class="grid grid-cols-1 gap-6 xl:grid-cols-2">
+      <BehaviorTimeline class="h-full" :interactions="interactions" />
       <AiInsight
+        class="h-full"
         :business-conclusion="aiInsight.business_conclusion"
         :top-contacts="aiInsight.contact_insights"
         :evidence-chain="aiInsight.evidence"
