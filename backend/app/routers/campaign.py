@@ -44,15 +44,16 @@ def get_campaign_kpis(db: Session = Depends(get_db)) -> Dict[str, Any]:
         "SELECT COUNT(*) FROM dws_customer_360 WHERE active_opp_amount > 0"
     )).scalar() or 0
 
-    # Won amount
+    # 成交金额：purchase_stage = '阶段6：完成采购，实现进入' 视为已成交
     won_amount = db.execute(text(
         "SELECT COALESCE(SUM(active_opp_amount), 0) FROM dws_customer_360 "
-        "WHERE purchase_stage = 'Closed Won'"
+        "WHERE purchase_stage = '阶段6：完成采购，实现进入'"
     )).scalar() or 0
 
-    # Conversion rate (won / total opportunities)
+    # 转化率 = 成交客户数 / 有机会客户数
     won_count = db.execute(text(
-        "SELECT COUNT(*) FROM dws_customer_360 WHERE purchase_stage = 'Closed Won'"
+        "SELECT COUNT(*) FROM dws_customer_360 "
+        "WHERE purchase_stage = '阶段6：完成采购，实现进入'"
     )).scalar() or 0
 
     conversion_rate = round((won_count / total_opportunities * 100), 2) if total_opportunities > 0 else 0
@@ -184,15 +185,22 @@ def get_role_coverage(db: Session = Depends(get_db)) -> Dict[str, Any]:
 def get_content_effect(db: Session = Depends(get_db)) -> Dict[str, Any]:
     """Get content interaction effect table."""
 
-    # Aggregate interactions by content type
+    # 按 behavior_type 分类统计各渠道的内容互动效果，而不是不存在的interaction_type
+    # 分类规则：
+    #   opens     -> 打开邮件（zhique 邮件打开行为）
+    #   downloads -> 下载资料（zhique）+ click_download（linkflow）
+    #   clicks    -> 其余所有行为（除"打开邮件"外均视为点击互动）
+    
+    # TODO: 后续根据业务精细化分类？？
+    
     result = db.execute(text(
         "SELECT "
         "    channel, "
         "    COUNT(*) as total_interactions, "
         "    COUNT(DISTINCT customer_name) as unique_customers, "
-        "    COUNT(CASE WHEN interaction_type = 'Click' THEN 1 END) as clicks, "
-        "    COUNT(CASE WHEN interaction_type = 'Open' THEN 1 END) as opens, "
-        "    COUNT(CASE WHEN interaction_type = 'Download' THEN 1 END) as downloads "
+        "    COUNT(CASE WHEN behavior_type != '打开邮件' THEN 1 END) as clicks, "
+        "    COUNT(CASE WHEN behavior_type = '打开邮件' THEN 1 END) as opens, "
+        "    COUNT(CASE WHEN behavior_type IN ('下载资料', 'click_download') THEN 1 END) as downloads "
         "FROM dws_interaction_detail "
         "WHERE channel IS NOT NULL AND channel != '' "
         "GROUP BY channel "
