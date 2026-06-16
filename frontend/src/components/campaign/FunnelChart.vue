@@ -9,9 +9,12 @@
         class="funnel-stage"
         v-for="(stage, index) in data.stages"
         :key="stage.stage"
-        :style="{ width: getStageWidth(index) + '%' }"
       >
-        <div class="stage-bar">
+        <div class="stage-bar-track">
+          <div
+            class="stage-bar"
+            :style="{ width: getStageWidth(index) + '%' }"
+          ></div>
           <div class="stage-info">
             <span class="stage-name">{{ stage.stage }}</span>
             <span class="stage-count">{{ stage.count }} ({{ stage.percentage }}%)</span>
@@ -46,9 +49,10 @@ const colors = [
 const getStageWidth = (index) => {
   const stages = props.data.stages || []
   if (stages.length === 0) return 100
-  const maxCount = Math.max(...stages.map(s => s.count))
-  const count = stages[index].count
-  return Math.max(30, (count / maxCount) * 100)
+  const maxPercentage = Math.max(...stages.map(s => Number(s.percentage) || 0))
+  const percentage = Number(stages[index].percentage) || 0
+  if (maxPercentage <= 0) return 0
+  return Math.max(2, (percentage / maxPercentage) * 100)
 }
 </script>
 
@@ -59,6 +63,7 @@ const getStageWidth = (index) => {
   border-radius: 12px;
   padding: 20px;
   height: 100%;
+  min-height: 420px;
 }
 
 .chart-header {
@@ -83,7 +88,7 @@ const getStageWidth = (index) => {
 .funnel-container {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 12px;
 }
 
 .funnel-stage {
@@ -94,31 +99,53 @@ const getStageWidth = (index) => {
   filter: brightness(1.1);
 }
 
-.stage-bar {
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+.stage-bar-track {
+  position: relative;
+  height: 52px;
+  overflow: hidden;
   border-radius: 8px;
-  padding: 12px 16px;
-  min-height: 56px;
-  display: flex;
-  align-items: center;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(101, 179, 255, 0.14);
+}
+
+.stage-bar {
+  position: absolute;
+  inset: 0 auto 0 0;
+  min-width: 2%;
+  background: linear-gradient(90deg, #65b3ff 0%, #7c6ee6 100%);
+  border-radius: 8px;
+  transition: width 0.45s ease;
 }
 
 .stage-info {
+  position: relative;
+  z-index: 1;
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 16px;
   width: 100%;
+  height: 100%;
+  padding: 0 14px;
 }
 
 .stage-name {
   font-size: 14px;
   font-weight: 600;
   color: white;
+  line-height: 1.25;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.28);
 }
 
 .stage-count {
   font-size: 13px;
   color: rgba(255, 255, 255, 0.9);
   font-weight: 500;
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
 }
 </style>
