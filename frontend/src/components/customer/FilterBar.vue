@@ -9,6 +9,7 @@ const industry = ref('')
 const owner = ref('')
 const specialProject = ref(null)
 const channel = ref('')
+const interaction_min = ref(null)
 
 const industries = ref([])
 const owners = ref([])
