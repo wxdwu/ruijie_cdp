@@ -15,19 +15,22 @@ const interactions = ref([])
 const contacts = ref([])
 const aiInsight = ref({})
 const opportunities = ref([])
+const priorityRecommendations = ref([])
+const recommendSource = ref('rule')
 
 async function fetchAllData() {
   loading.value = true
   try {
     const [
       detailRes, contactsRes, interactionsRes,
-      oppsRes, aiRes
+      oppsRes, aiRes, priorityRes
     ] = await Promise.all([
       customerApi.get(customerId),
       customerApi.contacts(customerId),
       customerApi.interactions(customerId),
       customerApi.opportunities(customerId),
       customerApi.aiInsight(customerId),
+      customerApi.priorityContact(customerId),
     ])
 
     customer.value = detailRes
@@ -35,6 +38,8 @@ async function fetchAllData() {
     interactions.value = Array.isArray(interactionsRes) ? interactionsRes : (interactionsRes.interactions || [])
     opportunities.value = Array.isArray(oppsRes) ? oppsRes : (oppsRes.opportunities || [])
     aiInsight.value = aiRes
+    priorityRecommendations.value = priorityRes.recommendations || []
+    recommendSource.value = priorityRes.source || 'rule'
   } catch (e) {
     console.error('fetchAllData', e)
   } finally {
@@ -120,7 +125,8 @@ onMounted(() => {
       <ContactsTab
         v-else-if="activeTab === 'contacts'"
         :contacts="contacts"
-        :priority-contact="aiInsight.topContacts?.[0] || {}"
+        :recommendations="priorityRecommendations"
+        :recommend-source="recommendSource"
       />
     </div>
   </div>

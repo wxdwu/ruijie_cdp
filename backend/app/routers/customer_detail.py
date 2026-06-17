@@ -270,7 +270,7 @@ def get_customer_ai_insight(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# f. GET /api/customers/{id}/priority-contact - Priority contact recommendation
+# f. GET /api/customers/{id}/priority-contact - AI 优先联系人推荐
 # ─────────────────────────────────────────────────────────────────────────────
 
 @router.get("/{id}/priority-contact")
@@ -278,63 +278,24 @@ def get_customer_priority_contact(
     id: str,
     db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
-    """Get priority contact recommendation for the customer."""
-    # Get customer_name from dws_customer_360
+    """AI 驱动的优先联系人推荐。
+
+    综合角色权重、互动活跃度、最近互动时间、信息完整度等多维度因素，
+    结合 AI 模型分析，返回前 5 个推荐联系人及个性化推荐理由（不足 5 个则全量返回）。
+
+    当 AI 不可用时自动降级为规则评分模式。
+    """
+    from app.services.contact_recommend import recommend_priority_contacts
+
+    # 获取客户名称
     customer_name = _get_customer_name(db, id)
 
-    # Get all contacts from dws_contact_mapping
-    rows = db.execute(
-        text(
-            "SELECT id, customer_name, contact_name, mobile, email, department, "
-            "position, purchase_role, role_category "
-            "FROM dws_contact_mapping "
-            "WHERE customer_name = :cname "
-            "ORDER BY contact_name"
-        ),
-        {"cname": customer_name},
-    ).mappings().all()
+    # 调用 AI 推荐服务
+    result = recommend_priority_contacts(
+        db=db,
+        customer_id=id,
+        customer_name=customer_name,
+        top_n=5,
+    )
 
-    candidates = [dict(r) for r in rows]
-
-    if not candidates:
-        return {
-            "recommended": {},
-            "candidates": [],
-        }
-
-    # Score contacts based on role
-    role_weights = {
-        "决策者": 100,
-        "决策层": 90,
-        "关键人": 80,
-        "技术把关": 70,
-        "使用者": 50,
-        "影响者": 40,
-    }
-
-    scored_contacts = []
-    for contact in candidates:
-        score = 0
-        role = contact.get("role_category", "") or contact.get("purchase_role", "")
-        score = role_weights.get(role, 30)
-
-        # Bonus for having mobile
-        if contact.get("mobile"):
-            score += 20
-        # Bonus for having email
-        if contact.get("email"):
-            score += 10
-
-        contact["priority_score"] = score
-        scored_contacts.append(contact)
-
-    # Sort by score descending
-    scored_contacts.sort(key=lambda x: x["priority_score"], reverse=True)
-
-    # Recommended is the top one
-    recommended = scored_contacts[0]
-
-    return {
-        "recommended": recommended,
-        "candidates": scored_contacts,
-    }
+    return result

@@ -6,6 +6,10 @@ import ContactCard from './ContactCard.vue'
 const props = defineProps({
   contacts: { type: Array, default: () => [] },
   priorityContact: { type: Object, default: () => ({}) },
+  // AI 推荐联系人列表（从 priority-contact API 获取）
+  recommendations: { type: Array, default: () => [] },
+  // 推荐来源标记
+  recommendSource: { type: String, default: "rule" },
 })
 
 const searchQuery = ref('')
@@ -34,7 +38,10 @@ const filteredContacts = computed(() => {
 <template>
   <div class="space-y-6">
     <!-- AI Priority Contact Banner -->
-    <AiPriorityContact :contact="priorityContact" />
+    <AiPriorityContact
+      :recommendations="recommendations"
+      :source="recommendSource"
+    />
 
     <!-- Filters -->
     <div class="flex items-center gap-4">
