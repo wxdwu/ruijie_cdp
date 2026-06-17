@@ -39,12 +39,12 @@ class ReviewStatsResponse(BaseModel):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Helper: Ensure review table exists and has sample data
+# Helper: Ensure review table exists
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _ensure_review_table_exists(db: Session) -> None:
-    """Create review_candidate table if it doesn't exist and add sample data."""
-    # Check if table exists
+    """Create review_candidate table if it doesn't exist."""
+    # 检查表是否存在
     check_sql = text("""
         SELECT COUNT(*) as cnt
         FROM information_schema.tables
@@ -54,76 +54,96 @@ def _ensure_review_table_exists(db: Session) -> None:
     exists = db.execute(check_sql).scalar() or 0
 
     if not exists:
-        # Create the table
+        # 创建审核队列表，与实际数据库表结构一致
         create_sql = text("""
             CREATE TABLE review_candidate (
                 id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
                 review_type VARCHAR(50) NOT NULL DEFAULT 'company_merge'
-                    COMMENT 'company_merge, contact_merge, data_quality',
-                candidate_a_id VARCHAR(128) NOT NULL COMMENT 'First candidate ID',
-                candidate_a_name VARCHAR(255) NOT NULL COMMENT 'First candidate name',
-                candidate_b_id VARCHAR(128) NOT NULL COMMENT 'Second candidate ID',
-                candidate_b_name VARCHAR(255) NOT NULL COMMENT 'Second candidate name',
-                match_score DECIMAL(5,2) DEFAULT 0 COMMENT 'Overall match score',
-                rule_score DECIMAL(5,2) DEFAULT 0 COMMENT 'Rule-based score',
-                evidence_score DECIMAL(5,2) DEFAULT 0 COMMENT 'Evidence-based score',
-                llm_score DECIMAL(5,2) DEFAULT 0 COMMENT 'LLM similarity score',
+                    COMMENT '审核类型: company_merge, contact_merge, data_quality',
+                candidate_a_id VARCHAR(128) NOT NULL COMMENT '候选A客户ID',
+                candidate_a_name VARCHAR(255) NOT NULL COMMENT '候选公司A名称',
+                candidate_b_id VARCHAR(128) NOT NULL COMMENT '候选B客户ID',
+                candidate_b_name VARCHAR(255) NOT NULL COMMENT '候选公司B名称',
+                match_score DECIMAL(5,2) DEFAULT NULL COMMENT '综合匹配分数',
+                rule_score DECIMAL(5,2) DEFAULT NULL COMMENT '规则得分',
+                evidence_score DECIMAL(5,2) DEFAULT NULL COMMENT '证据得分',
+                llm_score DECIMAL(5,2) DEFAULT NULL COMMENT 'LLM得分',
                 status VARCHAR(20) NOT NULL DEFAULT 'pending'
-                    COMMENT 'pending, auto_merged, rejected, need_review',
-                evidence JSON COMMENT 'Match evidence details',
-                reviewed_by VARCHAR(100) COMMENT 'Reviewer username',
-                reviewed_at DATETIME COMMENT 'Review timestamp',
+                    COMMENT '状态: pending, auto_merged, rejected, need_review',
+                evidence JSON COMMENT '匹配证据详情(含rule_score, evidence_score, llm_score等)',
+                reviewed_by VARCHAR(100) DEFAULT NULL COMMENT '审核人',
+                reviewed_at DATETIME COMMENT '审核时间',
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 INDEX idx_review_type (review_type),
                 INDEX idx_status (status),
                 INDEX idx_match_score (match_score)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-            COMMENT='Deduplication review candidates'
+            COMMENT='去重审核队列表'
         """)
         db.execute(create_sql)
-
-        # Insert sample data
-        sample_data = [
-            ("company_merge", "C001", "阿里巴巴集团控股有限公司", "C002", "阿里巴巴(中国)有限公司", 95.5, 90.0, 98.0, 92.0, "pending"),
-            ("company_merge", "C003", "腾讯控股有限公司", "C004", "腾讯科技(深圳)有限公司", 92.0, 88.0, 95.0, 90.0, "pending"),
-            ("company_merge", "C005", "字节跳动有限公司", "C006", "北京字节跳动科技有限公司", 88.5, 85.0, 92.0, 87.0, "need_review"),
-            ("company_merge", "C007", "百度在线网络技术(北京)有限公司", "C008", "百度公司", 85.0, 80.0, 88.0, 82.0, "pending"),
-            ("company_merge", "C009", "京东集团", "C010", "北京京东世纪贸易有限公司", 90.0, 87.0, 93.0, 89.0, "auto_merged"),
-            ("company_merge", "C011", "美团点评", "C012", "北京三快在线科技有限公司", 78.0, 75.0, 82.0, 76.0, "rejected"),
-            ("company_merge", "C013", "小米科技有限责任公司", "C014", "小米集团", 93.5, 91.0, 96.0, 92.5, "pending"),
-            ("company_merge", "C015", "华为技术有限公司", "C016", "华为投资控股有限公司", 89.0, 86.0, 91.0, 88.0, "need_review"),
-            ("contact_merge", "P001", "张三 - 销售总监", "P002", "张三 - 销售经理", 75.0, 70.0, 78.0, 72.0, "pending"),
-            ("data_quality", "D001", "数据质量问题 - 缺失字段", "D002", "数据质量问题 - 重复记录", 65.0, 60.0, 70.0, 62.0, "pending"),
-        ]
-
-        insert_sql = text("""
-            INSERT INTO review_candidate
-            (review_type, candidate_a_id, candidate_a_name, candidate_b_id, candidate_b_name,
-             match_score, rule_score, evidence_score, llm_score, status)
-            VALUES (:type, :a_id, :a_name, :b_id, :b_name, :match, :rule, :evidence, :llm, :status)
-        """)
-
-        for row in sample_data:
-            db.execute(insert_sql, {
-                "type": row[0],
-                "a_id": row[1],
-                "a_name": row[2],
-                "b_id": row[3],
-                "b_name": row[4],
-                "match": row[5],
-                "rule": row[6],
-                "evidence": row[7],
-                "llm": row[8],
-                "status": row[9],
-            })
         db.commit()
-        logger.info("Created review_candidate table with sample data")
+        logger.info("Created review_candidate table")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Get review items with pagination
 # ─────────────────────────────────────────────────────────────────────────────
+
+def _extract_score_fields(item: Dict[str, Any]) -> Dict[str, Any]:
+    """从 evidence JSON 中提取 rule_score, evidence_score, llm_score 等字段，
+    同时兼容前端期望的字段名映射。"""
+    import json
+    # 解析 JSON evidence
+    evidence = item.get("evidence")
+    if isinstance(evidence, str):
+        try:
+            evidence = json.loads(evidence)
+            item["evidence"] = evidence
+        except (json.JSONDecodeError, TypeError):
+            evidence = None
+            item["evidence"] = None
+
+    # 优先使用数据库列中的分数值，如果为 None 或 0 则从 evidence 提取作为回退
+    for score_key in ("rule_score", "evidence_score", "llm_score"):
+        db_val = item.get(score_key)
+        # 如果数据库列有有效值（非 None 且非 0），直接使用
+        if db_val is not None and db_val != 0:
+            continue
+        # 否则尝试从 evidence 中提取
+        if evidence and isinstance(evidence, dict):
+            ev_val = evidence.get(score_key)
+            if ev_val is not None:
+                item[score_key] = ev_val
+        # 确保有默认值 0
+        if item.get(score_key) is None:
+            item[score_key] = 0
+
+    # 前端字段名别名：实际数据库列已经是 candidate_a_name/candidate_b_name
+    # 如果 SELECT * 返回了旧的 candidate_a 列名，则自动映射
+    if "candidate_a" in item and "candidate_a_name" not in item:
+        item["candidate_a_name"] = item["candidate_a"]
+    if "candidate_b" in item and "candidate_b_name" not in item:
+        item["candidate_b_name"] = item["candidate_b"]
+
+    # ID 字段：如果不存在则设为 None
+    if "candidate_a_id" not in item:
+        item["candidate_a_id"] = item.get("candidate_a_id") or None
+    if "candidate_b_id" not in item:
+        item["candidate_b_id"] = item.get("candidate_b_id") or None
+
+    # 审核人字段别名
+    if "reviewer" in item and "reviewed_by" not in item:
+        item["reviewed_by"] = item["reviewer"]
+
+    # 转换 Decimal 为 float 以便 JSON 序列化
+    for key in ("match_score", "rule_score", "evidence_score", "llm_score"):
+        val = item.get(key)
+        if hasattr(val, '__float__'):
+            item[key] = float(val)
+
+    return item
+
 
 @router.get("")
 def get_review_items(
@@ -164,16 +184,7 @@ def get_review_items(
     params["offset"] = offset
 
     rows = db.execute(data_sql, params).mappings().all()
-    items = [dict(r) for r in rows]
-
-    # Parse JSON evidence if needed
-    for item in items:
-        if isinstance(item.get("evidence"), str):
-            import json
-            try:
-                item["evidence"] = json.loads(item["evidence"])
-            except (json.JSONDecodeError, TypeError):
-                item["evidence"] = None
+    items = [_extract_score_fields(dict(r)) for r in rows]
 
     return {
         "total": total,
@@ -202,9 +213,9 @@ def get_review_stats(db: Session = Depends(get_db)) -> ReviewStatsResponse:
     rows = db.execute(stats_sql).fetchall()
 
     stats = {"pending": 0, "auto_merged": 0, "rejected": 0, "need_review": 0, "total": 0}
-    for status, count in rows:
-        if status in stats:
-            stats[status] = count
+    for status_val, count in rows:
+        if status_val in stats:
+            stats[status_val] = count
         stats["total"] += count
 
     return ReviewStatsResponse(**stats)
@@ -221,18 +232,30 @@ def approve_merge(
 ) -> Dict[str, Any]:
     """Approve a merge request.
 
-    Updates the status to 'auto_merged' and updates dws_customer_360 mappings.
+    更新状态为 'merged' 并执行实际的公司合并逻辑。
     """
     _ensure_review_table_exists(db)
 
-    # Get the review item
+    # 获取审核项
     item_sql = text("SELECT * FROM review_candidate WHERE id = :id")
     item = db.execute(item_sql, {"id": id}).mappings().fetchone()
 
     if not item:
         raise HTTPException(status_code=404, detail="Review item not found")
 
-    # Update status
+    # 执行实际合并逻辑
+    try:
+        from app.services.company_dedup import merge_customer_records
+        merge_customer_records(
+            dict(item), db
+        )
+    except Exception as e:
+        logger.error(f"Merge failed for item {id}: {e}")
+        raise HTTPException(
+            status_code=500, detail=f"合并失败: {str(e)}"
+        )
+
+    # 更新审核状态
     update_sql = text("""
         UPDATE review_candidate
         SET status = 'auto_merged',
@@ -241,19 +264,15 @@ def approve_merge(
         WHERE id = :id
     """)
     db.execute(update_sql, {"id": id})
-
-    # TODO: Update dws_customer_360 mappings
-    # This would typically merge the two customer records
-    # For now, we'll just log the action
-
     db.commit()
-    logger.info(f"Approved merge for review item {id}")
+
+    logger.info(f"Approved and merged review item {id}")
 
     return {
         "success": True,
         "id": id,
         "status": "auto_merged",
-        "message": "Merge approved successfully",
+        "message": "合并通过并已执行",
     }
 
 
@@ -269,14 +288,14 @@ def reject_merge(
     """Reject a merge request."""
     _ensure_review_table_exists(db)
 
-    # Get the review item
+    # 获取审核项
     item_sql = text("SELECT * FROM review_candidate WHERE id = :id")
     item = db.execute(item_sql, {"id": id}).mappings().fetchone()
 
     if not item:
         raise HTTPException(status_code=404, detail="Review item not found")
 
-    # Update status
+    # 更新状态
     update_sql = text("""
         UPDATE review_candidate
         SET status = 'rejected',
@@ -285,7 +304,6 @@ def reject_merge(
         WHERE id = :id
     """)
     db.execute(update_sql, {"id": id})
-
     db.commit()
     logger.info(f"Rejected merge for review item {id}")
 
@@ -306,35 +324,46 @@ def batch_approve(
     request: BatchOperationRequest,
     db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
-    """Batch approve multiple merge requests."""
+    """Batch approve multiple merge requests with actual merge execution."""
     _ensure_review_table_exists(db)
 
     if not request.ids:
         raise HTTPException(status_code=400, detail="No IDs provided")
 
-    # Build placeholders for IN clause
-    placeholders = ", ".join([f":id{i}" for i in range(len(request.ids))])
-    params = {f"id{i}": id_val for i, id_val in enumerate(request.ids)}
-    params["reviewed_by"] = "system"
+    from app.services.company_dedup import merge_customer_records
 
-    update_sql = text(f"""
-        UPDATE review_candidate
-        SET status = 'auto_merged',
-            reviewed_by = :reviewed_by,
-            reviewed_at = NOW()
-        WHERE id IN ({placeholders})
-    """)
-    result = db.execute(update_sql, params)
+    # 逐条执行合并
+    approved_count = 0
+    errors = []
+    for item_id in request.ids:
+        try:
+            item_sql = text("SELECT * FROM review_candidate WHERE id = :id")
+            item = db.execute(item_sql, {"id": item_id}).mappings().fetchone()
+            if item:
+                merge_customer_records(dict(item), db)
+
+                update_sql = text("""
+                    UPDATE review_candidate
+                    SET status = 'auto_merged',
+                        reviewed_by = 'system',
+                        reviewed_at = NOW()
+                    WHERE id = :id
+                """)
+                db.execute(update_sql, {"id": item_id})
+                approved_count += 1
+        except Exception as e:
+            errors.append({"id": item_id, "error": str(e)})
+            logger.error(f"Batch approve failed for id {item_id}: {e}")
+
     db.commit()
-
-    affected = result.rowcount
-    logger.info(f"Batch approved {affected} review items")
+    logger.info(f"Batch approved {approved_count} review items")
 
     return {
         "success": True,
-        "approved_count": affected,
+        "approved_count": approved_count,
         "ids": request.ids,
-        "message": f"Successfully approved {affected} items",
+        "errors": errors if errors else None,
+        "message": f"Successfully approved {approved_count} items",
     }
 
 
@@ -353,7 +382,7 @@ def batch_reject(
     if not request.ids:
         raise HTTPException(status_code=400, detail="No IDs provided")
 
-    # Build placeholders for IN clause
+    # 构建 IN 子句占位符
     placeholders = ", ".join([f":id{i}" for i in range(len(request.ids))])
     params = {f"id{i}": id_val for i, id_val in enumerate(request.ids)}
     params["reviewed_by"] = "system"

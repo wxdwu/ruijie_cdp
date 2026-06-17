@@ -33,7 +33,7 @@
           </tr>
         </thead>
         <tbody>
-          <tr v-for="item in items" :key="item.customer_id" @click="$emit('row-click', item)">
+          <tr v-for="item in items" :key="item.id" @click="$emit('row-click', item)">
             <td class="customer-name">{{ item.customer_name }}</td>
             <td><span class="tag industry">{{ item.industry || '-' }}</span></td>
             <td><span class="tag region">{{ item.region || '-' }}</span></td>

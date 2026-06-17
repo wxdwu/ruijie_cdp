@@ -8,7 +8,7 @@
         "dws_contact_360": "联系人360聚合",
         "dws_interaction_detail": "互动明细",
         "dws_sync_meta": "同步状态追踪",
-        "dws_review_queue": "审核队列"
+        "review_candidate": "审核队列"
     },
     "supported_fields": {
         "industry": "行业（精确匹配）",

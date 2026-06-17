@@ -183,7 +183,7 @@ function handlePageChange(page: number) {
 
 function handleRowClick(item: any) {
   // 跳转到客户详情页
-  router.push(`/customers/${item.customer_id}`)
+  router.push(`/customers/${item.id}`)
 }
 
 function setExample(text: string) {
