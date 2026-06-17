@@ -24,7 +24,6 @@
         <thead>
           <tr>
             <th>客户名称</th>
-            <th>公司</th>
             <th>行业</th>
             <th>区域</th>
             <th>购买阶段</th>
@@ -36,13 +35,12 @@
         <tbody>
           <tr v-for="item in items" :key="item.customer_id" @click="$emit('row-click', item)">
             <td class="customer-name">{{ item.customer_name }}</td>
-            <td class="company-name">{{ item.company_name }}</td>
-            <td><span class="tag industry">{{ item.industry }}</span></td>
-            <td><span class="tag region">{{ item.region }}</span></td>
-            <td><span class="tag stage">{{ item.purchase_stage }}</span></td>
-            <td><span class="tag intent">{{ item.intent_level }}</span></td>
-            <td class="interaction-count">{{ item.interaction_count_30d }}</td>
-            <td><span class="tag channel">{{ item.last_interaction_channel }}</span></td>
+            <td><span class="tag industry">{{ item.industry || '-' }}</span></td>
+            <td><span class="tag region">{{ item.region || '-' }}</span></td>
+            <td><span class="tag stage">{{ item.purchase_stage || '-' }}</span></td>
+            <td><span class="tag intent">{{ item.intent_level || '-' }}</span></td>
+            <td class="interaction-count">{{ item.interaction_count_30d || 0 }}</td>
+            <td><span class="tag channel">{{ item.last_interaction_channel || '-' }}</span></td>
           </tr>
         </tbody>
       </table>
@@ -197,14 +195,6 @@ tbody tr:hover {
 .customer-name {
   font-weight: 600;
   color: var(--primary);
-}
-
-.company-name {
-  color: var(--muted);
-  max-width: 180px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .interaction-count {

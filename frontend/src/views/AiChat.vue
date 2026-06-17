@@ -58,8 +58,11 @@
 
 <script setup lang="ts">
 import { ref, nextTick } from 'vue'
+import { useRouter } from 'vue-router'
 import ChatThread from '../components/ai/ChatThread.vue'
 import QueryResultTable from '../components/ai/QueryResultTable.vue'
+
+const router = useRouter()
 
 interface Message {
   role: 'user' | 'assistant'
@@ -179,9 +182,8 @@ function handlePageChange(page: number) {
 }
 
 function handleRowClick(item: any) {
-  // Navigate to customer detail or show detail modal
-  console.log('Row clicked:', item)
-  alert(`选中客户: ${item.customer_name}`)
+  // 跳转到客户详情页
+  router.push(`/customers/${item.customer_id}`)
 }
 
 function setExample(text: string) {
