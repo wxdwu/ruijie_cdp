@@ -51,10 +51,10 @@
                   class="score-fill"
                   :style="{ width: Math.min(customer.engagement_score, 100) + '%' }"
                 ></div>
-                <span class="score-value">{{ customer.engagement_score.toFixed(1) }}</span>
+                <span class="score-value">{{ (customer.engagement_score || 0).toFixed(1) }}</span>
               </div>
             </td>
-            <td class="amount">¥{{ customer.opportunity_amount.toLocaleString() }}</td>
+            <td class="amount">¥{{ (customer.opportunity_amount || 0).toLocaleString() }}</td>
             <td>
               <button class="action-btn">查看</button>
             </td>
