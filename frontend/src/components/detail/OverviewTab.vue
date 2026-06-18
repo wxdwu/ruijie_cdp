@@ -35,7 +35,7 @@ defineProps({
           :region="customer.region"
           :owner="customer.owner_name"
           :telecom-address="customer.region"
-          :is-existing-customer="customer.is_existing_customer"
+          :is-existing-customer="Boolean(customer.is_existing_customer)"
         />
         <FollowupStatus
           class="h-full"

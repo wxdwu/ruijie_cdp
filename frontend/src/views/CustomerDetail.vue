@@ -1,9 +1,14 @@
 <script setup>
-import { ref, onMounted } from 'vue'
+import { defineAsyncComponent, ref, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { customerApi } from '../api'
 import OverviewTab from '../components/detail/OverviewTab.vue'
 import ContactsTab from '../components/detail/ContactsTab.vue'
+
+const BusinessFunnelTab = defineAsyncComponent(() => import('../components/detail/BusinessFunnelTab.vue'))
+const BudgetOutputTab = defineAsyncComponent(() => import('../components/detail/BudgetOutputTab.vue'))
+const RiskComplianceTab = defineAsyncComponent(() => import('../components/detail/RiskComplianceTab.vue'))
+const OpportunitiesTab = defineAsyncComponent(() => import('../components/detail/OpportunitiesTab.vue'))
 
 const route = useRoute()
 const customerId = route.params.id
@@ -18,28 +23,49 @@ const opportunities = ref([])
 const priorityRecommendations = ref([])
 const recommendSource = ref('rule')
 
+const tabs = [
+  { key: 'overview', label: '概览' },
+  { key: 'contacts', label: '联系人' },
+  { key: 'business', label: '经营&漏斗' },
+  { key: 'budget', label: '预算&产出' },
+  { key: 'risk', label: '风险&合规' },
+  { key: 'opportunities', label: '商机' },
+]
+
 async function fetchAllData() {
   loading.value = true
   try {
-    const [
-      detailRes, contactsRes, interactionsRes,
-      oppsRes, aiRes, priorityRes
-    ] = await Promise.all([
+    const results = await Promise.allSettled([
       customerApi.get(customerId),
       customerApi.contacts(customerId),
       customerApi.interactions(customerId),
       customerApi.opportunities(customerId),
       customerApi.aiInsight(customerId),
-      customerApi.priorityContact(customerId),
     ])
+
+    const valueAt = (index, fallback) => results[index].status === 'fulfilled'
+      ? results[index].value
+      : fallback
+    const detailRes = valueAt(0, {})
+    const contactsRes = valueAt(1, [])
+    const interactionsRes = valueAt(2, [])
+    const oppsRes = valueAt(3, [])
+    const aiRes = valueAt(4, {})
 
     customer.value = detailRes
     contacts.value = Array.isArray(contactsRes) ? contactsRes : (contactsRes.contacts || [])
     interactions.value = Array.isArray(interactionsRes) ? interactionsRes : (interactionsRes.interactions || [])
     opportunities.value = Array.isArray(oppsRes) ? oppsRes : (oppsRes.opportunities || [])
     aiInsight.value = aiRes
-    priorityRecommendations.value = priorityRes.recommendations || []
-    recommendSource.value = priorityRes.source || 'rule'
+    results.forEach((result, index) => {
+      if (result.status === 'rejected') console.warn(`customer detail request ${index} failed`, result.reason)
+    })
+
+    customerApi.priorityContact(customerId).then(priorityRes => {
+      priorityRecommendations.value = priorityRes.recommendations || priorityRes.candidates || []
+      recommendSource.value = priorityRes.source || 'rule'
+    }).catch(error => console.warn('priority contact request failed', error))
+
   } catch (e) {
     console.error('fetchAllData', e)
   } finally {
@@ -79,28 +105,19 @@ onMounted(() => {
       </div>
 
       <!-- Tab Navigation -->
-      <div class="flex gap-6 mt-4">
+      <div class="c360-tabs mt-4 flex gap-10 overflow-x-auto">
         <button
-          @click="activeTab = 'overview'"
-          class="pb-2 text-sm font-medium transition-colors border-b-2"
+          v-for="tab in tabs"
+          :key="tab.key"
+          @click="activeTab = tab.key"
+          class="shrink-0 border-b-2 pb-2 text-sm font-medium transition-colors"
           :class="
-            activeTab === 'overview'
+            activeTab === tab.key
               ? 'text-[var(--brand)] border-[var(--brand)]'
               : 'text-[var(--muted)] border-transparent hover:text-[var(--text)]'
           "
         >
-          概览
-        </button>
-        <button
-          @click="activeTab = 'contacts'"
-          class="pb-2 text-sm font-medium transition-colors border-b-2"
-          :class="
-            activeTab === 'contacts'
-              ? 'text-[var(--brand)] border-[var(--brand)]'
-              : 'text-[var(--muted)] border-transparent hover:text-[var(--text)]'
-          "
-        >
-          联系人
+          {{ tab.label }}
         </button>
       </div>
     </div>
@@ -127,6 +144,22 @@ onMounted(() => {
         :contacts="contacts"
         :recommendations="priorityRecommendations"
         :recommend-source="recommendSource"
+      />
+
+      <BusinessFunnelTab
+        v-else-if="activeTab === 'business'"
+      />
+
+      <BudgetOutputTab
+        v-else-if="activeTab === 'budget'"
+      />
+
+      <RiskComplianceTab
+        v-else-if="activeTab === 'risk'"
+      />
+
+      <OpportunitiesTab
+        v-else-if="activeTab === 'opportunities'"
       />
     </div>
   </div>
