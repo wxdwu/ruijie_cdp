@@ -3,10 +3,12 @@ const props = defineProps({
   funnelCount: { type: Number, default: 0 },
   highestStage: { type: String, default: '-' },
   recentDeals: { type: [Number, String], default: 0 },
+  historicalDeals: { type: [Number, String], default: null },
+  productBudget: { type: [Number, String], default: 0 },
 })
 
 function formatAmount(val) {
-  if (val === null || val === undefined || val === 0) return '-'
+  if (val === null || val === undefined || val === '') return '-'
   const num = typeof val === 'string' ? parseFloat(val) : val
   if (isNaN(num)) return '-'
   // Convert to 万元 (assuming the raw value is in yuan)
@@ -20,20 +22,24 @@ function formatAmount(val) {
 <template>
   <div class="rounded-xl border border-[var(--line)] bg-[var(--panel)] p-5">
     <div class="text-sm font-medium text-[var(--text)] mb-4">商机预算</div>
-    <div class="space-y-4">
-      <div class="grid grid-cols-2 gap-4">
-        <div>
-          <div class="text-xs text-[var(--muted)] mb-1">漏斗商机数</div>
-          <div class="text-xl font-bold text-[var(--text)]">{{ funnelCount }}</div>
-        </div>
-        <div>
-          <div class="text-xs text-[var(--muted)] mb-1">最高阶段</div>
-          <div class="text-sm font-medium text-[var(--text)]">{{ highestStage }}</div>
+    <div class="grid grid-cols-2 overflow-hidden rounded-lg border border-[var(--line)]">
+      <div class="min-h-24 border-b border-r border-[var(--line)] p-4">
+        <div class="mb-2 text-xs text-[var(--muted)]">漏斗商机数</div>
+        <div class="text-xl font-bold text-[var(--text)]">{{ funnelCount }}</div>
+      </div>
+      <div class="min-h-24 border-b border-[var(--line)] p-4">
+        <div class="mb-2 text-xs text-[var(--muted)]">最高阶段</div>
+        <div class="text-sm font-semibold text-[var(--text)]">{{ highestStage }}</div>
+      </div>
+      <div class="min-h-24 border-r border-[var(--line)] p-4">
+        <div class="mb-2 text-xs text-[var(--muted)]">近两年成交 / 历史</div>
+        <div class="text-sm font-bold text-[var(--brand)]">
+          {{ formatAmount(recentDeals) }} / {{ formatAmount(historicalDeals) }}
         </div>
       </div>
-      <div class="pt-4 border-t border-[var(--line)]">
-        <div class="text-xs text-[var(--muted)] mb-2">成交金额</div>
-        <div class="text-lg font-bold text-[var(--brand)]">{{ formatAmount(recentDeals) }}</div>
+      <div class="min-h-24 p-4">
+        <div class="mb-2 text-xs text-[var(--muted)]">产品预算</div>
+        <div class="text-lg font-bold text-[var(--text)]">{{ formatAmount(productBudget) }}</div>
       </div>
     </div>
   </div>

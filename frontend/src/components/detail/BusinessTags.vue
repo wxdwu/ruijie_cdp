@@ -29,11 +29,11 @@ const categoryList = normalize(props.productCategories)
 <template>
   <div class="rounded-xl border border-[var(--line)] bg-[var(--panel)] p-5">
     <div class="text-sm font-medium text-[var(--text)] mb-4">业务标签</div>
-    <div class="space-y-4">
+    <div class="divide-y divide-[var(--line)]">
       <!-- 需求类型 -->
-      <div>
-        <div class="text-xs text-[var(--muted)] mb-2">需求类型</div>
-        <div class="flex flex-wrap gap-2">
+      <div class="grid min-h-12 grid-cols-[96px_1fr] items-center gap-4 py-3 first:pt-0">
+        <div class="text-xs text-[var(--muted)]">需求类型</div>
+        <div class="flex flex-wrap justify-end gap-2 text-right">
           <span
             v-for="(item, idx) in demandList"
             :key="idx"
@@ -46,9 +46,9 @@ const categoryList = normalize(props.productCategories)
       </div>
 
       <!-- 业务场景 -->
-      <div>
-        <div class="text-xs text-[var(--muted)] mb-2">业务场景</div>
-        <div class="flex flex-wrap gap-2">
+      <div class="grid min-h-12 grid-cols-[96px_1fr] items-center gap-4 py-3">
+        <div class="text-xs text-[var(--muted)]">业务场景</div>
+        <div class="flex flex-wrap justify-end gap-2 text-right">
           <span
             v-for="(item, idx) in scenarioList"
             :key="idx"
@@ -61,9 +61,9 @@ const categoryList = normalize(props.productCategories)
       </div>
 
       <!-- 痛点 -->
-      <div>
-        <div class="text-xs text-[var(--muted)] mb-2">痛点</div>
-        <div class="flex flex-wrap gap-2">
+      <div class="grid min-h-12 grid-cols-[96px_1fr] items-center gap-4 py-3">
+        <div class="text-xs text-[var(--muted)]">痛点</div>
+        <div class="flex flex-wrap justify-end gap-2 text-right">
           <span
             v-for="(item, idx) in painList"
             :key="idx"
@@ -76,9 +76,9 @@ const categoryList = normalize(props.productCategories)
       </div>
 
       <!-- 产品品类 -->
-      <div>
-        <div class="text-xs text-[var(--muted)] mb-2">产品品类</div>
-        <div class="flex flex-wrap gap-2">
+      <div class="grid min-h-12 grid-cols-[96px_1fr] items-center gap-4 py-3 last:pb-0">
+        <div class="text-xs text-[var(--muted)]">产品品类</div>
+        <div class="flex flex-wrap justify-end gap-2 text-right">
           <span
             v-for="(item, idx) in categoryList"
             :key="idx"

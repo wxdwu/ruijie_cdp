@@ -37,20 +37,20 @@ function formatTime(val) {
 <template>
   <div class="rounded-xl border border-[var(--line)] bg-[var(--panel)] p-5">
     <div class="text-sm font-medium text-[var(--text)] mb-4">跟进状态</div>
-    <div class="space-y-4">
-      <div>
-        <div class="text-xs text-[var(--muted)] mb-1">最近互动</div>
-        <div class="text-sm text-[var(--text)]">{{ formatTime(lastInteraction) }}</div>
+    <div class="divide-y divide-[var(--line)]">
+      <div class="grid min-h-12 grid-cols-[110px_1fr] items-center gap-4 py-3 first:pt-0">
+        <div class="text-xs text-[var(--muted)]">最近互动</div>
+        <div class="text-right text-sm text-[var(--text)]">{{ formatTime(lastInteraction) }}</div>
       </div>
-      <div>
-        <div class="text-xs text-[var(--muted)] mb-1">累计/计划/有效</div>
-        <div class="text-sm font-semibold text-[var(--text)]">
+      <div class="grid min-h-12 grid-cols-[110px_1fr] items-center gap-4 py-3">
+        <div class="text-xs text-[var(--muted)]">累计/计划/有效</div>
+        <div class="text-right text-sm font-semibold text-[var(--text)]">
           {{ cumulativeCount ?? 0 }} / 0 / {{ effectiveCount ?? 0 }}
         </div>
       </div>
-      <div>
-        <div class="text-xs text-[var(--muted)] mb-2">偏好渠道</div>
-        <div class="flex flex-wrap gap-2">
+      <div class="grid min-h-12 grid-cols-[110px_1fr] items-center gap-4 py-3 last:pb-0">
+        <div class="text-xs text-[var(--muted)]">偏好渠道</div>
+        <div class="flex flex-wrap justify-end gap-2">
           <span
             v-for="(channel, idx) in formatChannels()"
             :key="idx"

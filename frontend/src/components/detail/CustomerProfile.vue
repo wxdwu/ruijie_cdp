@@ -10,7 +10,15 @@ defineProps({
 
 <template>
   <div class="rounded-xl border border-[var(--line)] bg-[var(--panel)] p-5">
-    <div class="text-sm font-medium text-[var(--text)] mb-4">客户档案</div>
+    <div class="mb-4 flex items-center justify-between gap-3">
+      <div class="text-sm font-medium text-[var(--text)]">客户档案</div>
+      <span
+        class="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium"
+        :class="isExistingCustomer ? 'bg-green-500/20 text-green-500' : 'bg-gray-500/20 text-[var(--muted)]'"
+      >
+        {{ isExistingCustomer ? '存量客户' : '新客户' }}
+      </span>
+    </div>
     <div class="grid grid-cols-2 gap-4">
       <div>
         <div class="text-xs text-[var(--muted)] mb-1">行业</div>
@@ -27,16 +35,6 @@ defineProps({
       <div>
         <div class="text-xs text-[var(--muted)] mb-1">电信地址</div>
         <div class="text-sm text-[var(--text)]">{{ telecomAddress }}</div>
-      </div>
-    </div>
-    <div class="mt-4 pt-4 border-t border-[var(--line)]">
-      <div class="flex items-center gap-2">
-        <span
-          class="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium"
-          :class="isExistingCustomer ? 'bg-green-500/20 text-green-400' : 'bg-gray-500/20 text-gray-400'"
-        >
-          {{ isExistingCustomer ? '存量客户' : '新客户' }}
-        </span>
       </div>
     </div>
   </div>

@@ -59,6 +59,8 @@ defineProps({
           :funnel-count="customer.funnel_opp_count || 0"
           :highest-stage="customer.forecast_type || '-'"
           :recent-deals="customer.won_amount"
+          :historical-deals="customer.history_win ?? customer.historical_won_amount"
+          :product-budget="customer.product_budget ?? customer.ProductBudget__c ?? 0"
         />
       </div>
     </div>
