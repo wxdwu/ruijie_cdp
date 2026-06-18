@@ -148,4 +148,13 @@ const getStageWidth = (index) => {
   flex-shrink: 0;
   font-variant-numeric: tabular-nums;
 }
+
+:global(html[data-theme="light"] .stage-name) {
+  color: var(--text);
+  text-shadow: none;
+}
+
+:global(html[data-theme="light"] .stage-count) {
+  color: var(--text);
+}
 </style>

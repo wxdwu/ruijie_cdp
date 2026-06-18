@@ -15,7 +15,7 @@ const isActive = (path) => computed(() => route.path.startsWith(path))
 
 <template>
   <aside
-    class="flex w-56 flex-col border-r border-[var(--line)] bg-[var(--panel)] backdrop-blur"
+    class="app-sidebar flex w-56 flex-col border-r border-[var(--line)] bg-[var(--panel)] backdrop-blur"
   >
     <div class="flex items-center gap-2 px-5 py-5">
       <span class="text-xl">🎯</span>
@@ -31,7 +31,7 @@ const isActive = (path) => computed(() => route.path.startsWith(path))
         :class="
           isActive(item.to).value
             ? 'bg-[var(--brand)]/15 text-[var(--brand)]'
-            : 'text-[var(--muted)] hover:bg-white/5 hover:text-[var(--text)]'
+            : 'text-[var(--muted)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]'
         "
       >
         <span>{{ item.icon }}</span>

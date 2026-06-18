@@ -1,8 +1,19 @@
 <script setup>
 import { useRoute } from 'vue-router'
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 
 const route = useRoute()
+const theme = ref(document.documentElement.dataset.theme === 'light' ? 'light' : 'dark')
+
+function applyTheme(value) {
+  theme.value = value
+  document.documentElement.dataset.theme = value
+  localStorage.setItem('cdp-theme', value)
+}
+
+function toggleTheme() {
+  applyTheme(theme.value === 'dark' ? 'light' : 'dark')
+}
 
 const titleMap = {
   '/customers': '客户管理',
@@ -26,7 +37,15 @@ const pageTitle = computed(() => {
     <h2 class="text-lg font-semibold">{{ pageTitle }}</h2>
     <div class="flex items-center gap-3">
       <button
-        class="rounded-lg border border-[var(--line)] px-3 py-1.5 text-sm text-[var(--muted)] transition-colors hover:bg-white/5 hover:text-[var(--text)]"
+        type="button"
+        class="theme-toggle rounded-lg border border-[var(--line)] bg-[var(--surface)] px-3 py-1.5 text-sm text-[var(--text)] transition-colors hover:bg-[var(--surface-hover)]"
+        :aria-label="theme === 'dark' ? '切换浅色主题' : '切换深色主题'"
+        @click="toggleTheme"
+      >
+        {{ theme === 'dark' ? '切换浅色主题' : '切换深色主题' }}
+      </button>
+      <button
+        class="rounded-lg border border-[var(--line)] bg-[var(--surface)] px-3 py-1.5 text-sm text-[var(--muted)] transition-colors hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
       >
         🔔 通知
       </button>

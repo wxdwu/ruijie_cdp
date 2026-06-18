@@ -1,5 +1,5 @@
 <script setup>
-import { computed } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { use } from 'echarts/core'
 import { BarChart, RadarChart } from 'echarts/charts'
 import { GridComponent, LegendComponent, RadarComponent, TooltipComponent } from 'echarts/components'
@@ -15,14 +15,34 @@ const props = defineProps({
   height: { type: Number, default: 280 },
 })
 
-const axisColor = 'rgba(159,176,208,.18)'
-const labelColor = '#9aa8c2'
-const textColor = '#edf2fb'
+const isLightTheme = ref(document.documentElement.dataset.theme === 'light')
+let themeObserver
+
+onMounted(() => {
+  themeObserver = new MutationObserver(() => {
+    isLightTheme.value = document.documentElement.dataset.theme === 'light'
+  })
+  themeObserver.observe(document.documentElement, {
+    attributes: true,
+    attributeFilter: ['data-theme'],
+  })
+})
+
+onUnmounted(() => {
+  themeObserver?.disconnect()
+})
+
 const blue = '#65b3ff'
 const gray = '#64748b'
 const green = '#34d399'
 
 const option = computed(() => {
+  const axisColor = isLightTheme.value ? 'rgba(79,101,130,.28)' : 'rgba(159,176,208,.18)'
+  const gridColor = isLightTheme.value ? 'rgba(79,101,130,.14)' : 'rgba(159,176,208,.08)'
+  const labelColor = isLightTheme.value ? '#2f4054' : '#9aa8c2'
+  const textColor = isLightTheme.value ? '#122033' : '#edf2fb'
+  const barBackground = isLightTheme.value ? 'rgba(79,101,130,.08)' : 'rgba(255,255,255,.045)'
+
   if (props.type === 'radar') {
     return {
       animation: false,
@@ -71,7 +91,7 @@ const option = computed(() => {
         type: 'value',
         min: 0,
         max: 1,
-        splitLine: { lineStyle: { color: 'rgba(159,176,208,.08)' } },
+        splitLine: { lineStyle: { color: gridColor } },
         axisLabel: { color: labelColor, fontSize: 9, formatter: `0${props.unit}` },
       },
       yAxis: {
@@ -102,7 +122,7 @@ const option = computed(() => {
       type: 'value',
       min: 0,
       max: 1,
-      splitLine: { lineStyle: { color: 'rgba(159,176,208,.08)' } },
+      splitLine: { lineStyle: { color: gridColor } },
       axisLabel: { color: labelColor, fontSize: 9, formatter: `0${props.unit}` },
     },
     yAxis: {
@@ -121,7 +141,7 @@ const option = computed(() => {
         itemStyle: { color: index % 2 ? gray : blue },
       })),
       showBackground: true,
-      backgroundStyle: { color: 'rgba(255,255,255,.045)' },
+      backgroundStyle: { color: barBackground },
       label: {
         show: true,
         position: 'right',
