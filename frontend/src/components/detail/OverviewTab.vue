@@ -12,6 +12,7 @@ defineProps({
   interactions: { type: Array, default: () => [] },
   aiInsight: { type: Object, default: () => ({}) },
   opportunities: { type: Array, default: () => [] },
+  customerStatistics: { type: Object, default: () => ({}) },
 })
 </script>
 
@@ -41,6 +42,8 @@ defineProps({
           class="h-full"
           :last-interaction="customer.last_interaction_time"
           :preferred-channels="customer.top_channels"
+          :cumulative-count="customerStatistics.interaction_count_total"
+          :effective-count="customerStatistics.interaction_count_total"
         />
       </div>
       <div class="grid grid-cols-1 gap-6 xl:grid-cols-2">

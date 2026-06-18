@@ -22,6 +22,9 @@ export const customerApi = {
   opportunities: (id) => http.get(`/customers/${id}/opportunities`),
   aiInsight: (id) => http.get(`/customers/${id}/ai-insight`),
   priorityContact: (id) => http.get(`/customers/${id}/priority-contact`),
+  statisticsByName: (customerName) => http.get('/customers/statistics/by-name', {
+    params: { customer_name: customerName },
+  }),
   filterOptions: () => http.get('/customers/filter-options'),
   export: (params) => http.get('/customers/export', { params, responseType: 'blob' }),
 }

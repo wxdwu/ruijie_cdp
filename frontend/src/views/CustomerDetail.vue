@@ -20,6 +20,7 @@ const interactions = ref([])
 const contacts = ref([])
 const aiInsight = ref({})
 const opportunities = ref([])
+const customerStatistics = ref({})
 const priorityRecommendations = ref([])
 const recommendSource = ref('rule')
 
@@ -66,6 +67,16 @@ async function fetchAllData() {
       recommendSource.value = priorityRes.source || 'rule'
     }).catch(error => console.warn('priority contact request failed', error))
 
+    if (customer.value.customer_name) {
+      customerApi.statisticsByName(customer.value.customer_name).then(statisticsRes => {
+        customerStatistics.value = statisticsRes?.status === 'success'
+          ? (statisticsRes.data || {})
+          : {}
+      }).catch(error => {
+        customerStatistics.value = {}
+        console.warn('customer statistics request failed', error)
+      })
+    }
   } catch (e) {
     console.error('fetchAllData', e)
   } finally {
@@ -137,6 +148,7 @@ onMounted(() => {
         :interactions="interactions"
         :ai-insight="aiInsight"
         :opportunities="opportunities"
+        :customer-statistics="customerStatistics"
       />
 
       <ContactsTab

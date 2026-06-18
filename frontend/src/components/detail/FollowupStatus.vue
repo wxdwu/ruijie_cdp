@@ -2,6 +2,8 @@
 const props = defineProps({
   lastInteraction: { type: [String, Date, Object], default: '-' },
   preferredChannels: { type: [String, Array], default: () => [] },
+  cumulativeCount: { type: [Number, String], default: 0 },
+  effectiveCount: { type: [Number, String], default: 0 },
 })
 
 const channelMap = {
@@ -39,6 +41,12 @@ function formatTime(val) {
       <div>
         <div class="text-xs text-[var(--muted)] mb-1">最近互动</div>
         <div class="text-sm text-[var(--text)]">{{ formatTime(lastInteraction) }}</div>
+      </div>
+      <div>
+        <div class="text-xs text-[var(--muted)] mb-1">累计/计划/有效</div>
+        <div class="text-sm font-semibold text-[var(--text)]">
+          {{ cumulativeCount ?? 0 }} / 0 / {{ effectiveCount ?? 0 }}
+        </div>
       </div>
       <div>
         <div class="text-xs text-[var(--muted)] mb-2">偏好渠道</div>
