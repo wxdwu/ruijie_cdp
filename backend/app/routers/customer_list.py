@@ -148,6 +148,127 @@ def get_filter_options(db: Session = Depends(get_db)) -> Dict[str, List[str]]:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Statistics endpoint
+# ─────────────────────────────────────────────────────────────────────────────
+
+# 获取所有公司的联系人总数和互动总数
+@router.get("/statistics")
+def get_customer_statistics(
+    db: Session = Depends(get_db),
+) -> Dict[str, Any]:
+    """
+    获取每个客户的联系人总数和互动数量统计.
+
+    返回所有客户的统计信息，包括：
+    - customer_name: 客户名称
+    - contact_count: 联系人总数
+    - interaction_count_total: 总互动数量
+    - interaction_count_30d: 近30天互动数量
+    - intent_level: 意向等级
+    - purchase_stage: 采购阶段
+
+    同时返回汇总统计信息（total_contacts, total_interactions）
+    """
+    # 查询 SQL - 从聚合表获取统计数据
+    sql = text("""
+        SELECT
+            customer_name,
+            contact_count,
+            interaction_count_total,
+            interaction_count_30d,
+            intent_level,
+            purchase_stage
+        FROM dws_customer_360
+        ORDER BY interaction_count_total DESC
+    """)
+
+    # 执行查询
+    rows = db.execute(sql).mappings().all()
+    items = [dict(r) for r in rows]
+
+    # 计算汇总统计
+    total_contacts = sum(item.get("contact_count", 0) or 0 for item in items)
+    total_interactions = sum(item.get("interaction_count_total", 0) or 0 for item in items)
+
+    return {
+        "items": items,
+        "total": len(items),
+        "summary": {
+            "total_contacts": total_contacts,
+            "total_interactions": total_interactions,
+        },
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Customer statistics by name endpoint
+# ─────────────────────────────────────────────────────────────────────────────
+# 根据某个公司名称获取该公司的联系人总数和互动总数
+@router.get("/statistics/by-name")
+def get_customer_statistics_by_name(
+    customer_name: str = Query(..., description="客户名称（支持模糊匹配）"),
+    db: Session = Depends(get_db),
+) -> Dict[str, Any]:
+    """
+    根据客户名称查询联系人和互动统计数据.
+
+    通过客户名称（支持模糊匹配）查询该客户的：
+    - contact_count: 联系人总数
+    - interaction_count_total: 总互动数量
+
+    返回格式：
+    {
+        "status": "success",
+        "timestamp": "2026-06-18T10:30:00",
+        "data": {
+            "customer_name": "山东魏桥创业集团有限公司",
+            "contact_count": 10,
+            "interaction_count_total": 1092
+        }
+    }
+    """
+    # 查询 SQL - 支持模糊匹配
+    sql = text("""
+        SELECT
+            customer_name,
+            contact_count,
+            interaction_count_total
+        FROM dws_customer_360
+        WHERE customer_name LIKE :customer_name
+        LIMIT 1
+    """)
+
+    # 执行查询（支持模糊匹配）
+    params = {"customer_name": f"%{customer_name}%"}
+    rows = db.execute(sql, params).mappings().all()
+
+    # 构建响应
+    from datetime import datetime
+    timestamp = datetime.now().isoformat()
+
+    if not rows:
+        return {
+            "status": "not_found",
+            "timestamp": timestamp,
+            "data": None,
+            "message": f"未找到客户: {customer_name}",
+        }
+
+    # 获取第一条匹配记录
+    result = dict(rows[0])
+
+    return {
+        "status": "success",
+        "timestamp": timestamp,
+        "data": {
+            "customer_name": result.get("customer_name"),
+            "contact_count": result.get("contact_count", 0),
+            "interaction_count_total": result.get("interaction_count_total", 0),
+        },
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Export endpoint
 # ─────────────────────────────────────────────────────────────────────────────
 
