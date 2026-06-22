@@ -10,6 +10,7 @@ const owner = ref('')
 const specialProject = ref(null)
 const channel = ref('')
 const interaction_min = ref(null)
+const interaction_period = ref(30) // 默认30天
 
 const industries = ref([])
 const owners = ref([])
@@ -21,6 +22,15 @@ const channels = [
   { value: 'web', label: '官网' },
   { value: 'event', label: '直播/活动' },
   { value: 'wechat', label: '微信' },
+]
+
+const periodOptions = [
+  { value: 30, label: '近30天' },
+  { value: 60, label: '近60天' },
+  { value: 90, label: '近90天' },
+  { value: 180, label: '近180天' },
+  { value: 365, label: '近1年' },
+  { value: 1095, label: '近3年' },
 ]
 
 async function fetchFilterOptions() {
@@ -39,6 +49,7 @@ function handleApply() {
     industry: industry.value,
     owner: owner.value,
     interaction_min: interaction_min.value,
+    interaction_period: interaction_period.value, // 新增：时间范围
     channel: channel.value,
   })
 }
@@ -96,16 +107,24 @@ onMounted(() => {
         </select>
       </div>
 
-      <!-- 近30天互动 -->
+      <!-- 互动次数筛选 -->
       <div class="flex flex-col gap-1.5">
-        <label class="text-xs font-medium text-[var(--muted)]">近30天互动 ≥</label>
-        <input
-          v-model.number="interaction_min"
-          type="number"
-          min="0"
-          placeholder="0"
-          class="rounded-lg border border-[var(--line)] bg-[var(--bg1)] px-3 py-2 text-sm text-[var(--text)] placeholder:text-[var(--muted)] focus:border-[var(--brand)] focus:outline-none"
-        />
+        <label class="text-xs font-medium text-[var(--muted)]">互动次数 ≥</label>
+        <div class="flex gap-1">
+          <select
+            v-model.number="interaction_period"
+            class="rounded-lg border border-[var(--line)] bg-[var(--bg1)] px-2 py-2 text-xs text-[var(--text)] focus:border-[var(--brand)] focus:outline-none"
+          >
+            <option v-for="p in periodOptions" :key="p.value" :value="p.value">{{ p.label }}</option>
+          </select>
+          <input
+            v-model.number="interaction_min"
+            type="number"
+            min="0"
+            placeholder="0"
+            class="flex-1 rounded-lg border border-[var(--line)] bg-[var(--bg1)] px-3 py-2 text-sm text-[var(--text)] placeholder:text-[var(--muted)] focus:border-[var(--brand)] focus:outline-none"
+          />
+        </div>
       </div>
 
       <!-- 互动方式 -->

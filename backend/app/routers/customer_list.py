@@ -35,7 +35,8 @@ def list_customers(
     owner: Optional[str] = Query(None, description="Filter by owner_name"),
     stage: Optional[str] = Query(None, description="Filter by purchase_stage"),
     intent_level: Optional[str] = Query(None, description="Filter by intent_level"),
-    interaction_min: Optional[int] = Query(None, description="Minimum interaction count (30d)"),
+    interaction_min: Optional[int] = Query(None, description="Minimum interaction count"),
+    interaction_period: int = Query(30, description="Interaction period in days (30/60/90/180/365/1095)"),
     channel: Optional[str] = Query(None, description="Filter by last_interaction_channel"),
     sort: Optional[str] = Query(None, description="Sort field and direction, e.g. 'intent_score desc'"),
     page: int = Query(1, ge=1, description="Page number"),
@@ -61,8 +62,18 @@ def list_customers(
         where_parts.append("intent_level = :intent_level")
         params["intent_level"] = intent_level
     if interaction_min is not None:
-        where_parts.append("interaction_count_30d >= :interaction_min")
+        # 使用子查询动态计算指定时间范围内的互动次数
+        where_parts.append("""
+            customer_name IN (
+                SELECT customer_name
+                FROM dws_interaction_detail
+                WHERE event_time >= DATE_SUB(NOW(), INTERVAL :period DAY)
+                GROUP BY customer_name
+                HAVING COUNT(*) >= :interaction_min
+            )
+        """)
         params["interaction_min"] = interaction_min
+        params["period"] = interaction_period
     if channel:
         where_parts.append("last_interaction_channel = :channel")
         params["channel"] = channel
@@ -109,6 +120,7 @@ def list_customers(
         "stage": stage,
         "intent_level": intent_level,
         "interaction_min": interaction_min,
+        "interaction_period": interaction_period,
         "channel": channel,
         "sort": sort,
     }
@@ -280,7 +292,8 @@ def export_customers(
     owner: Optional[str] = Query(None, description="Filter by owner_name"),
     stage: Optional[str] = Query(None, description="Filter by purchase_stage"),
     intent_level: Optional[str] = Query(None, description="Filter by intent_level"),
-    interaction_min: Optional[int] = Query(None, description="Minimum interaction count (30d)"),
+    interaction_min: Optional[int] = Query(None, description="Minimum interaction count"),
+    interaction_period: int = Query(30, description="Interaction period in days (30/60/90/180/365/1095)"),
     channel: Optional[str] = Query(None, description="Filter by last_interaction_channel"),
     sort: Optional[str] = Query(None, description="Sort field and direction, e.g. 'intent_score desc'"),
 ) -> Response:
@@ -308,6 +321,7 @@ def export_customers(
         stage=stage,
         intent_level=intent_level,
         interaction_min=interaction_min,
+        interaction_period=interaction_period,
         channel=channel,
         sort_by=sort_by,
         sort_order=sort_order,

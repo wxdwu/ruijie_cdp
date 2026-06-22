@@ -44,6 +44,7 @@ def export_customers_excel(
     stage: Optional[str] = None,
     intent_level: Optional[str] = None,
     interaction_min: Optional[int] = None,
+    interaction_period: int = 30,
     channel: Optional[str] = None,
     sort_by: str = "intent_score",
     sort_order: str = "DESC",
@@ -68,8 +69,18 @@ def export_customers_excel(
         where_parts.append("intent_level = :intent_level")
         params["intent_level"] = intent_level
     if interaction_min is not None:
-        where_parts.append("interaction_count_30d >= :imin")
-        params["imin"] = interaction_min
+        # 使用子查询动态计算指定时间范围内的互动次数
+        where_parts.append("""
+            customer_name IN (
+                SELECT customer_name
+                FROM dws_interaction_detail
+                WHERE event_time >= DATE_SUB(NOW(), INTERVAL :period DAY)
+                GROUP BY customer_name
+                HAVING COUNT(*) >= :interaction_min
+            )
+        """)
+        params["interaction_min"] = interaction_min
+        params["period"] = interaction_period
     if channel:
         where_parts.append("last_interaction_channel = :channel")
         params["channel"] = channel

@@ -15,6 +15,7 @@ export const useCustomerStore = defineStore('customer', () => {
     stage: '',
     intent_level: '',
     interaction_min: null,
+    interaction_period: 30, // 默认30天
     channel: '',
     sort: '',
     page: 1,
