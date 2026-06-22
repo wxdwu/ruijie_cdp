@@ -147,6 +147,7 @@ onMounted(() => {
         :customer="customer"
         :interactions="interactions"
         :ai-insight="aiInsight"
+        :priority-recommendations="priorityRecommendations"
         :opportunities="opportunities"
         :customer-statistics="customerStatistics"
       />
