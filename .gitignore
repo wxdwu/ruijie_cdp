@@ -31,3 +31,7 @@ ENV/
 Thumbs.db
 
 .obsidian/
+.workbuddy/
+
+frontend-api-integration-guide.html
+architecture-analysis.html
