@@ -6,12 +6,12 @@
         <p class="page-subtitle">实时监控营销活动效果，洞察客户转化数据</p>
       </div>
       <div class="header-actions">
-        <select class="date-select">
-          <option>全部</option>
-          <option>最近 7 天</option>
-          <option>最近 30 天</option>
-          <option>最近 90 天</option>
-          <option>本年度</option>
+        <select v-model="selectedPeriod" class="date-select">
+          <option value="all">全部</option>
+          <option value="7d">最近 7 天</option>
+          <option value="30d">最近 30 天</option>
+          <option value="90d">最近 90 天</option>
+          <option value="year">本年度</option>
         </select>
         <button class="refresh-btn" @click="fetchData">
           <i class="fas fa-sync-alt"></i>
@@ -59,6 +59,7 @@ const channelData = ref({ channels: [], total: 0 })
 const roleData = ref({ roles: [], total_customers: 0 })
 const contentData = ref({ data: [] })
 const customerData = ref({ flat: [] })
+const selectedPeriod = ref('all')
 
 const API_BASE = '/api/campaign'
 
@@ -77,7 +78,9 @@ const fetchData = async () => {
     }
 
     // Fetch Channel Distribution
-    const channelResponse = await fetch(`${API_BASE}/channel-distribution`)
+    const channelResponse = await fetch(
+      `${API_BASE}/channel-distribution?period=${encodeURIComponent(selectedPeriod.value)}`
+    )
     if (channelResponse.ok) {
       channelData.value = await channelResponse.json()
     }
@@ -89,7 +92,9 @@ const fetchData = async () => {
     }
 
     // Fetch Content Effect
-    const contentResponse = await fetch(`${API_BASE}/content-effect`)
+    const contentResponse = await fetch(
+      `${API_BASE}/content-effect?period=${encodeURIComponent(selectedPeriod.value)}`
+    )
     if (contentResponse.ok) {
       contentData.value = await contentResponse.json()
     }
