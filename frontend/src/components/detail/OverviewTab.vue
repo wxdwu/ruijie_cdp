@@ -11,6 +11,7 @@ defineProps({
   customer: { type: Object, default: () => ({}) },
   interactions: { type: Array, default: () => [] },
   aiInsight: { type: Object, default: () => ({}) },
+  priorityRecommendations: { type: Array, default: () => [] },
   opportunities: { type: Array, default: () => [] },
   customerStatistics: { type: Object, default: () => ({}) },
 })
@@ -72,6 +73,7 @@ defineProps({
         class="h-full"
         :business-conclusion="aiInsight.business_conclusion"
         :top-contacts="aiInsight.contact_insights"
+        :priority-contacts="priorityRecommendations"
         :evidence-chain="aiInsight.evidence"
       />
     </div>
