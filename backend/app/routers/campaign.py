@@ -8,9 +8,10 @@ channel distribution, role coverage, content effect, and customer follow-up.
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List
+from datetime import datetime, timedelta
+from typing import Any, Dict, List, Literal
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
@@ -80,16 +81,8 @@ def get_funnel_distribution(db: Session = Depends(get_db)) -> Dict[str, Any]:
         "FROM dws_customer_360 "
         "WHERE purchase_stage IS NOT NULL AND purchase_stage != '' "
         "GROUP BY purchase_stage "
-        "ORDER BY CASE purchase_stage "
-        "    WHEN 'Awareness' THEN 1 "
-        "    WHEN 'Consideration' THEN 2 "
-        "    WHEN 'Decision' THEN 3 "
-        "    WHEN 'Proposal' THEN 4 "
-        "    WHEN 'Negotiation' THEN 5 "
-        "    WHEN 'Closed Won' THEN 6 "
-        "    WHEN 'Closed Lost' THEN 7 "
-        "    ELSE 8 "
-        "END"
+        "ORDER BY count DESC, "
+        "CAST(SUBSTRING_INDEX(SUBSTRING_INDEX(purchase_stage, '：', 1), '阶段', -1) AS UNSIGNED) ASC"
     )).fetchall()
 
     stages = [
@@ -112,16 +105,49 @@ def get_funnel_distribution(db: Session = Depends(get_db)) -> Dict[str, Any]:
 # ─────────────────────────────────────────────────────────────────────────────
 
 @router.get("/channel-distribution")
-def get_channel_distribution(db: Session = Depends(get_db)) -> Dict[str, Any]:
+def get_channel_distribution(
+    period: Literal["all", "7d", "30d", "90d", "year"] = Query(
+        "all",
+        description="Time range based on the current request time",
+    ),
+    db: Session = Depends(get_db),
+) -> Dict[str, Any]:
     """Get channel distribution from dws_interaction_detail."""
 
-    result = db.execute(text(
-        "SELECT channel, COUNT(*) as count "
-        "FROM dws_interaction_detail "
-        "WHERE channel IS NOT NULL AND channel != '' "
-        "GROUP BY channel "
-        "ORDER BY count DESC"
-    )).fetchall()
+    end_time = datetime.now()
+
+    start_time: datetime | None = None
+    if period == "7d":
+        start_time = end_time - timedelta(days=7)
+    elif period == "30d":
+        start_time = end_time - timedelta(days=30)
+    elif period == "90d":
+        start_time = end_time - timedelta(days=90)
+    elif period == "year":
+        start_time = datetime(end_time.year, 1, 1)
+
+    where_parts = ["channel IS NOT NULL", "channel != ''"]
+    params: Dict[str, Any] = {}
+    if period != "all":
+        where_parts.extend([
+            "event_time >= :start_time",
+            "event_time <= :end_time",
+        ])
+        params.update({
+            "start_time": start_time,
+            "end_time": end_time,
+        })
+
+    result = db.execute(
+        text(
+            "SELECT channel, COUNT(*) as count "
+            "FROM dws_interaction_detail "
+            f"WHERE {' AND '.join(where_parts)} "
+            "GROUP BY channel "
+            "ORDER BY count DESC"
+        ),
+        params,
+    ).fetchall()
 
     channels = [
         {"channel": row.channel, "count": row.count}
@@ -134,7 +160,10 @@ def get_channel_distribution(db: Session = Depends(get_db)) -> Dict[str, Any]:
 
     return {
         "channels": channels,
-        "total": total
+        "total": total,
+        "period": period,
+        "start_time": start_time.isoformat() if start_time else None,
+        "end_time": end_time.isoformat() if end_time else None,
     }
 
 
@@ -182,7 +211,13 @@ def get_role_coverage(db: Session = Depends(get_db)) -> Dict[str, Any]:
 # ─────────────────────────────────────────────────────────────────────────────
 
 @router.get("/content-effect")
-def get_content_effect(db: Session = Depends(get_db)) -> Dict[str, Any]:
+def get_content_effect(
+    period: Literal["all", "7d", "30d", "90d", "year"] = Query(
+        "all",
+        description="Time range based on the current request time",
+    ),
+    db: Session = Depends(get_db),
+) -> Dict[str, Any]:
     """Get content interaction effect table."""
 
     # 按 behavior_type 分类统计各渠道的内容互动效果，而不是不存在的interaction_type
@@ -193,19 +228,45 @@ def get_content_effect(db: Session = Depends(get_db)) -> Dict[str, Any]:
     
     # TODO: 后续根据业务精细化分类？？
     
-    result = db.execute(text(
-        "SELECT "
-        "    channel, "
-        "    COUNT(*) as total_interactions, "
-        "    COUNT(DISTINCT customer_name) as unique_customers, "
-        "    COUNT(CASE WHEN behavior_type != '打开邮件' THEN 1 END) as clicks, "
-        "    COUNT(CASE WHEN behavior_type = '打开邮件' THEN 1 END) as opens, "
-        "    COUNT(CASE WHEN behavior_type IN ('下载资料', 'click_download') THEN 1 END) as downloads "
-        "FROM dws_interaction_detail "
-        "WHERE channel IS NOT NULL AND channel != '' "
-        "GROUP BY channel "
-        "ORDER BY total_interactions DESC"
-    )).fetchall()
+    end_time = datetime.now()
+    start_time: datetime | None = None
+    if period == "7d":
+        start_time = end_time - timedelta(days=7)
+    elif period == "30d":
+        start_time = end_time - timedelta(days=30)
+    elif period == "90d":
+        start_time = end_time - timedelta(days=90)
+    elif period == "year":
+        start_time = datetime(end_time.year, 1, 1)
+
+    where_parts = ["channel IS NOT NULL", "channel != ''"]
+    params: Dict[str, Any] = {}
+    if period != "all":
+        where_parts.extend([
+            "event_time >= :start_time",
+            "event_time <= :end_time",
+        ])
+        params.update({
+            "start_time": start_time,
+            "end_time": end_time,
+        })
+
+    result = db.execute(
+        text(
+            "SELECT "
+            "    channel, "
+            "    COUNT(*) as total_interactions, "
+            "    COUNT(DISTINCT customer_name) as unique_customers, "
+            "    COUNT(CASE WHEN behavior_type != '打开邮件' THEN 1 END) as clicks, "
+            "    COUNT(CASE WHEN behavior_type = '打开邮件' THEN 1 END) as opens, "
+            "    COUNT(CASE WHEN behavior_type IN ('下载资料', 'click_download') THEN 1 END) as downloads "
+            "FROM dws_interaction_detail "
+            f"WHERE {' AND '.join(where_parts)} "
+            "GROUP BY channel "
+            "ORDER BY total_interactions DESC"
+        ),
+        params,
+    ).fetchall()
 
     content_data = [
         {
@@ -221,7 +282,10 @@ def get_content_effect(db: Session = Depends(get_db)) -> Dict[str, Any]:
     ]
 
     return {
-        "data": content_data
+        "data": content_data,
+        "period": period,
+        "start_time": start_time.isoformat() if start_time else None,
+        "end_time": end_time.isoformat(),
     }
 
 
