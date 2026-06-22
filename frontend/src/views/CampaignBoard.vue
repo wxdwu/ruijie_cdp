@@ -7,6 +7,7 @@
       </div>
       <div class="header-actions">
         <select class="date-select">
+          <option>全部</option>
           <option>最近 7 天</option>
           <option>最近 30 天</option>
           <option>最近 90 天</option>
