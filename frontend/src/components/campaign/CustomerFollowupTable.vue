@@ -30,6 +30,10 @@
             placeholder="输入客户名称"
           />
         </label>
+
+        <button class="apply-filter-btn" type="button" @click="emitFilters">
+          应用筛选
+        </button>
       </div>
     </div>
     <div class="table-container">
@@ -53,7 +57,12 @@
           </tr>
         </thead>
         <tbody>
-          <tr v-for="customer in filteredCustomers" :key="customer.customer_name">
+          <tr
+            v-for="customer in displayedCustomers"
+            :key="customer.customer_name"
+            class="customer-row"
+            @click="openCustomer(customer)"
+          >
             <td>
               <div class="customer-name">
                 <div class="customer-avatar">
@@ -88,11 +97,16 @@
                 <span v-if="getChannel(customer)" class="channel-tag">
                   {{ getChannel(customer) }}
                 </span>
-                <span class="followup-basis">{{ getFollowupBasis(customer) }}</span>
+                <span v-if="getFollowupBasis(customer)" class="followup-basis">
+                  {{ getFollowupBasis(customer) }}
+                </span>
+                <span v-if="!getChannel(customer) && !getFollowupBasis(customer)" class="followup-basis">
+                  —
+                </span>
               </div>
             </td>
           </tr>
-          <tr v-if="filteredCustomers.length === 0">
+          <tr v-if="displayedCustomers.length === 0">
             <td class="empty-result" colspan="6">暂无符合条件的客户</td>
           </tr>
         </tbody>
@@ -103,6 +117,9 @@
 
 <script setup>
 import { ref, computed } from 'vue'
+import { useRouter } from 'vue-router'
+
+const router = useRouter()
 
 const props = defineProps({
   data: {
@@ -110,13 +127,15 @@ const props = defineProps({
     default: () => ({ flat: [] })
   }
 })
+const emit = defineEmits(['filters-change'])
 
 const currentStage = ref('全部')
 const currentOwner = ref('全部')
 const searchKeyword = ref('')
 
 const stages = computed(() => {
-  const uniqueStages = [...new Set(props.data.flat.map(c => c.stage))]
+  const sourceStages = props.data.filter_options?.stages || props.data.flat.map(c => c.stage)
+  const uniqueStages = [...new Set(sourceStages)]
     .filter(Boolean)
     .sort((stageA, stageB) => {
       const numberA = Number(stageA.match(/阶段\s*(\d+)/)?.[1])
@@ -133,29 +152,26 @@ const stages = computed(() => {
 })
 
 const owners = computed(() => {
-  const uniqueOwners = props.data.flat
-    .map(customer => customer.owner_name || customer.owner)
-    .filter(Boolean)
+  const sourceOwners = props.data.filter_options?.owners
+    || props.data.flat.map(customer => customer.owner_name || customer.owner)
+  const uniqueOwners = sourceOwners.filter(Boolean)
   return ['全部', ...new Set(uniqueOwners)]
 })
 
-const filteredCustomers = computed(() => {
-  const keyword = searchKeyword.value.toLowerCase()
+const displayedCustomers = computed(() => props.data.flat || [])
 
-  return props.data.flat
-    .filter(customer => (
-      currentStage.value === '全部' || customer.stage === currentStage.value
-    ))
-    .filter(customer => {
-      const owner = customer.owner_name || customer.owner
-      return currentOwner.value === '全部' || owner === currentOwner.value
-    })
-    .filter(customer => {
-      if (!keyword) return true
-      return (customer.customer_name || '').toLowerCase().includes(keyword)
-    })
-    .slice(0, 20)
-})
+const emitFilters = () => {
+  emit('filters-change', {
+    stage: currentStage.value === '全部' ? '' : currentStage.value,
+    owner: currentOwner.value === '全部' ? '' : currentOwner.value,
+    keyword: searchKeyword.value,
+  })
+}
+
+const openCustomer = (customer) => {
+  if (customer.id == null) return
+  router.push(`/customers/${customer.id}`)
+}
 
 const getStageClass = (stage) => {
   const stageMap = {
@@ -207,7 +223,7 @@ const getFollowupBasis = (customer) => (
   || customer.follow_up_basis
   || customer.last_interaction_content
   || customer.behavior_type
-  || '—'
+  || ''
 )
 </script>
 
@@ -236,7 +252,8 @@ const getFollowupBasis = (customer) => (
 
 .filter-grid {
   display: grid;
-  grid-template-columns: minmax(160px, 1fr) minmax(160px, 1fr) minmax(220px, 1.3fr);
+  grid-template-columns: minmax(160px, 1fr) minmax(160px, 1fr) minmax(220px, 1.3fr) auto;
+  align-items: end;
   gap: 14px;
 }
 
@@ -281,6 +298,28 @@ select.filter-control {
 
 .filter-control::placeholder {
   color: var(--text-muted);
+}
+
+.apply-filter-btn {
+  height: 38px;
+  padding: 0 20px;
+  border: 1px solid var(--accent);
+  border-radius: 10px;
+  background: var(--accent);
+  color: white;
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: filter 0.2s ease, transform 0.2s ease;
+}
+
+.apply-filter-btn:hover {
+  filter: brightness(1.08);
+}
+
+.apply-filter-btn:active {
+  transform: translateY(1px);
 }
 
 .table-container {
@@ -339,6 +378,11 @@ td {
 
 tr:hover {
   background: var(--bg-hover);
+}
+
+.customer-row {
+  cursor: pointer;
+  transition: background-color 0.2s ease;
 }
 
 .empty-result {
@@ -499,6 +543,10 @@ tr:hover {
 @media (max-width: 760px) {
   .filter-grid {
     grid-template-columns: 1fr;
+  }
+
+  .apply-filter-btn {
+    width: 100%;
   }
 }
 </style>

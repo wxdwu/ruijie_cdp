@@ -39,7 +39,7 @@ export const campaignApi = {
   contentEffect: (period = 'all') => http.get('/campaign/content-effect', {
     params: { period },
   }),
-  customersByStage: () => http.get('/campaign/customers-by-stage'),
+  customersByStage: (params) => http.get('/campaign/customers-by-stage', { params }),
 }
 
 export const aiApi = {

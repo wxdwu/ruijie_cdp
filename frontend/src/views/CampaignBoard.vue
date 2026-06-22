@@ -40,7 +40,7 @@
     <ContentEffectTable :data="contentData" />
 
     <!-- Customer Follow-up Table -->
-    <CustomerFollowupTable :data="customerData" />
+    <CustomerFollowupTable :data="customerData" @filters-change="handleCustomerFilters" />
   </div>
 </template>
 
@@ -60,8 +60,26 @@ const roleData = ref({ roles: [], total_customers: 0 })
 const contentData = ref({ data: [] })
 const customerData = ref({ flat: [] })
 const selectedPeriod = ref('all')
+const customerFilters = ref({})
 
 const API_BASE = '/api/campaign'
+
+const fetchCustomerData = async () => {
+  const params = new URLSearchParams({ limit: '20' })
+  Object.entries(customerFilters.value).forEach(([key, value]) => {
+    if (value) params.set(key, value)
+  })
+
+  const response = await fetch(`${API_BASE}/customers-by-stage?${params}`)
+  if (response.ok) {
+    customerData.value = await response.json()
+  }
+}
+
+const handleCustomerFilters = async (filters) => {
+  customerFilters.value = filters
+  await fetchCustomerData()
+}
 
 const fetchData = async () => {
   try {
@@ -100,10 +118,7 @@ const fetchData = async () => {
     }
 
     // Fetch Customers by Stage
-    const customerResponse = await fetch(`${API_BASE}/customers-by-stage`)
-    if (customerResponse.ok) {
-      customerData.value = await customerResponse.json()
-    }
+    await fetchCustomerData()
   } catch (error) {
     console.error('Failed to fetch campaign data:', error)
     // Use mock data if API fails

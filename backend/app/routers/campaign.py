@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Literal
+from typing import Any, Dict, List, Literal, Optional
 
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import text
@@ -294,35 +294,67 @@ def get_content_effect(
 # ─────────────────────────────────────────────────────────────────────────────
 
 @router.get("/customers-by-stage")
-def get_customers_by_stage(db: Session = Depends(get_db)) -> Dict[str, Any]:
+def get_customers_by_stage(
+    stage: Optional[str] = Query(None, description="Filter by purchase stage"),
+    owner: Optional[str] = Query(None, description="Filter by owner name"),
+    keyword: Optional[str] = Query(None, description="Search by customer name"),
+    limit: int = Query(20, ge=1, le=100, description="Maximum customers to return"),
+    db: Session = Depends(get_db),
+) -> Dict[str, Any]:
     """Get customers by stage for funnel visualization."""
 
-    result = db.execute(text(
-        "SELECT "
-        "    purchase_stage as stage, "
-        "    customer_name, "
-        "    intent_level, "
-        "    intent_score, "
-        "    active_opp_amount "
-        "FROM dws_customer_360 "
-        "WHERE purchase_stage IS NOT NULL AND purchase_stage != '' "
-        "ORDER BY "
-        "    CASE purchase_stage "
-        "        WHEN '问题识别' THEN 1 "
-        "        WHEN '解决方案探索' THEN 2 "
-        "        WHEN '需求构建' THEN 3 "
-        "        WHEN '已完成' THEN 4 "
-        "        ELSE 5 "
-        "    END, "
-        "    intent_score DESC"
-    )).fetchall()
+    where_parts = ["purchase_stage IS NOT NULL", "purchase_stage != ''"]
+    params: Dict[str, Any] = {}
+
+    if stage:
+        where_parts.append("purchase_stage = :stage")
+        params["stage"] = stage
+    if owner:
+        where_parts.append("owner_name = :owner")
+        params["owner"] = owner
+    if keyword:
+        where_parts.append("customer_name LIKE :keyword")
+        params["keyword"] = f"%{keyword}%"
+
+    where_sql = " AND ".join(where_parts)
+    total = db.execute(
+        text(f"SELECT COUNT(*) FROM dws_customer_360 WHERE {where_sql}"),
+        params,
+    ).scalar() or 0
+
+    query_params = {**params, "limit": limit}
+    result = db.execute(
+        text(
+            "SELECT "
+            "    id, "
+            "    purchase_stage as stage, "
+            "    customer_name, "
+            "    owner_name, "
+            "    intent_level, "
+            "    intent_score, "
+            "    role_coverage, "
+            "    last_interaction_time, "
+            "    last_interaction_channel, "
+            "    active_opp_amount "
+            "FROM dws_customer_360 "
+            f"WHERE {where_sql} "
+            "ORDER BY intent_score DESC, customer_name ASC "
+            "LIMIT :limit"
+        ),
+        query_params,
+    ).fetchall()
 
     customers = [
         {
+            "id": row.id,
             "stage": row.stage,
             "customer_name": row.customer_name,
+            "owner_name": row.owner_name,
             "intent_level": row.intent_level,
             "intent_score": float(row.intent_score or 0),
+            "role_coverage": row.role_coverage,
+            "last_interaction_time": row.last_interaction_time.isoformat() if row.last_interaction_time else None,
+            "last_interaction_channel": row.last_interaction_channel,
             "active_opp_amount": float(row.active_opp_amount or 0)
         }
         for row in result
@@ -331,12 +363,37 @@ def get_customers_by_stage(db: Session = Depends(get_db)) -> Dict[str, Any]:
     # Group by stage
     grouped = {}
     for customer in customers:
-        stage = customer["stage"]
-        if stage not in grouped:
-            grouped[stage] = []
-        grouped[stage].append(customer)
+        customer_stage = customer["stage"]
+        if customer_stage not in grouped:
+            grouped[customer_stage] = []
+        grouped[customer_stage].append(customer)
+
+    stage_rows = db.execute(text(
+        "SELECT DISTINCT purchase_stage "
+        "FROM dws_customer_360 "
+        "WHERE purchase_stage IS NOT NULL AND purchase_stage != '' "
+        "ORDER BY "
+        "CAST(SUBSTRING_INDEX(SUBSTRING_INDEX(purchase_stage, '：', 1), '阶段', -1) AS UNSIGNED)"
+    )).fetchall()
+    owner_rows = db.execute(text(
+        "SELECT DISTINCT owner_name "
+        "FROM dws_customer_360 "
+        "WHERE purchase_stage IS NOT NULL AND purchase_stage != '' "
+        "  AND owner_name IS NOT NULL AND owner_name != '' "
+        "ORDER BY owner_name"
+    )).fetchall()
 
     return {
         "grouped": grouped,
-        "flat": customers
+        "flat": customers,
+        "total": total,
+        "filters_applied": {
+            "stage": stage,
+            "owner": owner,
+            "keyword": keyword,
+        },
+        "filter_options": {
+            "stages": [row[0] for row in stage_rows],
+            "owners": [row[0] for row in owner_rows],
+        },
     }
