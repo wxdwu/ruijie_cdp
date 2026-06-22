@@ -39,3 +39,7 @@ CLAUDE.md
 # Virtual environments
 venv_test/
 env_test/
+.workbuddy/
+
+frontend-api-integration-guide.html
+architecture-analysis.html
