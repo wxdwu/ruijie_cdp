@@ -32,9 +32,13 @@ export const customerApi = {
 export const campaignApi = {
   kpis: () => http.get('/campaign/kpis'),
   funnelDistribution: () => http.get('/campaign/funnel-distribution'),
-  channelDistribution: () => http.get('/campaign/channel-distribution'),
+  channelDistribution: (period = 'all') => http.get('/campaign/channel-distribution', {
+    params: { period },
+  }),
   roleCoverage: () => http.get('/campaign/role-coverage'),
-  contentEffect: () => http.get('/campaign/content-effect'),
+  contentEffect: (period = 'all') => http.get('/campaign/content-effect', {
+    params: { period },
+  }),
   customersByStage: () => http.get('/campaign/customers-by-stage'),
 }
 
