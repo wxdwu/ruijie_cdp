@@ -63,7 +63,6 @@ const stageColors = {
     <div class="rounded-xl border border-[var(--line)] bg-[var(--panel)] p-4">
       <div class="text-xs text-[var(--muted)] mb-2">关键角色覆盖</div>
       <div class="text-2xl font-bold text-[var(--text)]">{{ keyRoles }}</div>
-      <div class="text-xs text-[var(--muted)] mt-1">人</div>
     </div>
 
     <!-- 在途商机 -->

@@ -22,7 +22,7 @@ defineProps({
       :interaction-count="customer.interaction_count_30d || 0"
       :stage="customer.purchase_stage"
       :key-roles="customer.role_coverage"
-      :opportunity-count="opportunities?.length || 0"
+      :opportunity-count="customer.active_opp_count || 0"
     />
 
     <!-- Customer profile and AI insight -->
