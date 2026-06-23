@@ -1,11 +1,11 @@
 """
-Sync API routes – V2.
+ETL Sync API routes.
 
 Provides 4 endpoints:
-- POST /api/sync/full         – Trigger full sync
-- POST /api/sync/incremental  – Trigger incremental sync
-- GET  /api/sync/status       – Get latest sync status
-- GET  /api/sync/history      – Get sync history
+- POST /api/admin/etl/full         – Trigger full sync
+- POST /api/admin/etl/increment  – Trigger incremental sync
+- GET  /api/admin/etl/status       – Get latest sync status
+- GET  /api/admin/etl/history      – Get sync history
 """
 
 import asyncio
@@ -16,12 +16,12 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
-from app.services.etl_sync_v2 import run_full_sync, run_incremental_sync, get_etl_engine
+from app.services.etl_sync import run_full_sync, run_incremental_sync, get_etl_engine
 from sqlalchemy import text
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/sync", tags=["sync"])
+router = APIRouter(prefix="/api/admin/etl", tags=["etl-sync"])
 
 # Concurrency lock – prevent overlapping syncs
 _etl_lock = asyncio.Lock()
@@ -90,8 +90,8 @@ async def trigger_full_sync(
             raise HTTPException(status_code=500, detail=f"Full sync failed: {exc}")
 
 
-@router.post("/incremental", response_model=SyncTriggerResponse)
-async def trigger_incremental_sync(
+@router.post("/increment", response_model=SyncTriggerResponse)
+async def trigger_increment_sync(
     trigger_by: str = Query("system", description="触发人"),
 ):
     """Trigger incremental sync (UPSERT + delete detection)."""
