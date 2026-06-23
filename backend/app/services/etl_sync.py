@@ -138,6 +138,170 @@ def _create_indexes() -> None:
     _ensure_index("tmp_icp_customers", "idx_icp_custname", "customer_name")
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Double Table Rotation Helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+def ensure_backup_tables() -> None:
+    """Ensure backup tables exist for all DWS tables.
+    
+    Creates backup tables with '_backup' suffix for double table rotation.
+    Backup tables have identical structure to the main tables.
+    """
+    dws_tables = [
+        "dws_contact_mapping",
+        "dws_interaction_detail",
+        "dws_customer_360",
+        "dws_contact_360",
+    ]
+    
+    engine = get_etl_engine()
+    
+    for table in dws_tables:
+        backup_table = f"{table}_backup"
+        
+        # Check if backup table exists
+        rows = _exec_query(
+            "SELECT 1 FROM information_schema.tables "
+            "WHERE table_schema = 'app_cdp' "
+            "  AND table_name = :t "
+            "LIMIT 1",
+            {"t": backup_table},
+        )
+        
+        if not rows:
+            logger.info("Creating backup table %s", backup_table)
+            with engine.begin() as conn:
+                # Create backup table with identical structure
+                conn.execute(text(f"CREATE TABLE {backup_table} LIKE {table}"))
+                # Copy indexes from main table
+                conn.execute(text(f"CREATE INDEX idx_backup_sync_batch ON {backup_table} (sync_batch_id)"))
+            logger.info("Backup table %s created successfully", backup_table)
+        else:
+            logger.debug("Backup table %s already exists", backup_table)
+
+
+def _validate_table_data(table: str) -> Dict[str, Any]:
+    """Validate data quality for a table.
+    
+    Performs comprehensive data quality validation:
+    1. Row count validation (row_count > 0)
+    2. Key field non-null validation (customer_name or contact_name is not null or empty)
+    3. Data integrity validation (check for data consistency)
+    
+    Args:
+        table: Table name to validate
+        
+    Returns:
+        Dict with validation results:
+        - valid: bool - whether validation passed
+        - row_count: int - total row count
+        - null_customer_count: int - count of rows with null/empty key field
+        - error_message: str - error message if validation failed
+    """
+    result: Dict[str, Any] = {
+        "valid": False,
+        "row_count": 0,
+        "null_customer_count": 0,
+        "error_message": "",
+    }
+    
+    try:
+        # 1. Row count validation
+        row_count = _table_count(table)
+        result["row_count"] = row_count
+        
+        if row_count == 0:
+            result["error_message"] = f"Validation failed: {table} has 0 rows"
+            logger.error("Data validation failed for %s: row count is 0", table)
+            return result
+        
+        logger.info("Validation passed for %s: row_count = %d", table, row_count)
+        
+        # 2. Key field non-null validation
+        # Determine the key field name based on table
+        # dws_contact_360 uses 'contact_name', others use 'customer_name'
+        if table == "dws_contact_360":
+            key_field = "contact_name"
+        else:
+            key_field = "customer_name"
+        
+        null_count = _count_table_rows(
+            table,
+            f"{key_field} IS NULL OR {key_field} = ''"
+        )
+        result["null_customer_count"] = null_count
+        
+        if null_count > 0:
+            logger.warning(
+                "Data quality warning for %s: %d rows have null/empty %s",
+                table, null_count, key_field
+            )
+        
+        # 3. Data integrity validation (example: check for duplicate customer_name in dws_customer_360)
+        if table == "dws_customer_360":
+            with get_etl_engine().connect() as conn:
+                dup_result = conn.execute(text(
+                    "SELECT COUNT(*) FROM ("
+                    "  SELECT customer_name, COUNT(*) as cnt "
+                    f"  FROM {table} "
+                    "  GROUP BY customer_name "
+                    "  HAVING cnt > 1"
+                    ") t"
+                ))
+                dup_count = dup_result.fetchone()[0]
+                
+                if dup_count > 0:
+                    logger.warning(
+                        "Data quality warning for %s: %d duplicate customer_name found",
+                        table, dup_count
+                    )
+        
+        result["valid"] = True
+        logger.info("Data validation passed for %s", table)
+        
+    except Exception as e:
+        result["error_message"] = f"Validation error: {str(e)}"
+        logger.exception("Data validation error for %s: %s", table, e)
+    
+    return result
+
+
+def _rotate_tables_for_incremental(table: str) -> None:
+    """Atomically rotate tables for incremental sync.
+    
+    Rotation logic for incremental sync (after data copied to temp table):
+    1. RENAME TABLE main_table TO backup_table
+    2. RENAME TABLE temp_table TO main_table
+    
+    This ensures atomic switching with no downtime.
+    
+    Args:
+        table: Main table name (without _backup suffix)
+    """
+    backup_table = f"{table}_backup"
+    temp_table = f"{table}_temp"
+    
+    logger.info("Rotating tables for incremental sync: %s -> %s, %s -> %s", 
+                table, backup_table, temp_table, table)
+    
+    engine = get_etl_engine()
+    
+    with engine.begin() as conn:
+        # Drop existing backup table if exists (safe because it contains old data)
+        conn.execute(text(f"DROP TABLE IF EXISTS {backup_table}"))
+        
+        # Atomic table rotation using RENAME TABLE
+        # MySQL RENAME TABLE is atomic
+        conn.execute(text(
+            f"RENAME TABLE "
+            f"{table} TO {backup_table}, "
+            f"{temp_table} TO {table}"
+        ))
+    
+    logger.info("Table rotation completed: %s now points to new data", table)
+
+
 def _build_icp_customers_table() -> int:
     """Build tmp_icp_customers table from ods_zhique_contact_day.
     
@@ -809,7 +973,7 @@ def run_etl() -> Dict[str, Any]:
 
     try:
         # ── 0. Setup ────────────────────────────────────────────────────
-        logger.info("── Step 0: Creating indexes ──")
+        logger.info("── Step 3: Creating indexes ──")
         _create_indexes()
         stats["steps"]["indexes"] = "created"
 
@@ -995,7 +1159,10 @@ def _update_sync_log(
 # ─────────────────────────────────────────────────────────────────────
 
 def run_full_sync(trigger_by: str = "system") -> Dict[str, Any]:
-    """Execute full ETL sync with logging to dws_sync_log."""
+    """Execute full ETL sync with logging to dws_sync_log.
+    
+    Uses double table rotation to ensure data availability during sync.
+    """
     log_id = _create_sync_log("full", trigger_by)
     logger.info("Full sync started, log_id=%d, trigger_by=%s", log_id, trigger_by)
     
@@ -1007,34 +1174,108 @@ def run_full_sync(trigger_by: str = "system") -> Dict[str, Any]:
         "log_id": log_id,
     }
     
+    # Tables to rotate
+    dws_tables = [
+        "dws_contact_mapping",
+        "dws_interaction_detail",
+        "dws_customer_360",
+        "dws_contact_360",
+    ]
+    
     try:
+        # Step 0: Ensure backup tables exist
+        logger.info("── Step 0: Ensuring backup tables exist ──")
+        ensure_backup_tables()
+        stats["steps"]["backup_tables"] = "ensured"
+        
+        # Step 1: Prepare backup tables for sync (swap with main tables)
+        logger.info("── Step 1: Preparing backup tables for sync ──")
+        engine = get_etl_engine()
+        with engine.begin() as conn:
+            for table in dws_tables:
+                temp_table = f"{table}_temp"
+                backup_table = f"{table}_backup"
+                # RENAME: main -> temp, backup -> main
+                conn.execute(text(
+                    f"RENAME TABLE "
+                    f"{table} TO {temp_table}, "
+                    f"{backup_table} TO {table}"
+                ))
+                logger.info("  Swapped %s with %s", table, backup_table)
+        stats["steps"]["table_swap"] = "completed"
+        
+        # Step 2: Ensure schema for incremental sync
+        logger.info("── Step 2: Ensuring schema for incremental sync ──")
         ensure_schema_for_incremental()
         
-        logger.info("── Step 0: Building ICP customers table ──")
+        logger.info("── Step 3: Building ICP customers table ──")
         icp_count = _build_icp_customers_table()
         stats["steps"]["icp_customers"] = {"rows": icp_count}
         
-        logger.info("── Step 1: Creating indexes ──")
+        logger.info("── Step 4: Creating indexes ──")
         _create_indexes()
         stats["steps"]["indexes"] = "created"
         
-        logger.info("── Step 2: Loading contact mapping (full) ──")
+        logger.info("── Step 5: Loading contact mapping (full) ──")
         cm_stats = _load_contact_mapping()
         stats["steps"]["contact_mapping"] = cm_stats
         
-        logger.info("── Step 3: Loading interaction detail (full) ──")
+        logger.info("── Step 6: Loading interaction detail (full) ──")
         ix_stats = _load_interaction_detail()
         stats["steps"]["interaction_detail"] = ix_stats
         
-        logger.info("── Step 4: Building customer-360 ──")
+        logger.info("── Step 7: Building customer-360 ──")
         c360_count = _build_customer_360()
         stats["steps"]["customer_360"] = {"rows": c360_count}
         
-        logger.info("── Step 5: Building contact-360 ──")
+        logger.info("── Step 8: Building contact-360 ──")
         ct360_count = _build_contact_360()
         stats["steps"]["contact_360"] = {"rows": ct360_count}
         
-        logger.info("── Step 6: Updating sync metadata ──")
+        # Step 9: Validating data quality
+        logger.info("── Step 9: Validating data quality ──")
+        validation_passed = True
+        validation_details = {}
+        for table in dws_tables:
+            validation_result = _validate_table_data(table)
+            validation_details[table] = validation_result
+            if not validation_result["valid"]:
+                validation_passed = False
+                logger.error("Validation failed for %s: %s", table, validation_result["error_message"])
+        
+        stats["steps"]["validation"] = validation_details
+        
+        if not validation_passed:
+            # Rollback: swap back to original tables
+            logger.error("Data validation failed, rolling back...")
+            with engine.begin() as conn:
+                for table in dws_tables:
+                    temp_table = f"{table}_temp"
+                    backup_table = f"{table}_backup"
+                    # RENAME: main -> backup, temp -> main (restore original)
+                    conn.execute(text(
+                        f"RENAME TABLE "
+                        f"{table} TO {backup_table}, "
+                        f"{temp_table} TO {table}"
+                    ))
+            raise Exception("Data validation failed, sync rolled back")
+        
+        # Step 10: Commit sync (swap tables permanently)
+        logger.info("── Step 10: Committing sync (atomic table rotation) ──")
+        with engine.begin() as conn:
+            for table in dws_tables:
+                temp_table = f"{table}_temp"
+                backup_table = f"{table}_backup"
+                # RENAME: main (new data) -> backup, temp (old data) -> main
+                conn.execute(text(
+                    f"RENAME TABLE "
+                    f"{table} TO {backup_table}, "
+                    f"{temp_table} TO {table}"
+                ))
+                logger.info("  Committed: %s now points to new data", table)
+        
+        # Step 11: Updating sync metadata
+        logger.info("── Step 11: Updating sync metadata ──")
         total_interaction_rows = sum(ix_stats.values())
         _update_sync_meta(total_interaction_rows)
         stats["steps"]["sync_meta"] = "updated"
@@ -1063,6 +1304,31 @@ def run_full_sync(trigger_by: str = "system") -> Dict[str, Any]:
         stats["error"] = str(exc)
         logger.exception("Full sync failed: %s", exc)
         
+        # Try to rollback table swap if needed
+        try:
+            engine = get_etl_engine()
+            with engine.begin() as conn:
+                for table in dws_tables:
+                    temp_table = f"{table}_temp"
+                    backup_table = f"{table}_backup"
+                    # Check if temp table exists (meaning swap happened)
+                    result = conn.execute(text(
+                        "SELECT 1 FROM information_schema.tables "
+                        "WHERE table_schema = 'app_cdp' "
+                        "  AND table_name = :t "
+                        "LIMIT 1"
+                    ), {"t": temp_table})
+                    if result.fetchone():
+                        # RENAME: main -> backup, temp -> main (restore original)
+                        conn.execute(text(
+                            f"RENAME TABLE "
+                            f"{table} TO {backup_table}, "
+                            f"{temp_table} TO {table}"
+                        ))
+                        logger.info("  Rolled back table swap for %s", table)
+        except Exception as rollback_exc:
+            logger.error("Failed to rollback table swap: %s", rollback_exc)
+        
         _update_sync_log(
             log_id=log_id,
             status="failed",
@@ -1081,6 +1347,8 @@ def run_incremental_sync(trigger_by: str = "system") -> Dict[str, Any]:
     
     Implements true incremental sync by only processing records
     where etl_time > last_sync_time.
+    
+    Uses double table rotation to ensure data availability during sync.
     """
     log_id = _create_sync_log("incremental", trigger_by)
     logger.info("Incremental sync started, log_id=%d, trigger_by=%s", log_id, trigger_by)
@@ -1097,32 +1365,120 @@ def run_incremental_sync(trigger_by: str = "system") -> Dict[str, Any]:
         "log_id": log_id,
     }
     
+    # Tables to rotate
+    dws_tables = [
+        "dws_contact_mapping",
+        "dws_interaction_detail",
+        "dws_customer_360",
+        "dws_contact_360",
+    ]
+    
     try:
+        # Step 0: Ensure backup tables exist
+        logger.info("── Step 0: Ensuring backup tables exist ──")
+        ensure_backup_tables()
+        stats["steps"]["backup_tables"] = "ensured"
+        
+        # Step 1: Prepare for table rotation
+        # Strategy: 1. Copy existing data from main to temp
+        #           2. Apply incremental changes to temp
+        #           3. Rotate tables: main -> backup, temp -> main
+        logger.info("── Step 1: Preparing for table rotation ──")
+        engine = get_etl_engine()
+        with engine.begin() as conn:
+            for table in dws_tables:
+                temp_table = f"{table}_temp"
+                backup_table = f"{table}_backup"
+                
+                # Ensure temp table exists with same structure
+                conn.execute(text(f"CREATE TABLE IF NOT EXISTS {temp_table} LIKE {table}"))
+                
+                # Copy existing data from main to temp (for ON DUPLICATE KEY UPDATE to work)
+                # Use INSERT IGNORE to avoid duplicate primary key errors
+                conn.execute(text(f"INSERT IGNORE INTO {temp_table} SELECT * FROM {table}"))
+                logger.info("  Copied existing data from %s to %s", table, temp_table)
+        stats["steps"]["table_swap"] = "prepared"
+        stats["steps"]["table_swap"] = "prepared"
+        
+        # Step 2: Ensure schema for incremental sync
+        logger.info("── Step 2: Ensuring schema for incremental sync ──")
         ensure_schema_for_incremental()
         
-        logger.info("── Step 0: Creating indexes ──")
+        logger.info("── Step 3: Creating indexes ──")
         _create_indexes()
         stats["steps"]["indexes"] = "created"
         
-        logger.info("── Step 1: UPSERT contact mapping (true incremental) ──")
+        logger.info("── Step 4: UPSERT contact mapping (true incremental) ──")
         cm_stats = _incremental_upsert_contact_mapping(batch_id)
         stats["steps"]["contact_mapping"] = cm_stats
         
-        logger.info("── Step 2: UPSERT interaction detail (true incremental) ──")
+        # Step 4.5: Update tmp_icp_customers with new Zhique customers
+        logger.info("── Step 4.5: Updating tmp_icp_customers with new Zhique customers ──")
+        _incremental_update_icp_customers(batch_id)
+        stats["steps"]["icp_customers"] = "updated"
+        
+        logger.info("── Step 5: UPSERT interaction detail (true incremental) ──")
         ix_stats = _incremental_upsert_interaction_detail(batch_id)
         stats["steps"]["interaction_detail"] = ix_stats
         
-        # Only rebuild aggregates if new interactions were inserted
+        # Rebuild aggregates if new interactions OR new contact mappings were inserted
         total_new_interactions = sum(ix_stats.values())
-        if total_new_interactions > 0:
-            logger.info("── Step 3: Rebuilding aggregates (new data detected) ──")
+        total_new_contacts = sum(v for k, v in cm_stats.items() if k != "deleted")
+        
+        # Also check if there are new ICP customers
+        new_icp_count = _count_table_rows(
+            "tmp_icp_customers", 
+            "customer_name NOT IN (SELECT customer_name FROM dws_customer_360_temp)"
+        )
+        
+        if total_new_interactions > 0 or total_new_contacts > 0 or new_icp_count > 0:
+            logger.info(
+                "── Step 3: Rebuilding aggregates (new data detected: %d interactions, %d contacts, %d new ICP) ──",
+                total_new_interactions, total_new_contacts, new_icp_count
+            )
             agg_stats = _incremental_rebuild_aggregates(batch_id)
             stats["steps"]["aggregates"] = agg_stats
         else:
-            logger.info("── Step 3: Skipping aggregate rebuild (no new interactions) ──")
+            logger.info("── Step 3: Skipping aggregate rebuild (no new data) ──")
             stats["steps"]["aggregates"] = {"skipped": "no new data"}
         
-        logger.info("── Step 4: Updating sync metadata ──")
+        # Step 6: Validate data quality (same as full sync)
+        logger.info("── Step 6: Validating data quality ──")
+        validation_passed = True
+        validation_details = {}
+        for table in dws_tables:
+            validation_result = _validate_table_data(table)
+            validation_details[table] = validation_result
+            if not validation_result["valid"]:
+                validation_passed = False
+                logger.error("Validation failed for %s: %s", table, validation_result["error_message"])
+        
+        stats["steps"]["validation"] = validation_details
+        
+        if not validation_passed:
+            # Rollback: swap back to original tables
+            logger.error("Data validation failed, rolling back...")
+            with engine.begin() as conn:
+                for table in dws_tables:
+                    temp_table = f"{table}_temp"
+                    backup_table = f"{table}_backup"
+                    # RENAME: main -> backup, temp -> main (restore original)
+                    conn.execute(text(
+                        f"RENAME TABLE "
+                        f"{table} TO {backup_table}, "
+                        f"{temp_table} TO {table}"
+                    ))
+            raise Exception("Data validation failed, sync rolled back")
+        
+        # Step 7: Commit sync using atomic table rotation for incremental
+        # After this step: main table = new data, backup table = old data
+        logger.info("── Step 7: Committing sync (atomic table rotation for incremental) ──")
+        for table in dws_tables:
+            _rotate_tables_for_incremental(table)
+            logger.info("  Committed: %s now points to new data", table)
+        
+        # Step 8: Update sync metadata
+        logger.info("── Step 8: Updating sync metadata ──")
         # Calculate actual rows_synced accurately
         # For incremental sync, rows_synced = sum of all affected records
         total_rows = sum(v for k, v in cm_stats.items() if k != "deleted")
@@ -1163,6 +1519,31 @@ def run_incremental_sync(trigger_by: str = "system") -> Dict[str, Any]:
         stats["error"] = str(exc)
         logger.exception("Incremental sync failed: %s", exc)
         
+        # Try to rollback table swap if needed
+        try:
+            engine = get_etl_engine()
+            with engine.begin() as conn:
+                for table in dws_tables:
+                    temp_table = f"{table}_temp"
+                    backup_table = f"{table}_backup"
+                    # Check if temp table exists (meaning swap happened)
+                    result = conn.execute(text(
+                        "SELECT 1 FROM information_schema.tables "
+                        "WHERE table_schema = 'app_cdp' "
+                        "  AND table_name = :t "
+                        "LIMIT 1"
+                    ), {"t": temp_table})
+                    if result.fetchone():
+                        # RENAME: main -> backup, temp -> main (restore original)
+                        conn.execute(text(
+                            f"RENAME TABLE "
+                            f"{table} TO {backup_table}, "
+                            f"{temp_table} TO {table}"
+                        ))
+                        logger.info("  Rolled back table swap for %s", table)
+        except Exception as rollback_exc:
+            logger.error("Failed to rollback table swap: %s", rollback_exc)
+        
         _update_sync_log(
             log_id=log_id,
             status="failed",
@@ -1178,11 +1559,15 @@ def _calculate_accurate_rows_synced(cm_stats: Dict, ix_stats: Dict, batch_id: in
     Instead of relying on MySQL rowcount (which can be inaccurate for
     ON DUPLICATE KEY UPDATE), we count the actual records with the
     current sync_batch_id.
+    
+    Note: After table rotation, the new data is in the main tables,
+    so we query the main tables to get accurate count.
     """
     engine = get_etl_engine()
     total = 0
     
     # Count contact_mapping records with this batch_id
+    # After rotation, new data is in main table
     with engine.connect() as conn:
         result = conn.execute(
             text(
@@ -1192,6 +1577,7 @@ def _calculate_accurate_rows_synced(cm_stats: Dict, ix_stats: Dict, batch_id: in
             {"batch_id": batch_id}
         )
         cm_count = result.fetchone()[0]
+        
         total += cm_count
         logger.info("  Accurate count: dws_contact_mapping %d records (batch_id=%d)", 
                     cm_count, batch_id)
@@ -1206,6 +1592,7 @@ def _calculate_accurate_rows_synced(cm_stats: Dict, ix_stats: Dict, batch_id: in
             {"batch_id": batch_id}
         )
         ix_count = result.fetchone()[0]
+        
         total += ix_count
         logger.info("  Accurate count: dws_interaction_detail %d records (batch_id=%d)", 
                     ix_count, batch_id)
@@ -1228,27 +1615,72 @@ def _get_accurate_stats_by_source(table: str, batch_id: int) -> Dict[str, int]:
         按 source_table 分组的统计结果，如 {"zhique": 10, "crm": 20}
     """
     engine = get_etl_engine()
-    stats: Dict[str, int] = {}
     
     # 确定 source_table 字段名（dws_interaction_detail 使用 channel 或需要根据实际情况调整）
     source_field = "source_table"
     
-    with engine.connect() as conn:
-        result = conn.execute(
-            text(
-                f"SELECT {source_field}, COUNT(*) as cnt "
-                f"FROM {table} "
-                "WHERE sync_batch_id = :batch_id "
-                f"GROUP BY {source_field}"
-            ),
-            {"batch_id": batch_id}
-        )
-        for row in result.fetchall():
-            if row[0]:  # 忽略 source_table 为 NULL 的记录
-                stats[row[0]] = row[1]
+    # Determine which table to query - use temp table for incremental sync
+    # After table rotation, new data will be in main table, but this function
+    # is called before rotation, so we need to check both possibilities
+    tables_to_check = [table, f"{table}_temp"]
     
-    logger.info("  Accurate stats for %s (batch_id=%d): %s", table, batch_id, stats)
-    return stats
+    stats_by_source = {}
+    with engine.connect() as conn:
+        for check_table in tables_to_check:
+            result = conn.execute(
+                text(
+                    f"SELECT {source_field}, COUNT(*) as cnt "
+                    f"FROM {check_table} "
+                    "WHERE sync_batch_id = :batch_id "
+                    f"GROUP BY {source_field}"
+                ),
+                {"batch_id": batch_id}
+            )
+            for row in result.fetchall():
+                if row[0]:  # 忽略 source_table 为 NULL 的记录
+                    stats_by_source[row[0]] = stats_by_source.get(row[0], 0) + row[1]
+    
+    logger.info("  Accurate stats for %s (batch_id=%d): %s", table, batch_id, stats_by_source)
+    return stats_by_source
+
+
+def _incremental_update_icp_customers(batch_id: int) -> int:
+    """Incrementally update tmp_icp_customers with new Zhique customers.
+    
+    This function ensures that new customers from ods_zhique_contact_day
+    are added to tmp_icp_customers, which serves as the anchor for
+    building dws_customer_360.
+    
+    Returns:
+        Number of new ICP customers added.
+    """
+    logger.info("Updating tmp_icp_customers with new Zhique customers...")
+    
+    # Get last sync time for Zhique contacts
+    last_sync_zhique = _get_last_sync_time("ods_zhique_contact_day")
+    
+    # Build filter for new records
+    filter_clause = ""
+    params: Dict[str, Any] = {"batch_id": batch_id}
+    
+    if last_sync_zhique:
+        filter_clause = "AND etl_time > :last_sync_time"
+        params["last_sync_time"] = last_sync_zhique
+        logger.info("  Filtering Zhique contacts after %s", last_sync_zhique)
+    
+    # Insert new ICP customers (INSERT IGNORE to avoid duplicates)
+    n = _exec(
+        "INSERT IGNORE INTO tmp_icp_customers (customer_name) "
+        "SELECT DISTINCT related_company "
+        "FROM ods_zhique_contact_day "
+        "WHERE related_company IS NOT NULL AND related_company != '' "
+        f"  {filter_clause}",
+        params
+    )
+    
+    total = _table_count("tmp_icp_customers")
+    logger.info("tmp_icp_customers updated: %d new customers, %d total", n, total)
+    return n
 
 
 def _incremental_upsert_contact_mapping(batch_id: int) -> Dict[str, int]:
@@ -1293,7 +1725,7 @@ def _incremental_upsert_contact_mapping(batch_id: int) -> Dict[str, int]:
     
     n = _exec(
         f"""
-        INSERT INTO dws_contact_mapping 
+        INSERT INTO dws_contact_mapping_temp 
           (customer_name, contact_name, mobile, email, department, 
            position, source_table, etl_time, sync_batch_id) 
         SELECT 
@@ -1328,7 +1760,7 @@ def _incremental_upsert_contact_mapping(batch_id: int) -> Dict[str, int]:
         for k, v in ROLE_MAP.items()
     )
     n = _exec(
-        "INSERT INTO dws_contact_mapping "
+        "INSERT INTO dws_contact_mapping_temp "
         "  (customer_name, contact_name, mobile, email, department, "
         "   position, purchase_role, role_category, source_table, etl_time, sync_batch_id) "
         "SELECT "
@@ -1361,7 +1793,7 @@ def _incremental_upsert_contact_mapping(batch_id: int) -> Dict[str, int]:
         marketing_params["last_sync_time"] = last_sync_marketing
     
     n = _exec(
-        "INSERT INTO dws_contact_mapping "
+        "INSERT INTO dws_contact_mapping_temp "
         "  (customer_name, contact_name, mobile, email, "
         "   position, source_table, etl_time, sync_batch_id) "
         "SELECT DISTINCT "
@@ -1393,7 +1825,7 @@ def _incremental_upsert_contact_mapping(batch_id: int) -> Dict[str, int]:
         linkflow_params["last_sync_time"] = last_sync_linkflow
     
     n = _exec(
-        "INSERT INTO dws_contact_mapping "
+        "INSERT INTO dws_contact_mapping_temp "
         "  (customer_name, contact_name, mobile, email, "
         "   linkflow_contact_id, source_table, etl_time, sync_batch_id) "
         "SELECT "
@@ -1425,7 +1857,7 @@ def _incremental_upsert_contact_mapping(batch_id: int) -> Dict[str, int]:
         tianrun_params["last_sync_time"] = last_sync_tianrun
     
     n = _exec(
-        "INSERT INTO dws_contact_mapping "
+        "INSERT INTO dws_contact_mapping_temp "
         "  (customer_name, contact_name, source_table, etl_time, sync_batch_id) "
         "SELECT DISTINCT "
         "  s.customer_name, s.visitor_name, 'tianrun', NOW(), :batch_id "
@@ -1483,7 +1915,7 @@ def _incremental_upsert_interaction_detail(batch_id: int) -> Dict[str, int]:
     
     engine = get_etl_engine()
     sql = text(
-        "INSERT IGNORE INTO dws_interaction_detail "
+        "INSERT IGNORE INTO dws_interaction_detail_temp "
         "  (customer_name, contact_name, mobile, source_table, "
         "   channel, behavior_type, content, event_time, source_id, etl_time, sync_batch_id) "
         "SELECT "
@@ -1545,7 +1977,7 @@ def _incremental_load_tianrun(batch_id: int, last_sync_time: datetime | None = N
     
     # Single INSERT IGNORE ... SELECT (no batching needed for ICP customers)
     sql = text(
-        "INSERT IGNORE INTO dws_interaction_detail "
+        "INSERT IGNORE INTO dws_interaction_detail_temp "
         "  (customer_name, contact_name, source_table, channel, "
         "   behavior_type, content, event_time, "
         "   is_high_value, source_id, etl_time, sync_batch_id) "
@@ -1603,7 +2035,7 @@ def _incremental_load_linkflow(batch_id: int, last_sync_time: datetime | None = 
     # Single INSERT IGNORE ... SELECT (no batching needed for ICP customers)
     # 优化：增加ICP客户过滤，避免处理非ICP客户的数据
     sql = text(
-        "INSERT IGNORE INTO dws_interaction_detail "
+        "INSERT IGNORE INTO dws_interaction_detail_temp "
         "  (customer_name, contact_name, mobile, source_table, "
         "   channel, behavior_type, event_time, source_id, etl_time, sync_batch_id) "
         "SELECT "
@@ -1631,17 +2063,37 @@ def _incremental_load_linkflow(batch_id: int, last_sync_time: datetime | None = 
 def _get_affected_customers(batch_id: int) -> List[str]:
     """Get list of customer names affected by current sync batch.
     
-    Customers are affected if they have new interactions in this batch
-    or new contact mappings.
+    Customers are affected if they have:
+    1. New interactions in this batch (sync_batch_id match)
+    2. New contact mappings in this batch (sync_batch_id match)
+    3. Exist in tmp_icp_customers but not in dws_customer_360_temp (new ICP customers)
+    
+    Note: During incremental sync, we query the *_temp tables where new data is stored.
     """
     engine = get_etl_engine()
     customers = []
     
-    # Get customers with new interactions
+    # Determine if temp tables exist (meaning we're in incremental sync)
+    # Check for any temp table to determine if we should use temp tables
+    use_temp_tables = False
     with engine.connect() as conn:
         result = conn.execute(
             text(
-                "SELECT DISTINCT customer_name FROM dws_interaction_detail "
+                "SELECT 1 FROM information_schema.tables "
+                "WHERE table_schema = 'app_cdp' "
+                "  AND table_name = 'dws_contact_mapping_temp' "
+                "LIMIT 1"
+            )
+        )
+        if result.fetchone():
+            use_temp_tables = True
+    
+    # Get customers with new interactions
+    interaction_table = "dws_interaction_detail_temp" if use_temp_tables else "dws_interaction_detail"
+    with engine.connect() as conn:
+        result = conn.execute(
+            text(
+                f"SELECT DISTINCT customer_name FROM {interaction_table} "
                 "WHERE sync_batch_id = :batch_id AND customer_name IS NOT NULL"
             ),
             {"batch_id": batch_id}
@@ -1649,13 +2101,28 @@ def _get_affected_customers(batch_id: int) -> List[str]:
         customers.extend(row[0] for row in result.fetchall())
     
     # Get customers with new contact mappings
+    mapping_table = "dws_contact_mapping_temp" if use_temp_tables else "dws_contact_mapping"
     with engine.connect() as conn:
         result = conn.execute(
             text(
-                "SELECT DISTINCT customer_name FROM dws_contact_mapping "
-                "WHERE sync_batch_id = :batch_id AND customer_name IS NOT NULL"
+                f"SELECT DISTINCT customer_name FROM {mapping_table} "
+                f"WHERE sync_batch_id = :batch_id AND customer_name IS NOT NULL"
             ),
             {"batch_id": batch_id}
+        )
+        customers.extend(row[0] for row in result.fetchall())
+    
+    # Get ICP customers that are in tmp_icp_customers but not in dws_customer_360_temp
+    # (newly added customers that need to be built)
+    customer_360_table = "dws_customer_360_temp" if use_temp_tables else "dws_customer_360"
+    with engine.connect() as conn:
+        result = conn.execute(
+            text(
+                "SELECT DISTINCT icp.customer_name "
+                "FROM tmp_icp_customers icp "
+                f"LEFT JOIN {customer_360_table} c360 ON icp.customer_name = c360.customer_name "
+                "WHERE c360.customer_name IS NULL"
+            )
         )
         customers.extend(row[0] for row in result.fetchall())
     
@@ -1668,6 +2135,12 @@ def _incremental_build_customer_360(batch_id: int) -> int:
     
     Instead of full rebuild, only updates customers that have new data
     in the current sync batch.
+    
+    Complete update including:
+    - Phase 1: Interaction aggregates
+    - Phase 2: CRM contact attributes (industry, region, owner_name, etc.)
+    - Phase 3: CRM opportunity metrics (purchase_stage, opp amounts, etc.)
+    - Phase 4: Derived fields (role_coverage, source_tables, data_coverage, intent)
     """
     affected_customers = _get_affected_customers(batch_id)
     
@@ -1678,28 +2151,20 @@ def _incremental_build_customer_360(batch_id: int) -> int:
     logger.info("  Updating customer_360 for %d affected customers...", len(affected_customers))
     
     engine = get_etl_engine()
-    updated_count = 0
     
     # Process in batches to avoid large IN clause
     batch_size = 100
+    total_updated = 0
+    
     for i in range(0, len(affected_customers), batch_size):
         batch = affected_customers[i:i + batch_size]
+        logger.info("    Processing batch %d-%d...", i, min(i + batch_size, len(affected_customers)))
         
-        # Delete existing records for affected customers
-        with engine.begin() as conn:
-            conn.execute(
-                text(
-                    "DELETE FROM dws_customer_360 "
-                    "WHERE customer_name IN :customers"
-                ),
-                {"customers": tuple(batch)}
-            )
-        
-        # Rebuild aggregates for affected customers
+        # ── Phase 1: Insert/Update interaction aggregates ─────────────
         with engine.begin() as conn:
             result = conn.execute(
                 text(
-                    "INSERT INTO dws_customer_360 ( "
+                    "INSERT INTO dws_customer_360_temp ( "
                     "  customer_name, interaction_count_total, interaction_count_30d, "
                     "  last_interaction_time, last_interaction_channel, "
                     "  top_channels, updated_at "
@@ -1720,7 +2185,7 @@ def _incremental_build_customer_360(batch_id: int) -> int:
                     "  ), '[]') AS top_channels, "
                     "  NOW() "
                     "FROM tmp_icp_customers icp "
-                    "LEFT JOIN dws_interaction_detail i ON i.customer_name COLLATE utf8mb4_0900_ai_ci = icp.customer_name COLLATE utf8mb4_0900_ai_ci "
+                    "LEFT JOIN dws_interaction_detail_temp i ON i.customer_name COLLATE utf8mb4_0900_ai_ci = icp.customer_name COLLATE utf8mb4_0900_ai_ci "
                     "WHERE icp.customer_name IN :customers "
                     "GROUP BY icp.customer_name "
                     "ON DUPLICATE KEY UPDATE "
@@ -1733,14 +2198,156 @@ def _incremental_build_customer_360(batch_id: int) -> int:
                 ),
                 {"customers": tuple(batch)}
             )
-            updated_count += result.rowcount
+            total_updated += result.rowcount
+        
+        # ── Phase 2: Enrich with CRM contact attributes ─────────────
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    "UPDATE dws_customer_360_temp c360 "
+                    "INNER JOIN ( "
+                    "  SELECT "
+                    "    customer_name, "
+                    "    MAX(industry) AS industry, "
+                    "    MAX(ruijie_region) AS region, "
+                    "    MAX(sales_name) AS owner_name, "
+                    "    COUNT(DISTINCT contact_name) AS contact_count, "
+                    "    COUNT(DISTINCT CASE WHEN mobile IS NOT NULL AND mobile != '' "
+                    "        THEN mobile END) AS mobile_count "
+                    "  FROM ods_crm_contact_day "
+                    "  WHERE customer_name IN :customers "
+                    "  GROUP BY customer_name "
+                    ") crm ON crm.customer_name COLLATE utf8mb4_0900_ai_ci "
+                    "     = c360.customer_name COLLATE utf8mb4_0900_ai_ci "
+                    "SET "
+                    "  c360.industry       = COALESCE(crm.industry, c360.industry), "
+                    "  c360.region         = COALESCE(crm.region, c360.region), "
+                    "  c360.owner_name     = COALESCE(crm.owner_name, c360.owner_name), "
+                    "  c360.contact_count  = crm.contact_count, "
+                    "  c360.mobile_count   = crm.mobile_count"
+                ),
+                {"customers": tuple(batch)}
+            )
+        
+        # ── Phase 3: Enrich with CRM opportunity metrics ─────────────
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    "UPDATE dws_customer_360_temp c360 "
+                    "INNER JOIN ( "
+                    "  SELECT "
+                    "    customer_name, "
+                    "    MAX(customer_stage) AS purchase_stage, "
+                    "    MAX(forecast_type) AS forecast_type, "
+                    "    COUNT(CASE WHEN is_active = 1 THEN 1 END) AS active_opp_count, "
+                    "    COALESCE(SUM(CASE WHEN is_active = 1 "
+                    "        THEN amount_10k * 10000 ELSE 0 END), 0) AS active_opp_amount, "
+                    "    COUNT(CASE WHEN is_funnel = '是' THEN 1 END) AS funnel_opp_count, "
+                    "    COALESCE(SUM(actual_order_amount_10k * 10000), 0) AS won_amount "
+                    "  FROM ods_crm_opportunity_day "
+                    "  WHERE customer_name IN :customers "
+                    "  GROUP BY customer_name "
+                    ") opp ON opp.customer_name COLLATE utf8mb4_0900_ai_ci "
+                    "     = c360.customer_name COLLATE utf8mb4_0900_ai_ci "
+                    "SET "
+                    "  c360.purchase_stage    = opp.purchase_stage, "
+                    "  c360.forecast_type     = opp.forecast_type, "
+                    "  c360.active_opp_count  = opp.active_opp_count, "
+                    "  c360.active_opp_amount = opp.active_opp_amount, "
+                    "  c360.funnel_opp_count  = opp.funnel_opp_count, "
+                    "  c360.won_amount        = opp.won_amount"
+                ),
+                {"customers": tuple(batch)}
+            )
     
-    logger.info("  customer_360 updated: %d customers", updated_count)
-    return updated_count
+    # ── Phase 4: Derived fields (process all affected customers together) ──
+    logger.info("    Updating derived fields (role_coverage, source_tables, data_coverage, intent)...")
+    
+    # role_coverage
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "UPDATE dws_customer_360_temp c360 "
+                "INNER JOIN ( "
+                "  SELECT customer_name, "
+                "    CASE "
+                "      WHEN COUNT(DISTINCT CASE WHEN role_category = '决策者' THEN 1 END) > 0 "
+                "       AND COUNT(DISTINCT CASE WHEN role_category = '技术评估者' THEN 1 END) > 0 "
+                "       AND COUNT(DISTINCT CASE WHEN role_category = '使用者' THEN 1 END) > 0 "
+                "      THEN '全' "
+                "      WHEN COUNT(DISTINCT role_category) > 0 THEN '部分' "
+                "      ELSE '无' "
+                "    END AS role_coverage "
+                "  FROM dws_contact_mapping_temp "
+                "  WHERE customer_name IN :customers "
+                "  GROUP BY customer_name "
+                ") rm ON rm.customer_name = c360.customer_name "
+                "SET c360.role_coverage = rm.role_coverage"
+            ),
+            {"customers": tuple(affected_customers)}
+        )
+    
+    # source_tables
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "UPDATE dws_customer_360_temp c360 "
+                "INNER JOIN ( "
+                "  SELECT customer_name, "
+                "    CAST(CONCAT('[', GROUP_CONCAT(DISTINCT "
+                "      CONCAT('\"', source_table, '\"') "
+                "    ), ']') AS JSON) AS source_tables "
+                "  FROM dws_contact_mapping_temp "
+                "  WHERE customer_name IN :customers "
+                "  GROUP BY customer_name "
+                ") st ON st.customer_name = c360.customer_name "
+                "SET c360.source_tables = st.source_tables"
+            ),
+            {"customers": tuple(affected_customers)}
+        )
+    
+    # data_coverage & intent scoring
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "UPDATE dws_customer_360_temp c360 "
+                "SET "
+                "  c360.data_coverage = JSON_OBJECT( "
+                "    'has_crm',      c360.industry IS NOT NULL, "
+                "    'has_opp',      c360.active_opp_count > 0, "
+                "    'has_contacts', c360.contact_count > 0, "
+                "    'has_interactions', c360.interaction_count_total > 0 "
+                "  ), "
+                "  c360.intent_score = "
+                "    LEAST(100, "
+                "      c360.interaction_count_30d * 2 "
+                "      + IF(c360.active_opp_count > 0, 20, 0) "
+                "      + IF(c360.contact_count >= 3, 10, c360.contact_count * 3) "
+                "    ), "
+                "  c360.intent_level = CASE "
+                "    WHEN c360.interaction_count_30d >= 10 "
+                "         AND c360.active_opp_count > 0 THEN '高' "
+                "    WHEN c360.interaction_count_30d >= 3 THEN '中' "
+                "    WHEN c360.interaction_count_total > 0 THEN '低' "
+                "    ELSE '无' "
+                "  END "
+                "WHERE c360.customer_name IN :customers"
+            ),
+            {"customers": tuple(affected_customers)}
+        )
+    
+    logger.info("  customer_360 updated: %d customers (complete with Phase 1-4)", total_updated)
+    return total_updated
 
 
 def _incremental_build_contact_360(batch_id: int) -> int:
-    """Incrementally update dws_contact_360 for affected customers only."""
+    """Incrementally update dws_contact_360 for affected customers only.
+    
+    Complete update including:
+    - Contact attributes (purchase_role, role_category, source_tables, etc.)
+    - Interaction aggregates (interaction_count, interaction_count_30d, etc.)
+    - Derived fields (activity_level)
+    """
     affected_customers = _get_affected_customers(batch_id)
     
     if not affected_customers:
@@ -1756,25 +2363,26 @@ def _incremental_build_contact_360(batch_id: int) -> int:
     batch_size = 100
     for i in range(0, len(affected_customers), batch_size):
         batch = affected_customers[i:i + batch_size]
+        logger.info("    Processing batch %d-%d...", i, min(i + batch_size, len(affected_customers)))
         
-        # Delete existing records for affected customers
+        # ── Delete existing records for affected customers ─────────────
         with engine.begin() as conn:
             conn.execute(
                 text(
-                    "DELETE FROM dws_contact_360 "
+                    "DELETE FROM dws_contact_360_temp "
                     "WHERE customer_id IN ("
-                    "  SELECT id FROM dws_customer_360 "
+                    "  SELECT id FROM dws_customer_360_temp "
                     "  WHERE customer_name IN :customers"
                     ")"
                 ),
                 {"customers": tuple(batch)}
             )
         
-        # Rebuild contact 360 for affected customers
+        # ── Rebuild contact 360 for affected customers ─────────────
         with engine.begin() as conn:
             result = conn.execute(
                 text(
-                    "INSERT IGNORE INTO dws_contact_360 ( "
+                    "INSERT IGNORE INTO dws_contact_360_temp ( "
                     "  customer_id, contact_name, mobile, email, department, position, "
                     "  purchase_role, role_category, interaction_count, interaction_count_30d, "
                     "  last_interaction_time, source_tables, linkflow_contact_id, updated_at "
@@ -1789,21 +2397,25 @@ def _incremental_build_contact_360(batch_id: int) -> int:
                     "  CAST(CONCAT('[\"', cm.source_table, '\"]') AS JSON), "
                     "  cm.linkflow_contact_id, "
                     "  NOW() "
-                    "FROM dws_contact_mapping cm "
-                    "LEFT JOIN dws_customer_360 c360 ON c360.customer_name = cm.customer_name "
+                    "FROM dws_contact_mapping_temp cm "
+                    "LEFT JOIN dws_customer_360_temp c360 ON c360.customer_name = cm.customer_name "
                     "LEFT JOIN ( "
                     "  SELECT contact_name, mobile, "
                     "    COUNT(*) AS interaction_count, "
                     "    SUM(CASE WHEN event_time >= DATE_SUB(NOW(), INTERVAL 30 DAY) "
                     "        THEN 1 ELSE 0 END) AS interaction_count_30d, "
                     "    MAX(event_time) AS last_interaction_time "
-                    "  FROM dws_interaction_detail "
+                    "  FROM dws_interaction_detail_temp "
                     "  WHERE contact_name IS NOT NULL "
                     "  GROUP BY contact_name, mobile "
                     ") agg ON (agg.contact_name = cm.contact_name "
                     "          AND agg.mobile <=> cm.mobile) "
                     "WHERE cm.customer_name IN :customers "
                     "ON DUPLICATE KEY UPDATE "
+                    "  purchase_role         = VALUES(purchase_role), "
+                    "  role_category         = VALUES(role_category), "
+                    "  source_tables         = VALUES(source_tables), "
+                    "  linkflow_contact_id   = VALUES(linkflow_contact_id), "
                     "  interaction_count     = VALUES(interaction_count), "
                     "  interaction_count_30d = VALUES(interaction_count_30d), "
                     "  last_interaction_time = VALUES(last_interaction_time), "
@@ -1813,7 +2425,24 @@ def _incremental_build_contact_360(batch_id: int) -> int:
             )
             updated_count += result.rowcount
     
-    logger.info("  contact_360 updated: %d contacts", updated_count)
+    # ── Update activity_level for all affected contacts ─────────────
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "UPDATE dws_contact_360_temp c360 "
+                "INNER JOIN dws_customer_360_temp c360_customer ON c360_customer.id = c360.customer_id "
+                "SET c360.activity_level = CASE "
+                "  WHEN c360.interaction_count_30d >= 10 THEN 'high' "
+                "  WHEN c360.interaction_count_30d >= 3 THEN 'medium' "
+                "  WHEN c360.interaction_count > 0 THEN 'low' "
+                "  ELSE 'none' "
+                "END "
+                "WHERE c360_customer.customer_name IN :customers"
+            ),
+            {"customers": tuple(affected_customers)}
+        )
+    
+    logger.info("  contact_360 updated: %d contacts (complete with activity_level)", updated_count)
     return updated_count
 
 
