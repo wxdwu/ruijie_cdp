@@ -1,8 +1,11 @@
 <script setup>
 import { useRoute } from 'vue-router'
 import { computed, ref } from 'vue'
+import { useCustomerStore } from '../../stores/customer'
+import ExportButton from '../customer/ExportButton.vue'
 
 const route = useRoute()
+const customerStore = useCustomerStore()
 const theme = ref(document.documentElement.dataset.theme === 'light' ? 'light' : 'dark')
 
 function applyTheme(value) {
@@ -28,6 +31,8 @@ const pageTitle = computed(() => {
   }
   return 'CDP ABM 360'
 })
+
+const showCustomerExport = computed(() => route.path === '/customers')
 </script>
 
 <template>
@@ -44,16 +49,7 @@ const pageTitle = computed(() => {
       >
         {{ theme === 'dark' ? '切换浅色主题' : '切换深色主题' }}
       </button>
-      <button
-        class="rounded-lg border border-[var(--line)] bg-[var(--surface)] px-3 py-1.5 text-sm text-[var(--muted)] transition-colors hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
-      >
-        🔔 通知
-      </button>
-      <button
-        class="rounded-lg bg-[var(--brand)] px-3 py-1.5 text-sm font-medium text-white transition-colors hover:brightness-110"
-      >
-        + 新建
-      </button>
+      <ExportButton v-if="showCustomerExport" :filters="customerStore.filters" />
     </div>
   </header>
 </template>
