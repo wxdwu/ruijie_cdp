@@ -32,7 +32,7 @@ export const customerFieldHelp = {
     meaning: '客户当前归属负责人或客户经理。',
     sourceTables: 'dws_customer_360',
     sourceFields: 'owner_name',
-    calculation: '筛选时按 owner_name 精确匹配；选项来自客户聚合表中的负责人去重结果。',
+    calculation: '从候选项选择时按 owner_name 精确匹配；直接输入关键词时按 owner_name 模糊匹配。选项来自客户聚合表中的负责人去重结果。',
     emptyState: '无负责人时显示未知或为空。',
   },
   interaction30d: {

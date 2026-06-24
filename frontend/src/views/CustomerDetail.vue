@@ -106,6 +106,10 @@ onMounted(() => {
               <span class="text-xs text-[var(--muted)]">{{ customer.region }}</span>
               <span class="text-xs text-[var(--muted)]">|</span>
               <span class="text-xs text-[var(--muted)]">客户经理: {{ customer.owner_name }}</span>
+              <span class="text-xs text-[var(--muted)]">|</span>
+              <span class="text-xs text-[var(--muted)]">采购阶段: {{ customer.purchase_stage || '-' }}</span>
+              <span class="text-xs text-[var(--muted)]">|</span>
+              <span class="text-xs text-[var(--muted)]">销售阶段: {{ customer.forecast_type || customer.highest_stage_opp || '-' }}</span>
             </div>
           </div>
         </div>
@@ -161,18 +165,24 @@ onMounted(() => {
 
       <BusinessFunnelTab
         v-else-if="activeTab === 'business'"
+        :customer="customer"
+        :opportunities="opportunities"
       />
 
       <BudgetOutputTab
         v-else-if="activeTab === 'budget'"
+        :customer="customer"
       />
 
       <RiskComplianceTab
         v-else-if="activeTab === 'risk'"
+        :customer="customer"
       />
 
       <OpportunitiesTab
         v-else-if="activeTab === 'opportunities'"
+        :customer="customer"
+        :opportunities="opportunities"
       />
     </div>
   </div>

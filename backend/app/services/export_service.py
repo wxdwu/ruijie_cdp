@@ -41,6 +41,7 @@ def export_customers_excel(
     keyword: Optional[str] = None,
     industry: Optional[str] = None,
     owner: Optional[str] = None,
+    owner_keyword: Optional[str] = None,
     stage: Optional[str] = None,
     intent_level: Optional[str] = None,
     interaction_min: Optional[int] = None,
@@ -61,6 +62,9 @@ def export_customers_excel(
     if owner:
         where_parts.append("owner_name = :owner")
         params["owner"] = owner
+    elif owner_keyword:
+        where_parts.append("owner_name LIKE :owner_keyword")
+        params["owner_keyword"] = f"%{owner_keyword}%"
     if stage:
         where_parts.append("purchase_stage = :stage")
         params["stage"] = stage
