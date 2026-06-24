@@ -31,3 +31,11 @@ ENV/
 Thumbs.db
 
 .obsidian/
+
+# Claude
+.claude/
+CLAUDE.md
+
+# Virtual environments
+venv_test/
+env_test/

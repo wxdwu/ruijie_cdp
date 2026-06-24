@@ -21,6 +21,7 @@ DWS target tables:
 from __future__ import annotations
 
 import logging
+import time
 from datetime import datetime
 from typing import Any, Dict, List
 
@@ -122,20 +123,36 @@ def _table_count(table: str) -> int:
     return rows[0][0] if rows else 0
 
 
+def _table_count_approx(table: str) -> int:
+    """Return an approximate row count from information_schema.
+
+    Exact COUNT(*) on large InnoDB tables can take several seconds because it
+    scans the clustered index.  For sync metadata we only need an approximate
+    size, so we use the cardinality stored in information_schema.tables.
+    """
+    rows = _exec_query(
+        "SELECT table_rows FROM information_schema.tables "
+        "WHERE table_schema = 'app_cdp' AND table_name = :t",
+        {"t": table},
+    )
+    return rows[0][0] if rows else 0
+
+
 def _create_indexes() -> None:
     """Create indexes needed for efficient joins during ETL."""
-    _ensure_index("dws_contact_mapping", "idx_cm_mobile", "mobile")
-    _ensure_index("dws_contact_mapping", "idx_cm_custname", "customer_name")
+    # Indexes on ODS tables for efficient lookups
     _ensure_index("ods_crm_contact_day", "idx_crm_mobile", "mobile")
     _ensure_index("ods_linkflow_contacts_day", "idx_lf_cid", "contact_id")
     _ensure_index("ods_linkflow_events_day", "idx_lfe_cid", "contact_id")
     _ensure_index("ods_zhique_behavior_list_day", "idx_zqb_mobile", "mobile_phone")
     _ensure_index("ods_tianrun_session_day", "idx_tr_vid", "visitor_id")
     
-    # Indexes for incremental sync performance
-    _ensure_index("dws_interaction_detail", "idx_id_sync_batch", "sync_batch_id")
-    _ensure_index("dws_contact_mapping", "idx_cm_sync_batch", "sync_batch_id")
-    _ensure_index("tmp_icp_customers", "idx_icp_custname", "customer_name")
+    # NOTE: Removed redundant/duplicate indexes:
+    # - idx_cm_mobile (duplicate of idx_mobile on dws_contact_mapping)
+    # - idx_cm_custname (redundant - uk_customer_mobile prefix covers customer_name)
+    # - idx_cm_sync_batch (sync_batch_id not currently used)
+    # - idx_id_sync_batch (sync_batch_id not currently used)
+    # - idx_icp_custname (redundant - primary key covers customer_name on tmp_icp_customers)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -174,8 +191,8 @@ def ensure_backup_tables() -> None:
             with engine.begin() as conn:
                 # Create backup table with identical structure
                 conn.execute(text(f"CREATE TABLE {backup_table} LIKE {table}"))
-                # Copy indexes from main table
-                conn.execute(text(f"CREATE INDEX idx_backup_sync_batch ON {backup_table} (sync_batch_id)"))
+                # NOTE: Removed idx_backup_sync_batch index creation
+                # sync_batch_id field is not currently used
             logger.info("Backup table %s created successfully", backup_table)
         else:
             logger.debug("Backup table %s already exists", backup_table)
@@ -337,16 +354,233 @@ def _build_icp_customers_table() -> int:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Step 1: Contact Mapping
+# ETL-owned temporary tables (NOT ODS tables)
 # ─────────────────────────────────────────────────────────────────────────────
+
+# Names of helper tables created and dropped within each sync run.
+_ETL_TEMP_TABLES = [
+    "tmp_icp_companies",
+    "tmp_icp_mobiles",
+    "tmp_crm_mobiles",
+    "tmp_valid_linkflow_contacts",
+    "tmp_crm_contact_attr",
+    "tmp_crm_opportunity_agg",
+    "tmp_contact_interactions",
+]
+
+
+def _drop_etl_temp_tables() -> None:
+    """Drop all ETL-owned helper temp tables. Safe to call repeatedly."""
+    for tbl in _ETL_TEMP_TABLES:
+        try:
+            _exec(f"DROP TABLE IF EXISTS {tbl}")
+            logger.debug("Dropped temp table %s", tbl)
+        except Exception:
+            logger.exception("Failed to drop temp table %s", tbl)
+
+
+def _create_etl_temp_tables() -> None:
+    """Create indexed helper tables used during sync.
+
+    These are ETL-owned tables (not ODS), created at the start of each run
+    and dropped in a finally block.  They let us drive large ODS table scans
+    through existing indexes instead of scanning by unfiltered id ranges.
+    """
+    _drop_etl_temp_tables()
+
+    _exec("""
+        CREATE TABLE tmp_icp_companies (
+            customer_name VARCHAR(255) NOT NULL PRIMARY KEY
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+    """)
+
+    _exec("""
+        CREATE TABLE tmp_icp_mobiles (
+            mobile VARCHAR(255) NOT NULL PRIMARY KEY
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+    """)
+
+    _exec("""
+        CREATE TABLE tmp_crm_mobiles (
+            mobile VARCHAR(255) NOT NULL PRIMARY KEY
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+    """)
+
+    _exec("""
+        CREATE TABLE tmp_valid_linkflow_contacts (
+            contact_id VARCHAR(255) NOT NULL PRIMARY KEY,
+            mobile_phone VARCHAR(255),
+            name VARCHAR(255),
+            customer_name VARCHAR(255),
+            INDEX idx_mobile (mobile_phone)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+    """)
+
+    _exec("""
+        CREATE TABLE tmp_crm_contact_attr (
+            customer_name VARCHAR(255) NOT NULL PRIMARY KEY,
+            industry VARCHAR(255),
+            region VARCHAR(255),
+            owner_name VARCHAR(255),
+            contact_count INT,
+            mobile_count INT
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+    """)
+
+    _exec("""
+        CREATE TABLE tmp_crm_opportunity_agg (
+            customer_name VARCHAR(255) NOT NULL PRIMARY KEY,
+            purchase_stage VARCHAR(255),
+            forecast_type VARCHAR(255),
+            active_opp_count INT,
+            active_opp_amount DECIMAL(22, 2),
+            funnel_opp_count INT,
+            won_amount DECIMAL(22, 2)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+    """)
+
+    _exec("""
+        CREATE TABLE tmp_contact_interactions (
+            contact_name VARCHAR(128) NOT NULL,
+            mobile VARCHAR(64) DEFAULT NULL,
+            interaction_count INT NOT NULL DEFAULT 0,
+            interaction_count_30d INT NOT NULL DEFAULT 0,
+            last_interaction_time DATETIME DEFAULT NULL,
+            UNIQUE KEY uk_contact_mobile (contact_name, mobile)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+    """)
+
+    logger.info("ETL helper temp tables created")
+
+
+def _build_tmp_icp_filters() -> None:
+    """Populate ICP company/mobile filters from the anchor table."""
+    _exec("TRUNCATE TABLE tmp_icp_companies")
+    _exec("TRUNCATE TABLE tmp_icp_mobiles")
+
+    _exec("""
+        INSERT IGNORE INTO tmp_icp_companies (customer_name)
+        SELECT DISTINCT related_company
+        FROM ods_zhique_contact_day
+        WHERE related_company IS NOT NULL AND related_company != ''
+    """)
+
+    _exec("""
+        INSERT IGNORE INTO tmp_icp_mobiles (mobile)
+        SELECT DISTINCT mobile
+        FROM ods_zhique_contact_day
+        WHERE mobile IS NOT NULL AND mobile != ''
+    """)
+
+    logger.info(
+        "ICP filters ready: %d companies, %d mobiles",
+        _table_count("tmp_icp_companies"),
+        _table_count("tmp_icp_mobiles"),
+    )
+
+
+def _build_tmp_crm_mobiles() -> None:
+    """Populate tmp_crm_mobiles with all non-null CRM mobiles.
+
+    Used to preserve the original Zhique behavior matching semantics:
+    any behavior whose mobile_phone matches a CRM contact mobile is kept.
+    """
+    _exec("TRUNCATE TABLE tmp_crm_mobiles")
+    _exec("""
+        INSERT IGNORE INTO tmp_crm_mobiles (mobile)
+        SELECT DISTINCT mobile
+        FROM ods_crm_contact_day
+        WHERE mobile IS NOT NULL AND mobile != ''
+          AND customer_name IS NOT NULL AND customer_name != ''
+    """)
+    logger.info("CRM mobiles ready: %d rows", _table_count("tmp_crm_mobiles"))
+
+
+def _build_tmp_valid_linkflow_contacts() -> None:
+    """Populate tmp_valid_linkflow_contacts with linkflow contacts that have a CRM match.
+
+    Pre-joins CRM so linkflow event loading can drive from the small contact_id set
+    and use the idx_lfe_cid index on ods_linkflow_events_day.
+    """
+    _exec("TRUNCATE TABLE tmp_valid_linkflow_contacts")
+    n = _exec("""
+        INSERT IGNORE INTO tmp_valid_linkflow_contacts
+          (contact_id, mobile_phone, name, customer_name)
+        SELECT
+          l.contact_id, l.mobile_phone, l.name, crm.customer_name
+        FROM ods_linkflow_contacts_day l
+        INNER JOIN ods_crm_contact_day crm
+          ON crm.mobile COLLATE utf8mb4_0900_ai_ci
+           = l.mobile_phone COLLATE utf8mb4_0900_ai_ci
+        WHERE l.mobile_phone IS NOT NULL AND l.mobile_phone != ''
+          AND crm.customer_name IS NOT NULL AND crm.customer_name != ''
+    """)
+    logger.info("Valid linkflow contacts ready: %d rows", n)
+
+
+def _build_tmp_crm_aggregates() -> None:
+    """Pre-aggregate CRM contact attributes and opportunity metrics per customer."""
+    _exec("TRUNCATE TABLE tmp_crm_contact_attr")
+    _exec("TRUNCATE TABLE tmp_crm_opportunity_agg")
+
+    n_attr = _exec("""
+        INSERT INTO tmp_crm_contact_attr
+          (customer_name, industry, region, owner_name, contact_count, mobile_count)
+        SELECT
+          customer_name,
+          MAX(industry) AS industry,
+          MAX(ruijie_region) AS region,
+          MAX(sales_name) AS owner_name,
+          COUNT(DISTINCT contact_name) AS contact_count,
+          COUNT(DISTINCT CASE WHEN mobile IS NOT NULL AND mobile != ''
+              THEN mobile END) AS mobile_count
+        FROM ods_crm_contact_day
+        WHERE customer_name IS NOT NULL AND customer_name != ''
+        GROUP BY customer_name
+    """)
+
+    n_opp = _exec("""
+        INSERT INTO tmp_crm_opportunity_agg
+          (customer_name, purchase_stage, forecast_type, active_opp_count,
+           active_opp_amount, funnel_opp_count, won_amount)
+        SELECT
+          customer_name,
+          MAX(customer_stage) AS purchase_stage,
+          MAX(forecast_type) AS forecast_type,
+          COUNT(CASE WHEN is_active = 1 THEN 1 END) AS active_opp_count,
+          COALESCE(SUM(CASE WHEN is_active = 1
+              THEN amount_10k * 10000 ELSE 0 END), 0) AS active_opp_amount,
+          COUNT(CASE WHEN is_funnel = '是' THEN 1 END) AS funnel_opp_count,
+          COALESCE(SUM(actual_order_amount_10k * 10000), 0) AS won_amount
+        FROM ods_crm_opportunity_day
+        WHERE customer_name IS NOT NULL AND customer_name != ''
+        GROUP BY customer_name
+    """)
+
+    logger.info(
+        "CRM aggregates ready: %d contact attrs, %d opportunity attrs",
+        n_attr, n_opp,
+    )
+
+
+def _phase_start(phase: str) -> float:
+    """Log phase start and return timestamp for elapsed calculation."""
+    logger.info("── %s ──", phase)
+    return time.time()
+
+
+def _phase_end(phase: str, start_ts: float) -> None:
+    """Log phase completion with elapsed seconds."""
+    elapsed = round(time.time() - start_ts, 2)
+    logger.info("── %s completed in %.2f s ──", phase, elapsed)
+
 
 def _load_contact_mapping() -> Dict[str, int]:
     """Populate dws_contact_mapping from all ODS contact sources.
 
     Uses DELETE + INSERT per source to avoid duplicates (no unique constraint
-    beyond auto-increment PK).
-
-    Returns dict of {source_name: row_count}.
+    beyond auto-increment PK).  Relies on tmp_icp_companies / tmp_icp_mobiles
+    and tmp_valid_linkflow_contacts being pre-populated.
     """
     stats: Dict[str, int] = {}
 
@@ -386,25 +620,13 @@ def _load_contact_mapping() -> Dict[str, int]:
         "  'crm', NOW() "
         "FROM ods_crm_contact_day c "
         "WHERE c.customer_name IS NOT NULL AND c.customer_name != '' "
-        "  AND ( c.customer_name IN (SELECT related_company FROM ods_zhique_contact_day) "
-        "     OR c.mobile IN (SELECT mobile FROM ods_zhique_contact_day WHERE mobile IS NOT NULL) )"
+        "  AND ( "
+        "    c.customer_name IN (SELECT customer_name FROM tmp_icp_companies) "
+        "    OR c.mobile IN (SELECT mobile FROM tmp_icp_mobiles) "
+        "  )"
     )
     stats["crm"] = n
     logger.info("[b] CRM contacts (matched to zhique): %d rows", n)
-
-    # ── b. Zhique contacts (2.4K rows) ──────────────────────────────────
-    n = _exec(
-        "INSERT IGNORE INTO dws_contact_mapping "
-        "  (customer_name, contact_name, mobile, email, department, "
-        "   position, source_table, etl_time) "
-        "SELECT "
-        "  z.related_company, z.contact_name, z.mobile, z.email, z.department, "
-        "  z.position, 'zhique', NOW() "
-        "FROM ods_zhique_contact_day z "
-        "WHERE z.related_company IS NOT NULL AND z.related_company != ''"
-    )
-    stats["zhique"] = n
-    logger.info("[b] Zhique contacts → contact_mapping: %d rows", n)
 
     # ── c. Marketing leads (36K rows, deduplicate by company+contact) ───
     n = _exec(
@@ -425,20 +647,17 @@ def _load_contact_mapping() -> Dict[str, int]:
     logger.info("[c] Marketing leads → contact_mapping: %d rows", n)
 
     # ── d. Linkflow contacts (73K rows, company is NULL for all) ────────
-    # Match linkflow contacts to CRM customers via mobile_phone
+    # Match linkflow contacts to CRM customers via mobile_phone.
+    # The valid contacts have already been pre-computed in tmp_valid_linkflow_contacts.
     n = _exec(
         "INSERT IGNORE INTO dws_contact_mapping "
         "  (customer_name, contact_name, mobile, email, "
         "   linkflow_contact_id, source_table, etl_time) "
         "SELECT "
-        "  crm.customer_name, l.name, l.mobile_phone, l.email, "
-        "  l.contact_id, 'linkflow', NOW() "
-        "FROM ods_linkflow_contacts_day l "
-        "INNER JOIN ods_crm_contact_day crm "
-        "  ON crm.mobile COLLATE utf8mb4_0900_ai_ci "
-        "   = l.mobile_phone COLLATE utf8mb4_0900_ai_ci "
-        "WHERE l.mobile_phone IS NOT NULL AND l.mobile_phone != '' "
-        "  AND crm.customer_name IS NOT NULL AND crm.customer_name != ''"
+        "  lc.customer_name, lc.name, lc.mobile_phone, l.email, "
+        "  lc.contact_id, 'linkflow', NOW() "
+        "FROM tmp_valid_linkflow_contacts lc "
+        "INNER JOIN ods_linkflow_contacts_day l ON l.contact_id = lc.contact_id"
     )
     stats["linkflow"] = n
     logger.info("[d] Linkflow contacts → contact_mapping: %d rows", n)
@@ -482,175 +701,110 @@ def _build_zhique_channel_case() -> str:
 
 
 def _load_interactions_zhique() -> int:
-    """Load Zhique behaviors (381K) → dws_interaction_detail.
+    """Load Zhique behaviors → dws_interaction_detail.
 
-    Match to customers via mobile_phone → CRM contacts.
+    Uses tmp_crm_mobiles to drive the mobile_phone index on
+    ods_zhique_behavior_list_day, avoiding a full id-range scan.
     """
     channel_case = _build_zhique_channel_case()
-    total_rows = _table_count("ods_zhique_behavior_list_day")
+    total_mobiles = _table_count("tmp_crm_mobiles")
     logger.info(
-        "  Loading %d Zhique behaviors (batch size %d)…",
-        total_rows, BATCH_SIZE,
+        "  Loading Zhique behaviors using %d CRM mobiles...",
+        total_mobiles,
     )
 
-    engine = get_etl_engine()
-    inserted = 0
-    offset = 0
+    n = _exec(
+        "INSERT IGNORE INTO dws_interaction_detail "
+        "  (customer_name, contact_name, mobile, source_table, "
+        "   channel, behavior_type, content, event_time, source_id, etl_time) "
+        "SELECT "
+        "  cm.customer_name, b.contact_name, b.mobile_phone, 'zhique', "
+        f"  {channel_case}, b.behavior_type, b.behavior_name, "
+        "  b.behavior_time, b.behavior_id, NOW() "
+        "FROM ods_zhique_behavior_list_day b "
+        "INNER JOIN tmp_crm_mobiles m ON m.mobile = b.mobile_phone "
+        "INNER JOIN ods_crm_contact_day cm ON cm.mobile = b.mobile_phone "
+        "  AND cm.customer_name IS NOT NULL AND cm.customer_name != '' "
+    )
 
-    while True:
-        sql = text(
-            "INSERT IGNORE INTO dws_interaction_detail "
-            "  (customer_name, contact_name, mobile, source_table, "
-            "   channel, behavior_type, content, event_time, source_id, etl_time) "
-            "SELECT "
-            "  cm.customer_name, b.contact_name, b.mobile_phone, 'zhique', "
-            f"  {channel_case}, b.behavior_type, b.behavior_name, "
-            "  b.behavior_time, b.behavior_id, NOW() "
-            "FROM ods_zhique_behavior_list_day b "
-            "INNER JOIN ods_crm_contact_day cm "
-            "  ON cm.mobile COLLATE utf8mb4_0900_ai_ci "
-            "   = b.mobile_phone COLLATE utf8mb4_0900_ai_ci "
-            "  AND cm.customer_name IS NOT NULL AND cm.customer_name != '' "
-            "WHERE b.id > :offset "
-            "ORDER BY b.id "
-            f"LIMIT {BATCH_SIZE}"
-        )
-        with engine.begin() as conn:
-            result = conn.execute(sql, {"offset": offset})
-            n = result.rowcount
-
-        if n == 0:
-            break
-        inserted += n
-        # Get max id processed
-        rows = _exec_query(
-            "SELECT MAX(id) FROM ods_zhique_behavior_list_day "
-            "WHERE id > :offset",
-            {"offset": offset},
-        )
-        offset = rows[0][0] if rows and rows[0][0] else offset + BATCH_SIZE
-        logger.info("    Zhique: %d / ~%d rows", inserted, total_rows)
-
-    logger.info("  Zhique behaviors → interaction_detail: %d rows", inserted)
-    return inserted
+    logger.info("  Zhique behaviors → interaction_detail: %d rows", n)
+    return n
 
 
 def _load_interactions_tianrun() -> int:
-    """Load Tianrun sessions (897K) → dws_interaction_detail.
+    """Load Tianrun sessions → dws_interaction_detail.
 
     Tianrun sessions are online customer-service chats.  The visitor_mobile_phone
     is NULL for all rows.  We use visitor_id as the contact identifier and
     the contact_type_name as the channel source.  Customer names are channel
     labels rather than real company names, so we keep them for traceability.
+
+    customer_name is not indexed on ods_tianrun_session_day; we do a single
+    full pass over the ~777K-row table and keep rows with non-null names.
     """
     total_rows = _table_count("ods_tianrun_session_day")
     logger.info(
-        "  Loading %d Tianrun sessions (batch size %d)…",
-        total_rows, BATCH_SIZE,
+        "  Loading Tianrun sessions (single pass over %d rows)...",
+        total_rows,
     )
 
-    engine = get_etl_engine()
-    inserted = 0
-    offset = 0
+    n = _exec(
+        "INSERT IGNORE INTO dws_interaction_detail "
+        "  (customer_name, contact_name, source_table, channel, "
+        "   behavior_type, content, event_time, "
+        "   is_high_value, source_id, etl_time) "
+        "SELECT "
+        "  s.customer_name, "
+        "  s.visitor_name, 'tianrun', "
+        "  CASE s.contact_type_name "
+        "    WHEN '网页' THEN 'web' "
+        "    WHEN '企微客服' THEN 'wechat' "
+        "    WHEN '百度营销' THEN 'web' "
+        "    ELSE 'web' "
+        "  END, "
+        "  COALESCE(s.receive_type_name, 'online_chat'), "
+        "  COALESCE(s.close_reason_name, ''), "
+        "  FROM_UNIXTIME(s.start_time_sec), "
+        "  CASE WHEN s.total_duration > 60 THEN 1 ELSE 0 END, "
+        "  s.id, NOW() "
+        "FROM ods_tianrun_session_day s "
+        "WHERE s.customer_name IS NOT NULL AND s.customer_name != '' "
+        "  AND s.visitor_name IS NOT NULL AND s.visitor_name != ''"
+    )
 
-    while True:
-        sql = text(
-            "INSERT IGNORE INTO dws_interaction_detail "
-            "  (customer_name, contact_name, source_table, channel, "
-            "   behavior_type, content, event_time, "
-            "   is_high_value, source_id, etl_time) "
-            "SELECT "
-            "  s.customer_name, "
-            "  s.visitor_name, 'tianrun', "
-            "  CASE s.contact_type_name "
-            "    WHEN '网页' THEN 'web' "
-            "    WHEN '企微客服' THEN 'wechat' "
-            "    WHEN '百度营销' THEN 'web' "
-            "    ELSE 'web' "
-            "  END, "
-            "  COALESCE(s.receive_type_name, 'online_chat'), "
-            "  COALESCE(s.close_reason_name, ''), "
-            "  FROM_UNIXTIME(s.start_time_sec), "
-            "  CASE WHEN s.total_duration > 60 THEN 1 ELSE 0 END, "
-            "  s.id, NOW() "
-            "FROM ods_tianrun_session_day s "
-            "WHERE s.id > :offset "
-            "  AND s.customer_name IS NOT NULL AND s.customer_name != '' "
-            "ORDER BY s.id "
-            f"LIMIT {BATCH_SIZE}"
-        )
-        with engine.begin() as conn:
-            result = conn.execute(sql, {"offset": offset})
-            n = result.rowcount
-
-        if n == 0:
-            break
-        inserted += n
-        rows = _exec_query(
-            "SELECT MAX(id) FROM ods_tianrun_session_day WHERE id > :offset",
-            {"offset": offset},
-        )
-        offset = rows[0][0] if rows and rows[0][0] else offset + BATCH_SIZE
-        logger.info("    Tianrun: %d / ~%d rows", inserted, total_rows)
-
-    logger.info("  Tianrun sessions → interaction_detail: %d rows", inserted)
-    return inserted
+    logger.info("  Tianrun sessions → interaction_detail: %d rows", n)
+    return n
 
 
 def _load_interactions_linkflow() -> int:
-    """Load Linkflow events (16.5M) → dws_interaction_detail.
+    """Load Linkflow events → dws_interaction_detail.
 
-    Events are linked to contacts via contact_id.  All events are web activity
-    (page views, clicks, etc.) so channel is always 'web'.
+    Drives the query from tmp_valid_linkflow_contacts (small) and uses the
+    idx_lfe_cid index on ods_linkflow_events_day.contact_id.  With only a few
+    hundred valid contacts, a single INSERT ... SELECT is faster than batching
+    by contact_id and avoids extra round-trips.
     """
-    total_rows = _table_count("ods_linkflow_events_day")
+    total_contacts = _table_count("tmp_valid_linkflow_contacts")
     logger.info(
-        "  Loading %d Linkflow events (batch size %d)…",
-        total_rows, BATCH_SIZE,
+        "  Loading Linkflow events using %d valid contacts...",
+        total_contacts,
     )
 
-    engine = get_etl_engine()
-    inserted = 0
-    offset = 0
+    n = _exec(
+        "INSERT IGNORE INTO dws_interaction_detail "
+        "  (customer_name, contact_name, mobile, source_table, "
+        "   channel, behavior_type, event_time, source_id, etl_time) "
+        "SELECT "
+        "  lc.customer_name, lc.name, lc.mobile_phone, 'linkflow', "
+        "  'web', e.event_name, "
+        "  FROM_UNIXTIME(e.event_date_ms / 1000), "
+        "  e.event_id, NOW() "
+        "FROM ods_linkflow_events_day e "
+        "INNER JOIN tmp_valid_linkflow_contacts lc ON lc.contact_id = e.contact_id"
+    )
 
-    while True:
-        sql = text(
-            "INSERT IGNORE INTO dws_interaction_detail "
-            "  (customer_name, contact_name, mobile, source_table, "
-            "   channel, behavior_type, event_time, source_id, etl_time) "
-            "SELECT "
-            "  crm.customer_name, lc.name, lc.mobile_phone, 'linkflow', "
-            "  'web', e.event_name, "
-            "  FROM_UNIXTIME(e.event_date_ms / 1000), "
-            "  e.event_id, NOW() "
-            "FROM ods_linkflow_events_day e "
-            "INNER JOIN ods_linkflow_contacts_day lc ON lc.contact_id = e.contact_id "
-            "INNER JOIN ods_crm_contact_day crm "
-            "  ON crm.mobile COLLATE utf8mb4_0900_ai_ci "
-            "   = lc.mobile_phone COLLATE utf8mb4_0900_ai_ci "
-            "WHERE e.id > :offset "
-            "  AND lc.mobile_phone IS NOT NULL AND lc.mobile_phone != '' "
-            "  AND crm.customer_name IS NOT NULL AND crm.customer_name != '' "
-            "ORDER BY e.id "
-            f"LIMIT {BATCH_SIZE}"
-        )
-        with engine.begin() as conn:
-            result = conn.execute(sql, {"offset": offset})
-            n = result.rowcount
-
-        if n == 0:
-            break
-        inserted += n
-        rows = _exec_query(
-            "SELECT MAX(id) FROM ods_linkflow_events_day WHERE id > :offset",
-            {"offset": offset},
-        )
-        offset = rows[0][0] if rows and rows[0][0] else offset + BATCH_SIZE
-        if inserted % (BATCH_SIZE * 10) < BATCH_SIZE:
-            logger.info("    Linkflow: %d / ~%d rows", inserted, total_rows)
-
-    logger.info("  Linkflow events → interaction_detail: %d rows", inserted)
-    return inserted
+    logger.info("  Linkflow events → interaction_detail: %d rows", n)
+    return n
 
 
 def _load_interaction_detail() -> Dict[str, int]:
@@ -683,8 +837,11 @@ def _build_customer_360() -> int:
 
     Three-phase approach:
     1. INSERT interaction aggregates from dws_interaction_detail
-    2. UPDATE with CRM opportunity metrics from ods_crm_opportunity_day
-    3. UPDATE derived fields (role_coverage, data_coverage, source_tables)
+    2. UPDATE with pre-aggregated CRM contact attributes from tmp_crm_contact_attr
+    3. UPDATE with pre-aggregated CRM opportunity metrics from tmp_crm_opportunity_agg
+    4. UPDATE derived fields (role_coverage, data_coverage, source_tables)
+
+    Requires tmp_crm_contact_attr and tmp_crm_opportunity_agg to be populated.
     """
     logger.info("Truncating dws_customer_360 for full rebuild…")
     _exec("TRUNCATE TABLE dws_customer_360")
@@ -724,23 +881,13 @@ def _build_customer_360() -> int:
     )
     logger.info("Phase 1 done: %d customer rows", n)
 
-    # ── Phase 2: Enrich with CRM contact attributes ─────────────────────
+    # ── Phase 2: Enrich with pre-aggregated CRM contact attributes ───────
     logger.info("Phase 2: Enriching with CRM contact attributes…")
     n = _exec(
         "UPDATE dws_customer_360 c360 "
-        "INNER JOIN ( "
-        "  SELECT "
-        "    customer_name, "
-        "    MAX(industry) AS industry, "
-        "    MAX(ruijie_region) AS region, "
-        "    MAX(sales_name) AS owner_name, "
-        "    COUNT(DISTINCT contact_name) AS contact_count, "
-        "    COUNT(DISTINCT CASE WHEN mobile IS NOT NULL AND mobile != '' "
-        "        THEN mobile END) AS mobile_count "
-        "  FROM ods_crm_contact_day "
-        "  GROUP BY customer_name "
-        ") crm ON crm.customer_name COLLATE utf8mb4_0900_ai_ci "
-        "     = c360.customer_name COLLATE utf8mb4_0900_ai_ci "
+        "INNER JOIN tmp_crm_contact_attr crm "
+        "  ON crm.customer_name COLLATE utf8mb4_0900_ai_ci "
+        "   = c360.customer_name COLLATE utf8mb4_0900_ai_ci "
         "SET "
         "  c360.industry       = COALESCE(crm.industry, c360.industry), "
         "  c360.region         = COALESCE(crm.region, c360.region), "
@@ -750,24 +897,13 @@ def _build_customer_360() -> int:
     )
     logger.info("Phase 2 done: %d rows enriched", n)
 
-    # ── Phase 3: Enrich with CRM opportunity metrics ────────────────────
+    # ── Phase 3: Enrich with pre-aggregated CRM opportunity metrics ──────
     logger.info("Phase 3: Enriching with CRM opportunity metrics…")
     n = _exec(
         "UPDATE dws_customer_360 c360 "
-        "INNER JOIN ( "
-        "  SELECT "
-        "    customer_name, "
-        "    MAX(customer_stage) AS purchase_stage, "
-        "    MAX(forecast_type) AS forecast_type, "
-        "    COUNT(CASE WHEN is_active = 1 THEN 1 END) AS active_opp_count, "
-        "    COALESCE(SUM(CASE WHEN is_active = 1 "
-        "        THEN amount_10k * 10000 ELSE 0 END), 0) AS active_opp_amount, "
-        "    COUNT(CASE WHEN is_funnel = '是' THEN 1 END) AS funnel_opp_count, "
-        "    COALESCE(SUM(actual_order_amount_10k * 10000), 0) AS won_amount "
-        "  FROM ods_crm_opportunity_day "
-        "  GROUP BY customer_name "
-        ") opp ON opp.customer_name COLLATE utf8mb4_0900_ai_ci "
-        "     = c360.customer_name COLLATE utf8mb4_0900_ai_ci "
+        "INNER JOIN tmp_crm_opportunity_agg opp "
+        "  ON opp.customer_name COLLATE utf8mb4_0900_ai_ci "
+        "   = c360.customer_name COLLATE utf8mb4_0900_ai_ci "
         "SET "
         "  c360.purchase_stage    = opp.purchase_stage, "
         "  c360.forecast_type     = opp.forecast_type, "
@@ -849,6 +985,24 @@ def _build_contact_360() -> int:
     logger.info("Truncating dws_contact_360 for full rebuild…")
     _exec("TRUNCATE TABLE dws_contact_360")
 
+    logger.info("Building contact-level interaction aggregates…")
+    _exec("TRUNCATE TABLE tmp_contact_interactions")
+    agg_rows = _exec(
+        "INSERT INTO tmp_contact_interactions "
+        "  (contact_name, mobile, interaction_count, interaction_count_30d, "
+        "   last_interaction_time) "
+        "SELECT "
+        "  contact_name, mobile, "
+        "  COUNT(*) AS interaction_count, "
+        "  SUM(CASE WHEN event_time >= DATE_SUB(NOW(), INTERVAL 30 DAY) "
+        "      THEN 1 ELSE 0 END) AS interaction_count_30d, "
+        "  MAX(event_time) AS last_interaction_time "
+        "FROM dws_interaction_detail "
+        "WHERE contact_name IS NOT NULL "
+        "GROUP BY contact_name, mobile"
+    )
+    logger.info("Contact interaction aggregates ready: %d rows", agg_rows)
+
     logger.info("Building contact-level 360 aggregates…")
 
     n = _exec(
@@ -869,17 +1023,9 @@ def _build_contact_360() -> int:
         "  NOW() "
         "FROM dws_contact_mapping cm "
         "LEFT JOIN dws_customer_360 c360 ON c360.customer_name = cm.customer_name "
-        "LEFT JOIN ( "
-        "  SELECT contact_name, mobile, "
-        "    COUNT(*) AS interaction_count, "
-        "    SUM(CASE WHEN event_time >= DATE_SUB(NOW(), INTERVAL 30 DAY) "
-        "        THEN 1 ELSE 0 END) AS interaction_count_30d, "
-        "    MAX(event_time) AS last_interaction_time "
-        "  FROM dws_interaction_detail "
-        "  WHERE contact_name IS NOT NULL "
-        "  GROUP BY contact_name, mobile "
-        ") agg ON (agg.contact_name = cm.contact_name "
-        "          AND agg.mobile <=> cm.mobile) "
+        "LEFT JOIN tmp_contact_interactions agg "
+        "  ON agg.contact_name = cm.contact_name "
+        " AND agg.mobile <=> cm.mobile "
         "ON DUPLICATE KEY UPDATE "
         "  interaction_count     = VALUES(interaction_count), "
         "  interaction_count_30d = VALUES(interaction_count_30d), "
@@ -927,7 +1073,7 @@ def _update_sync_meta(total_rows: int) -> None:
     now_str = now.strftime("%Y-%m-%d %H:%M:%S")
 
     for tbl in _ODS_TABLES:
-        cnt = _table_count(tbl)
+        cnt = _table_count_approx(tbl)
         _exec(
             "INSERT INTO dws_sync_meta "
             "  (table_name, last_sync_time, last_run_time, rows_synced, status) "
@@ -1205,35 +1351,57 @@ def run_full_sync(trigger_by: str = "system") -> Dict[str, Any]:
         stats["steps"]["table_swap"] = "completed"
         
         # Step 2: Ensure schema for incremental sync
-        logger.info("── Step 2: Ensuring schema for incremental sync ──")
+        t0 = _phase_start("Step 2: Ensuring schema for incremental sync")
         ensure_schema_for_incremental()
-        
-        logger.info("── Step 3: Building ICP customers table ──")
+        _phase_end("Step 2: Ensuring schema for incremental sync", t0)
+
+        # Step 3: Build ETL helper temp tables
+        t0 = _phase_start("Step 3: Building ETL helper temp tables")
+        _create_etl_temp_tables()
+        _phase_end("Step 3: Building ETL helper temp tables", t0)
+
+        # Step 4: Building ICP customers table
+        t0 = _phase_start("Step 4: Building ICP customers table")
         icp_count = _build_icp_customers_table()
+        _build_tmp_icp_filters()
         stats["steps"]["icp_customers"] = {"rows": icp_count}
-        
-        logger.info("── Step 4: Creating indexes ──")
+        _phase_end("Step 4: Building ICP customers table", t0)
+
+        # Step 5: Creating indexes
+        t0 = _phase_start("Step 5: Creating indexes")
         _create_indexes()
         stats["steps"]["indexes"] = "created"
-        
-        logger.info("── Step 5: Loading contact mapping (full) ──")
+        _phase_end("Step 5: Creating indexes", t0)
+
+        # Step 6: Loading contact mapping (full)
+        t0 = _phase_start("Step 6: Loading contact mapping (full)")
+        _build_tmp_crm_mobiles()
+        _build_tmp_valid_linkflow_contacts()
         cm_stats = _load_contact_mapping()
         stats["steps"]["contact_mapping"] = cm_stats
-        
-        logger.info("── Step 6: Loading interaction detail (full) ──")
+        _phase_end("Step 6: Loading contact mapping (full)", t0)
+
+        # Step 7: Loading interaction detail (full)
+        t0 = _phase_start("Step 7: Loading interaction detail (full)")
         ix_stats = _load_interaction_detail()
         stats["steps"]["interaction_detail"] = ix_stats
-        
-        logger.info("── Step 7: Building customer-360 ──")
+        _phase_end("Step 7: Loading interaction detail (full)", t0)
+
+        # Step 8: Building customer-360
+        t0 = _phase_start("Step 8: Building customer-360")
+        _build_tmp_crm_aggregates()
         c360_count = _build_customer_360()
         stats["steps"]["customer_360"] = {"rows": c360_count}
-        
-        logger.info("── Step 8: Building contact-360 ──")
+        _phase_end("Step 8: Building customer-360", t0)
+
+        # Step 9: Building contact-360
+        t0 = _phase_start("Step 9: Building contact-360")
         ct360_count = _build_contact_360()
         stats["steps"]["contact_360"] = {"rows": ct360_count}
-        
-        # Step 9: Validating data quality
-        logger.info("── Step 9: Validating data quality ──")
+        _phase_end("Step 9: Building contact-360", t0)
+
+        # Step 10: Validating data quality
+        t0 = _phase_start("Step 10: Validating data quality")
         validation_passed = True
         validation_details = {}
         for table in dws_tables:
@@ -1242,8 +1410,9 @@ def run_full_sync(trigger_by: str = "system") -> Dict[str, Any]:
             if not validation_result["valid"]:
                 validation_passed = False
                 logger.error("Validation failed for %s: %s", table, validation_result["error_message"])
-        
+
         stats["steps"]["validation"] = validation_details
+        _phase_end("Step 10: Validating data quality", t0)
         
         if not validation_passed:
             # Rollback: swap back to original tables
@@ -1337,6 +1506,9 @@ def run_full_sync(trigger_by: str = "system") -> Dict[str, Any]:
         )
         raise
 
+    finally:
+        _drop_etl_temp_tables()
+
 
 # ─────────────────────────────────────────────────────────────────────
 # Incremental Sync Logic
@@ -1375,75 +1547,91 @@ def run_incremental_sync(trigger_by: str = "system") -> Dict[str, Any]:
     
     try:
         # Step 0: Ensure backup tables exist
-        logger.info("── Step 0: Ensuring backup tables exist ──")
+        t0 = _phase_start("Step 0: Ensuring backup tables exist")
         ensure_backup_tables()
         stats["steps"]["backup_tables"] = "ensured"
-        
+        _phase_end("Step 0: Ensuring backup tables exist", t0)
+
         # Step 1: Prepare for table rotation
-        # Strategy: 1. Copy existing data from main to temp
-        #           2. Apply incremental changes to temp
-        #           3. Rotate tables: main -> backup, temp -> main
-        logger.info("── Step 1: Preparing for table rotation ──")
+        t0 = _phase_start("Step 1: Preparing for table rotation")
         engine = get_etl_engine()
         with engine.begin() as conn:
             for table in dws_tables:
                 temp_table = f"{table}_temp"
                 backup_table = f"{table}_backup"
-                
+
                 # Ensure temp table exists with same structure
                 conn.execute(text(f"CREATE TABLE IF NOT EXISTS {temp_table} LIKE {table}"))
-                
+
                 # Copy existing data from main to temp (for ON DUPLICATE KEY UPDATE to work)
                 # Use INSERT IGNORE to avoid duplicate primary key errors
                 conn.execute(text(f"INSERT IGNORE INTO {temp_table} SELECT * FROM {table}"))
                 logger.info("  Copied existing data from %s to %s", table, temp_table)
         stats["steps"]["table_swap"] = "prepared"
-        stats["steps"]["table_swap"] = "prepared"
-        
+        _phase_end("Step 1: Preparing for table rotation", t0)
+
         # Step 2: Ensure schema for incremental sync
-        logger.info("── Step 2: Ensuring schema for incremental sync ──")
+        t0 = _phase_start("Step 2: Ensuring schema for incremental sync")
         ensure_schema_for_incremental()
-        
-        logger.info("── Step 3: Creating indexes ──")
+        _phase_end("Step 2: Ensuring schema for incremental sync", t0)
+
+        # Step 3: Create ETL helper temp tables
+        t0 = _phase_start("Step 3: Creating ETL helper temp tables")
+        _create_etl_temp_tables()
+        _build_tmp_icp_filters()
+        _build_tmp_crm_mobiles()
+        _build_tmp_valid_linkflow_contacts()
+        _phase_end("Step 3: Creating ETL helper temp tables", t0)
+
+        # Step 4: Creating indexes
+        t0 = _phase_start("Step 4: Creating indexes")
         _create_indexes()
         stats["steps"]["indexes"] = "created"
-        
-        logger.info("── Step 4: UPSERT contact mapping (true incremental) ──")
+        _phase_end("Step 4: Creating indexes", t0)
+
+        # Step 5: UPSERT contact mapping (true incremental)
+        t0 = _phase_start("Step 5: UPSERT contact mapping (true incremental)")
         cm_stats = _incremental_upsert_contact_mapping(batch_id)
         stats["steps"]["contact_mapping"] = cm_stats
-        
-        # Step 4.5: Update tmp_icp_customers with new Zhique customers
-        logger.info("── Step 4.5: Updating tmp_icp_customers with new Zhique customers ──")
+        _phase_end("Step 5: UPSERT contact mapping (true incremental)", t0)
+
+        # Step 5.5: Update tmp_icp_customers with new Zhique customers
+        t0 = _phase_start("Step 5.5: Updating tmp_icp_customers with new Zhique customers")
         _incremental_update_icp_customers(batch_id)
         stats["steps"]["icp_customers"] = "updated"
-        
-        logger.info("── Step 5: UPSERT interaction detail (true incremental) ──")
+        _phase_end("Step 5.5: Updating tmp_icp_customers with new Zhique customers", t0)
+
+        # Step 6: UPSERT interaction detail (true incremental)
+        t0 = _phase_start("Step 6: UPSERT interaction detail (true incremental)")
         ix_stats = _incremental_upsert_interaction_detail(batch_id)
         stats["steps"]["interaction_detail"] = ix_stats
-        
+        _phase_end("Step 6: UPSERT interaction detail (true incremental)", t0)
+
         # Rebuild aggregates if new interactions OR new contact mappings were inserted
         total_new_interactions = sum(ix_stats.values())
         total_new_contacts = sum(v for k, v in cm_stats.items() if k != "deleted")
-        
+
         # Also check if there are new ICP customers
         new_icp_count = _count_table_rows(
-            "tmp_icp_customers", 
+            "tmp_icp_customers",
             "customer_name NOT IN (SELECT customer_name FROM dws_customer_360_temp)"
         )
-        
+
         if total_new_interactions > 0 or total_new_contacts > 0 or new_icp_count > 0:
-            logger.info(
-                "── Step 3: Rebuilding aggregates (new data detected: %d interactions, %d contacts, %d new ICP) ──",
-                total_new_interactions, total_new_contacts, new_icp_count
+            t0 = _phase_start(
+                f"Step 7: Rebuilding aggregates (new data: {total_new_interactions} interactions, "
+                f"{total_new_contacts} contacts, {new_icp_count} new ICP)"
             )
+            _build_tmp_crm_aggregates()
             agg_stats = _incremental_rebuild_aggregates(batch_id)
             stats["steps"]["aggregates"] = agg_stats
+            _phase_end("Step 7: Rebuilding aggregates", t0)
         else:
-            logger.info("── Step 3: Skipping aggregate rebuild (no new data) ──")
+            logger.info("── Step 7: Skipping aggregate rebuild (no new data) ──")
             stats["steps"]["aggregates"] = {"skipped": "no new data"}
-        
-        # Step 6: Validate data quality (same as full sync)
-        logger.info("── Step 6: Validating data quality ──")
+
+        # Step 8: Validate data quality (same as full sync)
+        t0 = _phase_start("Step 8: Validating data quality")
         validation_passed = True
         validation_details = {}
         for table in dws_tables:
@@ -1452,9 +1640,10 @@ def run_incremental_sync(trigger_by: str = "system") -> Dict[str, Any]:
             if not validation_result["valid"]:
                 validation_passed = False
                 logger.error("Validation failed for %s: %s", table, validation_result["error_message"])
-        
+
         stats["steps"]["validation"] = validation_details
-        
+        _phase_end("Step 8: Validating data quality", t0)
+
         if not validation_passed:
             # Rollback: swap back to original tables
             logger.error("Data validation failed, rolling back...")
@@ -1469,56 +1658,49 @@ def run_incremental_sync(trigger_by: str = "system") -> Dict[str, Any]:
                         f"{temp_table} TO {table}"
                     ))
             raise Exception("Data validation failed, sync rolled back")
-        
-        # Step 7: Commit sync using atomic table rotation for incremental
-        # After this step: main table = new data, backup table = old data
-        logger.info("── Step 7: Committing sync (atomic table rotation for incremental) ──")
+
+        # Step 9: Commit sync using atomic table rotation for incremental
+        t0 = _phase_start("Step 9: Committing sync (atomic table rotation)")
         for table in dws_tables:
             _rotate_tables_for_incremental(table)
             logger.info("  Committed: %s now points to new data", table)
-        
-        # Step 8: Update sync metadata
-        logger.info("── Step 8: Updating sync metadata ──")
-        # Calculate actual rows_synced accurately
-        # For incremental sync, rows_synced = sum of all affected records
+        _phase_end("Step 9: Committing sync (atomic table rotation)", t0)
+
+        # Step 10: Update sync metadata
+        t0 = _phase_start("Step 10: Updating sync metadata")
         total_rows = sum(v for k, v in cm_stats.items() if k != "deleted")
         total_rows += sum(ix_stats.values())
-        
-        # Update sync metadata (which also updates last_sync_time)
         _update_sync_meta(total_rows)
         stats["steps"]["sync_meta"] = "updated"
-        
+        _phase_end("Step 10: Updating sync metadata", t0)
+
         elapsed = (datetime.now() - start_time).total_seconds()
         stats.update({
             "status": "success",
             "end_time": datetime.now().isoformat(),
             "elapsed_seconds": round(elapsed, 2),
         })
-        
-        # Calculate accurate rows_synced
-        # Note: MySQL rowcount for ON DUPLICATE KEY UPDATE returns:
-        #   1 for insert, 2 for update, 0 for no change
-        # We need to adjust for this to get accurate count
+
         accurate_rows_synced = _calculate_accurate_rows_synced(cm_stats, ix_stats, batch_id)
-        
+
         _update_sync_log(
             log_id=log_id,
             status="success",
             rows_synced=accurate_rows_synced,
             details=stats["steps"],
         )
-        
+
         logger.info("═══════════════════════════════════════════════════")
         logger.info(" Incremental sync completed in %.1f s", elapsed)
         logger.info(" Accurate rows_synced: %d", accurate_rows_synced)
         logger.info("═══════════════════════════════════════════════════")
         return stats
-        
+
     except Exception as exc:
         stats["status"] = "error"
         stats["error"] = str(exc)
         logger.exception("Incremental sync failed: %s", exc)
-        
+
         # Try to rollback table swap if needed
         try:
             engine = get_etl_engine()
@@ -1543,7 +1725,7 @@ def run_incremental_sync(trigger_by: str = "system") -> Dict[str, Any]:
                         logger.info("  Rolled back table swap for %s", table)
         except Exception as rollback_exc:
             logger.error("Failed to rollback table swap: %s", rollback_exc)
-        
+
         _update_sync_log(
             log_id=log_id,
             status="failed",
@@ -1551,6 +1733,9 @@ def run_incremental_sync(trigger_by: str = "system") -> Dict[str, Any]:
             details=stats.get("steps"),
         )
         raise
+
+    finally:
+        _drop_etl_temp_tables()
 
 
 def _calculate_accurate_rows_synced(cm_stats: Dict, ix_stats: Dict, batch_id: int) -> int:
@@ -1770,8 +1955,10 @@ def _incremental_upsert_contact_mapping(batch_id: int) -> Dict[str, int]:
         "  'crm', NOW(), :batch_id "
         "FROM ods_crm_contact_day c "
         "WHERE c.customer_name IS NOT NULL AND c.customer_name != '' "
-        "  AND ( c.customer_name IN (SELECT related_company FROM ods_zhique_contact_day) "
-        "     OR c.mobile IN (SELECT mobile FROM ods_zhique_contact_day WHERE mobile IS NOT NULL) ) "
+        "  AND ( "
+        "    c.customer_name IN (SELECT customer_name FROM tmp_icp_companies) "
+        "    OR c.mobile IN (SELECT mobile FROM tmp_icp_mobiles) "
+        "  ) "
         f" {crm_filter} "
         "ON DUPLICATE KEY UPDATE "
         "  contact_name = VALUES(contact_name), "
@@ -1829,14 +2016,10 @@ def _incremental_upsert_contact_mapping(batch_id: int) -> Dict[str, int]:
         "  (customer_name, contact_name, mobile, email, "
         "   linkflow_contact_id, source_table, etl_time, sync_batch_id) "
         "SELECT "
-        "  crm.customer_name, l.name, l.mobile_phone, l.email, "
-        "  l.contact_id, 'linkflow', NOW(), :batch_id "
-        "FROM ods_linkflow_contacts_day l "
-        "INNER JOIN ods_crm_contact_day crm "
-        "  ON crm.mobile COLLATE utf8mb4_0900_ai_ci "
-        "   = l.mobile_phone COLLATE utf8mb4_0900_ai_ci "
-        "WHERE l.mobile_phone IS NOT NULL AND l.mobile_phone != '' "
-        "  AND crm.customer_name IS NOT NULL AND crm.customer_name != '' "
+        "  lc.customer_name, lc.name, lc.mobile_phone, l.email, "
+        "  lc.contact_id, 'linkflow', NOW(), :batch_id "
+        "FROM tmp_valid_linkflow_contacts lc "
+        "INNER JOIN ods_linkflow_contacts_day l ON l.contact_id = lc.contact_id "
         f" {linkflow_filter} "
         "ON DUPLICATE KEY UPDATE "
         "  contact_name = VALUES(contact_name), "
@@ -1907,12 +2090,12 @@ def _incremental_upsert_interaction_detail(batch_id: int) -> Dict[str, int]:
     channel_case = _build_zhique_channel_case()
     zhique_filter = ""
     zhique_params: Dict[str, Any] = {"batch_id": batch_id}
-    
+
     if last_sync_zhique:
-        zhique_filter = "AND b.behavior_time > :last_sync_time"
+        zhique_filter = "AND b.etl_time > :last_sync_time"
         zhique_params["last_sync_time"] = last_sync_zhique
         logger.info("  Zhique: filtering behaviors after %s", last_sync_zhique)
-    
+
     engine = get_etl_engine()
     sql = text(
         "INSERT IGNORE INTO dws_interaction_detail_temp "
@@ -1923,10 +2106,9 @@ def _incremental_upsert_interaction_detail(batch_id: int) -> Dict[str, int]:
         f"  {channel_case}, b.behavior_type, b.behavior_name, "
         "  b.behavior_time, b.id, NOW(), :batch_id "
         "FROM ods_zhique_behavior_list_day b "
-        "INNER JOIN ods_crm_contact_day cm "
-        "  ON cm.mobile COLLATE utf8mb4_0900_ai_ci "
-        "   = b.mobile_phone COLLATE utf8mb4_0900_ai_ci "
-        "WHERE cm.customer_name IS NOT NULL AND cm.customer_name != '' "
+        "INNER JOIN tmp_crm_mobiles m ON m.mobile = b.mobile_phone "
+        "INNER JOIN ods_crm_contact_day cm ON cm.mobile = b.mobile_phone "
+        "  AND cm.customer_name IS NOT NULL AND cm.customer_name != '' "
         f"  {zhique_filter}"
     )
     
@@ -1954,28 +2136,20 @@ def _incremental_upsert_interaction_detail(batch_id: int) -> Dict[str, int]:
 
 def _incremental_load_tianrun(batch_id: int, last_sync_time: datetime | None = None) -> int:
     """True incremental load of new Tianrun sessions.
-    
-    Uses single INSERT IGNORE ... SELECT for optimal performance.
-    Only processes ICP customer data (small dataset, no batching needed).
-    
-    Args:
-        batch_id: Current sync batch ID
-        last_sync_time: Last successful sync time, if None process all
+
+    Uses etl_time (instead of unindexed start_time_sec) for filtering and
+    joins tmp_icp_customers to restrict to ICP customers.
     """
     engine = get_etl_engine()
-    
-    # Build time filter - Tianrun uses start_time_sec (Unix timestamp)
+
     time_filter = ""
     params: Dict[str, Any] = {"batch_id": batch_id}
-    
+
     if last_sync_time:
-        # Convert datetime to Unix timestamp
-        last_sync_timestamp = int(last_sync_time.timestamp())
-        time_filter = "AND s.start_time_sec > :last_sync_timestamp"
-        params["last_sync_timestamp"] = last_sync_timestamp
-        logger.info("  Tianrun: filtering sessions after timestamp %d", last_sync_timestamp)
-    
-    # Single INSERT IGNORE ... SELECT (no batching needed for ICP customers)
+        time_filter = "AND s.etl_time > :last_sync_time"
+        params["last_sync_time"] = last_sync_time
+        logger.info("  Tianrun: filtering sessions after %s", last_sync_time)
+
     sql = text(
         "INSERT IGNORE INTO dws_interaction_detail_temp "
         "  (customer_name, contact_name, source_table, channel, "
@@ -1996,66 +2170,53 @@ def _incremental_load_tianrun(batch_id: int, last_sync_time: datetime | None = N
         "  CASE WHEN s.total_duration > 60 THEN 1 ELSE 0 END, "
         "  s.id, NOW(), :batch_id "
         "FROM ods_tianrun_session_day s "
-        "WHERE s.customer_name IN (SELECT customer_name FROM tmp_icp_customers) "
+        "INNER JOIN tmp_icp_customers icp ON icp.customer_name = s.customer_name "
         f" {time_filter} "
         "  AND s.customer_name IS NOT NULL AND s.customer_name != ''"
     )
-    
+
     with engine.begin() as conn:
         result = conn.execute(sql, params)
         inserted = result.rowcount
-    
+
     logger.info("  Tianrun: %d new interactions (incremental)", inserted)
     return inserted
 
 
 def _incremental_load_linkflow(batch_id: int, last_sync_time: datetime | None = None) -> int:
     """True incremental load of new Linkflow events.
-    
-    Uses single INSERT IGNORE ... SELECT for optimal performance.
-    Only processes ICP customer data (small dataset, no batching needed).
-    
-    Args:
-        batch_id: Current sync batch ID
-        last_sync_time: Last successful sync time, if None process all
+
+    Uses etl_time (instead of unindexed event_date_ms) for filtering and
+    tmp_valid_linkflow_contacts to drive the idx_lfe_cid index.
     """
     engine = get_etl_engine()
-    
-    # Build time filter - Linkflow uses event_date_ms (Unix timestamp in milliseconds)
+
     time_filter = ""
     params: Dict[str, Any] = {"batch_id": batch_id}
-    
+
     if last_sync_time:
-        # Convert datetime to Unix timestamp in milliseconds
-        last_sync_ms = int(last_sync_time.timestamp() * 1000)
-        time_filter = "AND e.event_date_ms > :last_sync_ms"
-        params["last_sync_ms"] = last_sync_ms
-        logger.info("  Linkflow: filtering events after timestamp %d ms", last_sync_ms)
-    
-    # Single INSERT IGNORE ... SELECT (no batching needed for ICP customers)
-    # 优化：增加ICP客户过滤，避免处理非ICP客户的数据
+        time_filter = "AND e.etl_time > :last_sync_time"
+        params["last_sync_time"] = last_sync_time
+        logger.info("  Linkflow: filtering events after %s", last_sync_time)
+
     sql = text(
         "INSERT IGNORE INTO dws_interaction_detail_temp "
         "  (customer_name, contact_name, mobile, source_table, "
         "   channel, behavior_type, event_time, source_id, etl_time, sync_batch_id) "
         "SELECT "
-        "  cm.customer_name, lc.name, lc.mobile_phone, 'linkflow', "
+        "  lc.customer_name, lc.name, lc.mobile_phone, 'linkflow', "
         "  'web', e.event_name, "
         "  FROM_UNIXTIME(e.event_date_ms / 1000), "
         "  e.event_id, NOW(), :batch_id "
         "FROM ods_linkflow_events_day e "
-        "INNER JOIN ods_linkflow_contacts_day lc ON lc.contact_id = e.contact_id "
-        "INNER JOIN dws_contact_mapping cm ON cm.mobile = lc.mobile_phone "
-        "WHERE cm.customer_name IN (SELECT customer_name FROM tmp_icp_customers) "
+        "INNER JOIN tmp_valid_linkflow_contacts lc ON lc.contact_id = e.contact_id "
         f" {time_filter} "
-        "  AND lc.mobile_phone IS NOT NULL AND lc.mobile_phone != '' "
-        "  AND cm.customer_name IS NOT NULL AND cm.customer_name != ''"
     )
-    
+
     with engine.begin() as conn:
         result = conn.execute(sql, params)
         inserted = result.rowcount
-    
+
     logger.info("  Linkflow: %d new interactions (incremental)", inserted)
     return inserted
 
@@ -2200,62 +2361,41 @@ def _incremental_build_customer_360(batch_id: int) -> int:
             )
             total_updated += result.rowcount
         
-        # ── Phase 2: Enrich with CRM contact attributes ─────────────
+        # ── Phase 2: Enrich with pre-aggregated CRM contact attributes ─────────────
         with engine.begin() as conn:
             conn.execute(
                 text(
                     "UPDATE dws_customer_360_temp c360 "
-                    "INNER JOIN ( "
-                    "  SELECT "
-                    "    customer_name, "
-                    "    MAX(industry) AS industry, "
-                    "    MAX(ruijie_region) AS region, "
-                    "    MAX(sales_name) AS owner_name, "
-                    "    COUNT(DISTINCT contact_name) AS contact_count, "
-                    "    COUNT(DISTINCT CASE WHEN mobile IS NOT NULL AND mobile != '' "
-                    "        THEN mobile END) AS mobile_count "
-                    "  FROM ods_crm_contact_day "
-                    "  WHERE customer_name IN :customers "
-                    "  GROUP BY customer_name "
-                    ") crm ON crm.customer_name COLLATE utf8mb4_0900_ai_ci "
-                    "     = c360.customer_name COLLATE utf8mb4_0900_ai_ci "
+                    "INNER JOIN tmp_crm_contact_attr crm "
+                    "  ON crm.customer_name COLLATE utf8mb4_0900_ai_ci "
+                    "   = c360.customer_name COLLATE utf8mb4_0900_ai_ci "
                     "SET "
                     "  c360.industry       = COALESCE(crm.industry, c360.industry), "
                     "  c360.region         = COALESCE(crm.region, c360.region), "
                     "  c360.owner_name     = COALESCE(crm.owner_name, c360.owner_name), "
                     "  c360.contact_count  = crm.contact_count, "
-                    "  c360.mobile_count   = crm.mobile_count"
+                    "  c360.mobile_count   = crm.mobile_count "
+                    "WHERE c360.customer_name IN :customers"
                 ),
                 {"customers": tuple(batch)}
             )
-        
-        # ── Phase 3: Enrich with CRM opportunity metrics ─────────────
+
+        # ── Phase 3: Enrich with pre-aggregated CRM opportunity metrics ─────────────
         with engine.begin() as conn:
             conn.execute(
                 text(
                     "UPDATE dws_customer_360_temp c360 "
-                    "INNER JOIN ( "
-                    "  SELECT "
-                    "    customer_name, "
-                    "    MAX(customer_stage) AS purchase_stage, "
-                    "    MAX(forecast_type) AS forecast_type, "
-                    "    COUNT(CASE WHEN is_active = 1 THEN 1 END) AS active_opp_count, "
-                    "    COALESCE(SUM(CASE WHEN is_active = 1 "
-                    "        THEN amount_10k * 10000 ELSE 0 END), 0) AS active_opp_amount, "
-                    "    COUNT(CASE WHEN is_funnel = '是' THEN 1 END) AS funnel_opp_count, "
-                    "    COALESCE(SUM(actual_order_amount_10k * 10000), 0) AS won_amount "
-                    "  FROM ods_crm_opportunity_day "
-                    "  WHERE customer_name IN :customers "
-                    "  GROUP BY customer_name "
-                    ") opp ON opp.customer_name COLLATE utf8mb4_0900_ai_ci "
-                    "     = c360.customer_name COLLATE utf8mb4_0900_ai_ci "
+                    "INNER JOIN tmp_crm_opportunity_agg opp "
+                    "  ON opp.customer_name COLLATE utf8mb4_0900_ai_ci "
+                    "   = c360.customer_name COLLATE utf8mb4_0900_ai_ci "
                     "SET "
                     "  c360.purchase_stage    = opp.purchase_stage, "
                     "  c360.forecast_type     = opp.forecast_type, "
                     "  c360.active_opp_count  = opp.active_opp_count, "
                     "  c360.active_opp_amount = opp.active_opp_amount, "
                     "  c360.funnel_opp_count  = opp.funnel_opp_count, "
-                    "  c360.won_amount        = opp.won_amount"
+                    "  c360.won_amount        = opp.won_amount "
+                    "WHERE c360.customer_name IN :customers"
                 ),
                 {"customers": tuple(batch)}
             )
