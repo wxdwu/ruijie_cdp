@@ -3,7 +3,6 @@ import { onMounted, watch, ref } from 'vue'
 import { useCustomerStore } from '../stores/customer'
 import FilterBar from '../components/customer/FilterBar.vue'
 import CustomerTable from '../components/customer/CustomerTable.vue'
-import ExportButton from '../components/customer/ExportButton.vue'
 
 const store = useCustomerStore()
 const pageInput = ref('')
@@ -57,13 +56,12 @@ onMounted(() => {
 
 <template>
   <div class="flex flex-col gap-5 p-6">
-    <!-- Page Header with Export -->
-    <div class="flex items-center justify-between">
+    <!-- Page Header -->
+    <div>
       <div>
         <h1 class="text-xl font-semibold text-[var(--text)]">客户列表</h1>
         <p class="text-sm text-[var(--muted)]">共 {{ store.total }} 条记录，{{ store.totalPages }} 页</p>
       </div>
-      <ExportButton :filters="store.filters" />
     </div>
 
     <!-- Filter Bar -->
