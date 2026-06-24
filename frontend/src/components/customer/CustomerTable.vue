@@ -1,5 +1,7 @@
 <script setup>
 import { useRouter } from 'vue-router'
+import FieldHelpTooltip from './FieldHelpTooltip.vue'
+import { customerFieldHelp } from './fieldHelpConfig'
 
 const props = defineProps({
   customers: {
@@ -26,12 +28,29 @@ const intentColors = {
   '低': 'bg-gray-500/20 text-gray-400 border-gray-500/30',
 }
 
+const channelLabels = {
+  email: '邮件',
+  web: '官网',
+  event: '活动',
+  wechat: '微信',
+}
+
 function getStageClass(stage) {
   return stageColors[stage] || 'bg-gray-500/20 text-gray-400 border-gray-500/30'
 }
 
 function getIntentClass(intent) {
   return intentColors[intent] || 'bg-gray-500/20 text-gray-400 border-gray-500/30'
+}
+
+function formatInteractionDate(value) {
+  if (!value) return '-'
+  return String(value).slice(0, 10) || '-'
+}
+
+function formatInteractionChannel(value) {
+  if (!value) return ''
+  return channelLabels[value] || value
 }
 
 function handleRowClick(customer) {
@@ -45,12 +64,30 @@ function handleRowClick(customer) {
       <table class="w-full">
         <thead>
           <tr class="border-b border-[var(--line)] bg-white/5">
-            <th class="px-4 py-3 text-left text-xs font-medium text-[var(--muted)]">客户名称</th>
-            <th class="px-4 py-3 text-left text-xs font-medium text-[var(--muted)]">专项/行业</th>
-            <th class="px-4 py-3 text-left text-xs font-medium text-[var(--muted)]">采购阶段</th>
-            <th class="px-4 py-3 text-left text-xs font-medium text-[var(--muted)]">关键角色覆盖</th>
-            <th class="px-4 py-3 text-left text-xs font-medium text-[var(--muted)]">合作意向</th>
-            <th class="px-4 py-3 text-left text-xs font-medium text-[var(--muted)]">最近互动</th>
+            <th class="px-4 py-3 text-left text-xs font-medium text-[var(--muted)]">
+              客户名称
+              <FieldHelpTooltip :help="customerFieldHelp.customerName" />
+            </th>
+            <th class="px-4 py-3 text-left text-xs font-medium text-[var(--muted)]">
+              专项/行业
+              <FieldHelpTooltip :help="customerFieldHelp.projectIndustry" />
+            </th>
+            <th class="px-4 py-3 text-left text-xs font-medium text-[var(--muted)]">
+              采购阶段
+              <FieldHelpTooltip :help="customerFieldHelp.purchaseStage" />
+            </th>
+            <th class="px-4 py-3 text-left text-xs font-medium text-[var(--muted)]">
+              关键角色覆盖
+              <FieldHelpTooltip :help="customerFieldHelp.roleCoverage" />
+            </th>
+            <th class="px-4 py-3 text-left text-xs font-medium text-[var(--muted)]">
+              合作意向
+              <FieldHelpTooltip :help="customerFieldHelp.intent" align="end" />
+            </th>
+            <th class="px-4 py-3 text-left text-xs font-medium text-[var(--muted)]">
+              最近互动
+              <FieldHelpTooltip :help="customerFieldHelp.lastInteraction" align="end" />
+            </th>
             <th class="px-4 py-3 text-left text-xs font-medium text-[var(--muted)]">操作</th>
           </tr>
         </thead>
@@ -95,16 +132,22 @@ function handleRowClick(customer) {
             </td>
             <td class="px-4 py-3">
               <span
-                v-if="customer.intent_level"
+                v-if="customer.intent_score !== null && customer.intent_score !== undefined"
                 class="inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-medium"
                 :class="getIntentClass(customer.intent_level)"
               >
-                {{ customer.intent_level }}
+                {{ customer.intent_score }}
               </span>
               <span v-else class="text-[var(--muted)]">-</span>
+              <div class="mt-1 text-xs text-[var(--muted)]">
+                {{ customer.intent_level || '-' }}合作意向 · 互动{{ customer.interaction_count_total || 0 }}次
+              </div>
             </td>
             <td class="px-4 py-3">
-              <div class="text-sm text-[var(--muted)]">{{ customer.last_interaction_time || '-' }}</div>
+              <div class="text-sm text-[var(--muted)]">{{ formatInteractionDate(customer.last_interaction_time) }}</div>
+              <div v-if="customer.last_interaction_time" class="mt-1 text-xs text-[var(--muted)]/80">
+                {{ formatInteractionChannel(customer.last_interaction_channel) || '-' }}
+              </div>
             </td>
             <td class="px-4 py-3">
               <button
