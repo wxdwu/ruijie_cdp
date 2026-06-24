@@ -19,10 +19,12 @@ defineProps({
     <!-- KPI Cards -->
     <KpiCards
       :intent="customer.intent_level"
+      :intent-score="customer.intent_score"
       :interaction-count="customer.interaction_count_30d || 0"
       :stage="customer.purchase_stage"
       :key-roles="customer.role_coverage"
       :opportunity-count="customer.active_opp_count || 0"
+      :opportunity-amount="customer.active_opp_amount"
     />
 
     <!-- Customer profile and AI insight -->
@@ -35,6 +37,8 @@ defineProps({
       />
       <AiInsight
         class="h-full"
+        :customer="customer"
+        :opportunities="opportunities"
         :business-conclusion="aiInsight.business_conclusion"
         :top-contacts="aiInsight.contact_insights"
         :priority-contacts="priorityRecommendations"

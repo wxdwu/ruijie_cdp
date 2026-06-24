@@ -2,6 +2,8 @@
 import { computed, ref } from 'vue'
 
 const props = defineProps({
+  customer: { type: Object, default: () => ({}) },
+  opportunities: { type: Array, default: () => [] },
   businessConclusion: { type: Array, default: () => [] },
   topContacts: { type: Array, default: () => [] },
   priorityContacts: { type: Array, default: () => [] },
@@ -24,6 +26,64 @@ const contactTop3 = computed(() => {
   return (props.topContacts || []).slice(0, 3).map(contact => ({
     name: typeof contact === 'string' ? contact : (contact.contact_name || '未命名联系人'),
   }))
+})
+
+function normalizeList(value) {
+  if (!value) return []
+  if (Array.isArray(value)) return value
+  if (typeof value === 'string') {
+    if (value.startsWith('[')) {
+      try { return JSON.parse(value) } catch { /* fall through */ }
+    }
+    return value.split(',').map(item => item.trim()).filter(Boolean)
+  }
+  return []
+}
+
+function pick(source, ...keys) {
+  for (const key of keys) {
+    const value = source?.[key]
+    if (value !== null && value !== undefined && value !== '') return value
+  }
+  return null
+}
+
+function formatWan(value) {
+  if (value === null || value === undefined || value === '') return '—'
+  const number = Number(value)
+  if (!Number.isFinite(number)) return value
+  return `${number.toLocaleString('zh-CN', { maximumFractionDigits: 0 })}万`
+}
+
+const topOpportunity = computed(() => {
+  const items = [...(props.opportunities || [])]
+  if (!items.length) return null
+  return items.sort((a, b) => {
+    const amountA = Number(pick(a, 'amount', 'opp_amount', 'opportunity_amount', 'amount_wan') || 0)
+    const amountB = Number(pick(b, 'amount', 'opp_amount', 'opportunity_amount', 'amount_wan') || 0)
+    return amountB - amountA
+  })[0]
+})
+
+const focusFacts = computed(() => {
+  const topics = [
+    ...normalizeList(pick(props.customer, 'product_categories', 'product_interests')),
+    ...normalizeList(pick(props.customer, 'top_channels')),
+  ].slice(0, 3)
+  const competitors = normalizeList(pick(props.customer, 'competitors', 'main_competitors'))
+  const keyRoleText = props.customer.role_coverage || ''
+  const mainOpp = topOpportunity.value
+  return [
+    { label: '重点主题', value: topics.join('、') || '—' },
+    { label: '主要竞品', value: competitors.join('、') || pick(mainOpp, 'competitor', 'competitors') || '—' },
+    { label: '关键人缺口', value: keyRoleText && keyRoleText !== '全' ? keyRoleText : '无' },
+    {
+      label: '主商机',
+      value: mainOpp
+        ? `${pick(mainOpp, 'stage', 'forecast_type', 'sales_stage') || '—'} / ${formatWan(pick(mainOpp, 'amount', 'opp_amount', 'opportunity_amount', 'amount_wan'))}`
+        : '—',
+    },
+  ]
 })
 
 const companyInsights = computed(() => {
@@ -75,6 +135,16 @@ function evidenceLabel(key) {
             {{ businessConclusion.join('；') }}
           </p>
           <p v-else class="text-sm text-[var(--muted)]">暂无业务结论</p>
+        </div>
+      </section>
+
+      <section>
+        <div class="insight-section-title">Focus 关键事实</div>
+        <div class="focus-grid">
+          <div v-for="item in focusFacts" :key="item.label">
+            <span>{{ item.label }}</span>
+            <strong>{{ item.value }}</strong>
+          </div>
         </div>
       </section>
 
@@ -145,6 +215,29 @@ function evidenceLabel(key) {
   padding: 14px 16px;
   border-radius: 10px;
   background: rgba(79, 172, 254, 0.08);
+}
+
+.focus-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 14px;
+  padding: 12px;
+  border: 1px dashed rgba(159, 176, 208, 0.24);
+  border-radius: 10px;
+}
+
+.focus-grid span {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.focus-grid strong {
+  display: block;
+  margin-top: 4px;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 700;
 }
 
 .contact-row {

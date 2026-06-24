@@ -33,6 +33,7 @@ def list_customers(
     keyword: Optional[str] = Query(None, description="Search by customer_name"),
     industry: Optional[str] = Query(None, description="Filter by industry"),
     owner: Optional[str] = Query(None, description="Filter by owner_name"),
+    owner_keyword: Optional[str] = Query(None, description="Fuzzy search by owner_name"),
     stage: Optional[str] = Query(None, description="Filter by purchase_stage"),
     intent_level: Optional[str] = Query(None, description="Filter by intent_level"),
     interaction_min: Optional[int] = Query(None, description="Minimum interaction count"),
@@ -55,6 +56,9 @@ def list_customers(
     if owner:
         where_parts.append("owner_name = :owner")
         params["owner"] = owner
+    elif owner_keyword:
+        where_parts.append("owner_name LIKE :owner_keyword")
+        params["owner_keyword"] = f"%{owner_keyword}%"
     if stage:
         where_parts.append("purchase_stage = :stage")
         params["stage"] = stage
@@ -117,6 +121,7 @@ def list_customers(
         "keyword": keyword,
         "industry": industry,
         "owner": owner,
+        "owner_keyword": owner_keyword,
         "stage": stage,
         "intent_level": intent_level,
         "interaction_min": interaction_min,
@@ -290,6 +295,7 @@ def export_customers(
     keyword: Optional[str] = Query(None, description="Search by customer_name"),
     industry: Optional[str] = Query(None, description="Filter by industry"),
     owner: Optional[str] = Query(None, description="Filter by owner_name"),
+    owner_keyword: Optional[str] = Query(None, description="Fuzzy search by owner_name"),
     stage: Optional[str] = Query(None, description="Filter by purchase_stage"),
     intent_level: Optional[str] = Query(None, description="Filter by intent_level"),
     interaction_min: Optional[int] = Query(None, description="Minimum interaction count"),
@@ -318,6 +324,7 @@ def export_customers(
         keyword=keyword,
         industry=industry,
         owner=owner,
+        owner_keyword=owner_keyword,
         stage=stage,
         intent_level=intent_level,
         interaction_min=interaction_min,

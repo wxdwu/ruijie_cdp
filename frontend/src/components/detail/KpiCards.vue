@@ -1,11 +1,20 @@
 <script setup>
 defineProps({
   intent: { type: String, default: '-' },
+  intentScore: { type: [Number, String], default: null },
   interactionCount: { type: Number, default: 0 },
   stage: { type: String, default: '-' },
   keyRoles: { type: String, default: '-' },
   opportunityCount: { type: Number, default: 0 },
+  opportunityAmount: { type: [Number, String], default: null },
 })
+
+function formatWan(value) {
+  if (value === null || value === undefined || value === '') return '0'
+  const number = Number(value)
+  if (!Number.isFinite(number)) return '0'
+  return number.toLocaleString('zh-CN', { maximumFractionDigits: 0 })
+}
 
 const intentColors = {
   '高': 'bg-green-500/20 text-green-400 border-green-500/30',
@@ -21,27 +30,24 @@ const stageColors = {
 </script>
 
 <template>
-  <div class="grid grid-cols-5 gap-4">
+  <div class="grid grid-cols-4 gap-4">
     <!-- 合作意向 -->
     <div class="rounded-xl border border-[var(--line)] bg-[var(--panel)] p-4">
       <div class="text-xs text-[var(--muted)] mb-2">合作意向</div>
       <div class="text-2xl font-bold text-[var(--text)]">
+        <span v-if="intentScore !== null && intentScore !== undefined" class="mr-2 align-middle">
+          {{ intentScore }}
+        </span>
         <span
           v-if="intent !== '-'"
           class="inline-flex items-center rounded-full border px-3 py-1 text-sm font-medium"
           :class="intentColors[intent] || intentColors['低']"
         >
-          {{ intent }}
+            {{ intent }}
         </span>
         <span v-else class="text-[var(--muted)]">-</span>
       </div>
-    </div>
-
-    <!-- 近30天互动 -->
-    <div class="rounded-xl border border-[var(--line)] bg-[var(--panel)] p-4">
-      <div class="text-xs text-[var(--muted)] mb-2">近30天互动</div>
-      <div class="text-2xl font-bold text-[var(--text)]">{{ interactionCount }}</div>
-      <div class="text-xs text-[var(--muted)] mt-1">次</div>
+      <div class="text-xs text-[var(--muted)] mt-1">近30天互动 {{ interactionCount }} 次</div>
     </div>
 
     <!-- 采购阶段 -->
@@ -69,7 +75,7 @@ const stageColors = {
     <div class="rounded-xl border border-[var(--line)] bg-[var(--panel)] p-4">
       <div class="text-xs text-[var(--muted)] mb-2">在途商机</div>
       <div class="text-2xl font-bold text-[var(--text)]">{{ opportunityCount }}</div>
-      <div class="text-xs text-[var(--muted)] mt-1">个</div>
+      <div class="text-xs text-[var(--muted)] mt-1">个 · {{ formatWan(opportunityAmount) }} 万</div>
     </div>
   </div>
 </template>

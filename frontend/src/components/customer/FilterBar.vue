@@ -1,12 +1,16 @@
 <script setup>
-import { ref, onMounted } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { customerApi } from '../../api'
 
 const emit = defineEmits(['apply'])
 
 const keyword = ref('')
 const industry = ref('')
-const owner = ref('')
+const ownerInput = ref('')
+const selectedOwner = ref('')
+const ownerComboboxOpen = ref(false)
+const ownerComboboxRef = ref(null)
+const ownerInputRef = ref(null)
 const specialProject = ref(null)
 const channel = ref('')
 const interaction_min = ref(null)
@@ -24,6 +28,7 @@ const channels = [
   { value: 'wechat', label: '微信' },
 ]
 
+<<<<<<< HEAD
 const periodOptions = [
   { value: 30, label: '近30天' },
   { value: 60, label: '近60天' },
@@ -32,6 +37,13 @@ const periodOptions = [
   { value: 365, label: '近1年' },
   { value: 1095, label: '近3年' },
 ]
+=======
+const filteredOwners = computed(() => {
+  const q = ownerInput.value.trim().toLowerCase()
+  if (!q) return owners.value
+  return owners.value.filter((item) => item.toLowerCase().includes(q))
+})
+>>>>>>> 95bad19 (客户概览界面前端缺失字段补充)
 
 async function fetchFilterOptions() {
   try {
@@ -43,11 +55,47 @@ async function fetchFilterOptions() {
   }
 }
 
+function openOwnerCombobox() {
+  ownerComboboxOpen.value = true
+}
+
+function openOwnerComboboxFromArrow() {
+  ownerComboboxOpen.value = true
+  ownerInputRef.value?.focus()
+}
+
+function handleOwnerInput() {
+  if (ownerInput.value !== selectedOwner.value) {
+    selectedOwner.value = ''
+  }
+  ownerComboboxOpen.value = true
+}
+
+function selectOwner(value) {
+  selectedOwner.value = value
+  ownerInput.value = value
+  ownerComboboxOpen.value = false
+}
+
+function clearOwner() {
+  selectedOwner.value = ''
+  ownerInput.value = ''
+  ownerComboboxOpen.value = false
+}
+
+function handleDocumentMouseDown(event) {
+  if (!ownerComboboxRef.value?.contains(event.target)) {
+    ownerComboboxOpen.value = false
+  }
+}
+
 function handleApply() {
+  const ownerKeyword = ownerInput.value.trim()
   emit('apply', {
     keyword: keyword.value,
     industry: industry.value,
-    owner: owner.value,
+    owner: selectedOwner.value,
+    owner_keyword: selectedOwner.value ? '' : ownerKeyword,
     interaction_min: interaction_min.value,
     interaction_period: interaction_period.value, // 新增：时间范围
     channel: channel.value,
@@ -56,11 +104,16 @@ function handleApply() {
 
 onMounted(() => {
   fetchFilterOptions()
+  document.addEventListener('mousedown', handleDocumentMouseDown)
+})
+
+onBeforeUnmount(() => {
+  document.removeEventListener('mousedown', handleDocumentMouseDown)
 })
 </script>
 
 <template>
-  <div class="rounded-xl border border-[var(--line)] bg-[var(--panel)] p-5 backdrop-blur">
+  <div class="relative z-40 overflow-visible rounded-xl border border-[var(--line)] bg-[var(--panel)] p-5 backdrop-blur">
     <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
       <!-- 专项 -->
       <div class="flex flex-col gap-1.5">
@@ -98,13 +151,68 @@ onMounted(() => {
       <!-- 负责人 -->
       <div class="flex flex-col gap-1.5">
         <label class="text-xs font-medium text-[var(--muted)]">负责人</label>
-        <select
-          v-model="owner"
-          class="rounded-lg border border-[var(--line)] bg-[var(--bg1)] px-3 py-2 text-sm text-[var(--text)] focus:border-[var(--brand)] focus:outline-none"
-        >
-          <option value="">全部负责人</option>
-          <option v-for="item in owners" :key="item" :value="item">{{ item }}</option>
-        </select>
+        <div ref="ownerComboboxRef" class="relative">
+          <input
+            ref="ownerInputRef"
+            v-model="ownerInput"
+            type="text"
+            placeholder="输入负责人名称..."
+            class="w-full rounded-lg border border-[var(--line)] bg-[var(--bg1)] px-3 py-2 pr-16 text-sm text-[var(--text)] placeholder:text-[var(--muted)] focus:border-[var(--brand)] focus:outline-none"
+            role="combobox"
+            aria-label="负责人"
+            :aria-expanded="ownerComboboxOpen"
+            autocomplete="off"
+            @focus="openOwnerCombobox"
+            @click="openOwnerCombobox"
+            @input="handleOwnerInput"
+          />
+          <button
+            v-if="ownerInput"
+            type="button"
+            class="absolute right-8 top-1/2 -translate-y-1/2 text-sm text-[var(--muted)] hover:text-[var(--text)]"
+            aria-label="清空负责人"
+            @click="clearOwner"
+          >
+            x
+          </button>
+          <button
+            type="button"
+            class="absolute right-0 top-0 flex h-full w-9 items-center justify-center rounded-r-lg text-[var(--muted)] hover:text-[var(--text)]"
+            aria-label="展开负责人列表"
+            tabindex="-1"
+            @mousedown.prevent
+            @click="openOwnerComboboxFromArrow"
+          >
+            <span class="h-2 w-2 rotate-45 border-b border-r border-current"></span>
+          </button>
+          <div
+            v-if="ownerComboboxOpen"
+            class="absolute left-0 right-0 top-[calc(100%+0.25rem)] z-[100] max-h-60 overflow-y-auto rounded-lg border border-[var(--line)] bg-[var(--panel)] py-1 shadow-xl"
+          >
+            <button
+              type="button"
+              class="w-full px-3 py-2 text-left text-sm text-[var(--muted)] hover:bg-white/10"
+              @mousedown.prevent="clearOwner"
+            >
+              全部负责人
+            </button>
+            <button
+              v-for="item in filteredOwners"
+              :key="item"
+              type="button"
+              class="w-full px-3 py-2 text-left text-sm text-[var(--text)] hover:bg-white/10"
+              @mousedown.prevent="selectOwner(item)"
+            >
+              {{ item }}
+            </button>
+            <div
+              v-if="filteredOwners.length === 0"
+              class="px-3 py-2 text-sm text-[var(--muted)]"
+            >
+              无匹配负责人
+            </div>
+          </div>
+        </div>
       </div>
 
       <!-- 互动次数筛选 -->

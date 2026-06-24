@@ -26,6 +26,14 @@ function formatTime(val) {
     return d.toLocaleDateString('zh-CN')
   } catch (e) { return val }
 }
+
+function display(...keys) {
+  for (const key of keys) {
+    const value = props.contact?.[key]
+    if (value !== null && value !== undefined && value !== '') return value
+  }
+  return '-'
+}
 </script>
 
 <template>
@@ -33,7 +41,9 @@ function formatTime(val) {
     <div class="flex items-start justify-between mb-4">
       <div>
         <div class="text-lg font-medium text-[var(--text)]">{{ contact.contact_name || '未命名' }}</div>
-        <div class="text-sm text-[var(--muted)]">{{ contact.department || '-' }}</div>
+        <div class="text-sm text-[var(--muted)]">
+          {{ contact.position || '-' }} · {{ contact.department || '-' }}
+        </div>
       </div>
       <div class="flex gap-2">
         <span
@@ -54,17 +64,38 @@ function formatTime(val) {
     </div>
     <div class="space-y-2 mb-4">
       <div class="flex items-center gap-2 text-sm">
-        <span class="text-[var(--muted)]">📱</span>
+        <span class="text-[var(--muted)]">手机</span>
         <span class="text-[var(--text)]">{{ contact.mobile || '-' }}</span>
       </div>
       <div class="flex items-center gap-2 text-sm">
-        <span class="text-[var(--muted)]">📧</span>
+        <span class="text-[var(--muted)]">邮箱</span>
         <span class="text-[var(--text)]">{{ contact.email || '-' }}</span>
+      </div>
+      <div class="grid grid-cols-2 gap-x-4 gap-y-2 pt-2 text-xs">
+        <div><span class="text-[var(--muted)]">办公电话</span><div class="text-[var(--text)]">{{ display('office_phone', 'officePhone') }}</div></div>
+        <div><span class="text-[var(--muted)]">关系</span><div class="text-[var(--text)]">{{ display('relation_type', 'relationType', 'reports_to_id') }}</div></div>
+        <div><span class="text-[var(--muted)]">采购阶段</span><div class="text-[var(--text)]">{{ display('purchase_stage', 'purchaseStage') }}</div></div>
+        <div><span class="text-[var(--muted)]">联系人状态</span><div class="text-[var(--text)]">{{ display('Status__c', 'status', 'contact_validity') }}</div></div>
+        <div><span class="text-[var(--muted)]">内容类型兴趣</span><div class="text-[var(--text)]">{{ display('top_content_types', 'contentInterest') }}</div></div>
+        <div><span class="text-[var(--muted)]">产品兴趣</span><div class="text-[var(--text)]">{{ display('product_interests', 'productInterest') }}</div></div>
+        <div><span class="text-[var(--muted)]">数据来源</span><div class="text-[var(--text)]">{{ display('source_table', 'dataSource') }}</div></div>
+        <div><span class="text-[var(--muted)]">偏好触达</span><div class="text-[var(--text)]">{{ display('preferred_channel', 'preferredChannel') }}</div></div>
+      </div>
+      <div class="rounded-lg border border-[var(--line)] bg-white/5 p-3 text-xs">
+        <div class="mb-1 text-[var(--muted)]">推进方式</div>
+        <div class="text-[var(--text)]">{{ display('push_way', 'recommend_way') }}</div>
+        <div class="mb-1 mt-3 text-[var(--muted)]">推进话术</div>
+        <div class="leading-5 text-[var(--text)]">{{ display('push_script', 'recommend_script') }}</div>
       </div>
     </div>
     <div class="flex items-center justify-between pt-3 border-t border-[var(--line)] text-xs">
       <span class="text-[var(--muted)]">互动 {{ contact.interaction_count || 0 }} 次</span>
       <span class="text-[var(--muted)]">最近: {{ formatTime(contact.last_interaction_time) }}</span>
+    </div>
+    <div class="mt-3 flex flex-wrap gap-2 text-xs text-[var(--muted)]">
+      <span class="rounded border border-[var(--line)] px-2 py-1">高价值 {{ contact.high_value_count || 0 }}</span>
+      <span class="rounded border border-[var(--line)] px-2 py-1">近30天 {{ contact.interaction_count_30d || 0 }}</span>
+      <span class="rounded border border-[var(--line)] px-2 py-1">活跃度 / 合作意向 {{ contact.activity_level || '-' }} / {{ contact.intent_level || '-' }}</span>
     </div>
   </div>
 </template>

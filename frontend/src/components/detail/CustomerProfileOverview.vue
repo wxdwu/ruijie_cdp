@@ -17,6 +17,33 @@ function normalizeList(value) {
   return []
 }
 
+function pick(...keys) {
+  for (const key of keys) {
+    const value = props.customer?.[key]
+    if (value !== null && value !== undefined && value !== '') return value
+  }
+  return null
+}
+
+function display(...keys) {
+  const value = pick(...keys)
+  return value === null ? '—' : value
+}
+
+function formatBool(value) {
+  if (value === null || value === undefined || value === '') return '—'
+  if (value === true || value === 1 || value === '1' || value === '是' || value === 'Y') return '是'
+  if (value === false || value === 0 || value === '0' || value === '否' || value === 'N') return '否'
+  return value
+}
+
+function formatWan(value) {
+  if (value === null || value === undefined || value === '') return '—'
+  const number = Number(value)
+  if (!Number.isFinite(number)) return '—'
+  return `${number.toLocaleString('zh-CN', { maximumFractionDigits: 1 })} 万`
+}
+
 function formatAmount(value) {
   if (value === null || value === undefined || value === '') return '—'
   const number = Number(value)
@@ -42,6 +69,29 @@ const channelLabels = {
 function preferredChannels() {
   return normalizeList(props.customer.top_channels).map(channel => channelLabels[channel] || channel)
 }
+
+function addressText() {
+  const parts = [
+    pick('BillingState__c', 'billing_state', 'province'),
+    pick('BillingCity__c', 'billing_city', 'city'),
+    pick('address', 'billing_address', 'detail_address'),
+  ].filter(Boolean)
+  return parts.join(' ') || '—'
+}
+
+function businessTags() {
+  const tags = []
+  const demand = pick('demandType', 'demand_type')
+  const scenario = pick('businessScenario', 'business_scenario')
+  if (demand) tags.push(`需求·${demand}`)
+  if (scenario) tags.push(`场景·${scenario}`)
+  normalizeList(pick('painPoints', 'pain_points')).forEach(item => tags.push(`痛点·${item}`))
+  normalizeList(pick('historyProductLines', 'history_product_lines')).forEach(item => tags.push(`下单·${item}`))
+  normalizeList(props.customer.product_categories).forEach(item => tags.push(item))
+  if (props.customer.industry) tags.push(props.customer.industry)
+  if (props.customer.campaign_tag) tags.push(props.customer.campaign_tag)
+  return [...new Set(tags)]
+}
 </script>
 
 <template>
@@ -51,7 +101,7 @@ function preferredChannels() {
         <span class="text-sm font-semibold text-[var(--text)]">客户档案</span>
         <span class="ml-2 text-[10px] font-semibold tracking-widest text-[var(--muted)]">PROFILE</span>
       </div>
-      <span class="text-xs text-[var(--muted)]">基础信息 · 业务标签 · 跟进状态 · 商机预算</span>
+      <span class="text-xs text-[var(--muted)]">基础信息 · 业务标签 · 偏好渠道</span>
     </div>
 
     <div class="space-y-5 p-5">
@@ -72,8 +122,19 @@ function preferredChannels() {
             <strong>{{ customer.owner_name || '—' }}</strong>
           </div>
           <div class="profile-field">
-            <span>采购阶段</span>
-            <strong>{{ customer.purchase_stage || '—' }}</strong>
+            <span>统一社会信用代码</span>
+            <strong>{{ display('UniformSocialCreditCode__c', 'uniform_social_credit_code', 'social_credit_code') }}</strong>
+          </div>
+          <div class="profile-field">
+            <span>必跟 / 老客户</span>
+            <strong>
+              {{ formatBool(pick('MustFollow__c', 'must_follow')) }} /
+              {{ formatBool(pick('IsOldAccount__c', 'is_old_account', 'is_existing_customer')) }}
+            </strong>
+          </div>
+          <div class="profile-field">
+            <span>通讯地址</span>
+            <strong>{{ addressText() }}</strong>
           </div>
           <div class="profile-field">
             <span>合作意向</span>
@@ -85,11 +146,10 @@ function preferredChannels() {
       <section>
         <div class="section-title mb-3">业务标签</div>
         <div class="flex flex-wrap gap-2">
-          <span v-for="item in normalizeList(customer.product_categories)" :key="item" class="business-tag">
+          <span v-for="item in businessTags()" :key="item" class="business-tag">
             {{ item }}
           </span>
-          <span v-if="customer.industry" class="business-tag">{{ customer.industry }}</span>
-          <span v-if="!normalizeList(customer.product_categories).length && !customer.industry" class="empty-text">
+          <span v-if="!businessTags().length" class="empty-text">
             暂无业务标签
           </span>
         </div>
@@ -99,10 +159,15 @@ function preferredChannels() {
         <section>
           <div class="section-title mb-3">跟进状态</div>
           <div class="compact-list">
-            <div><span>最近互动</span><strong>{{ formatTime(customer.last_interaction_time) }}</strong></div>
+            <div><span>最近互动</span><strong>{{ formatTime(pick('recentActivityRecordTime', 'last_interaction_time')) }}</strong></div>
+            <div><span>最近拜访</span><strong>{{ formatTime(pick('lastVisitTime__c', 'last_visit_time')) }}</strong></div>
             <div>
               <span>累计 / 计划 / 有效</span>
-              <strong>{{ customerStatistics.interaction_count_total || 0 }} / 0 / {{ customerStatistics.interaction_count_total || 0 }}</strong>
+              <strong>
+                {{ display('visitTotalCount', 'visit_total_count') }} /
+                {{ display('visitInplanCount', 'visit_inplan_count') }} /
+                {{ display('effectiverecord__c', 'effective_record_count') }}
+              </strong>
             </div>
             <div>
               <span>偏好渠道</span>
@@ -114,10 +179,22 @@ function preferredChannels() {
         <section>
           <div class="section-title mb-3">商机 &amp; 预算</div>
           <div class="compact-list">
-            <div><span>漏斗商机</span><strong>{{ customer.funnel_opp_count || 0 }} 个</strong></div>
-            <div><span>最高阶段</span><strong>{{ customer.forecast_type || '—' }}</strong></div>
-            <div><span>当前商机</span><strong>{{ opportunities.length }} 个</strong></div>
-            <div><span>近两年成交</span><strong>{{ formatAmount(customer.won_amount) }}</strong></div>
+            <div>
+              <span>漏斗内</span>
+              <strong>
+                {{ display('countInsideFunnel__c', 'funnel_opp_count') }} 项 /
+                {{ formatWan(pick('sumMoneyInFunnel__c', 'active_opp_amount')) }}
+              </strong>
+            </div>
+            <div><span>最高阶段商机</span><strong>{{ display('highest_stage_opp', 'forecast_type') }}</strong></div>
+            <div><span>产品预算</span><strong>{{ formatWan(pick('ProductBudget__c', 'product_budget')) }}</strong></div>
+            <div>
+              <span>近2年成交 / 历史</span>
+              <strong>
+                {{ formatWan(pick('totalWonOpportunityAmount', 'won_amount')) }} /
+                {{ formatWan(pick('historyWin__c', 'history_win')) }}
+              </strong>
+            </div>
           </div>
         </section>
       </div>
