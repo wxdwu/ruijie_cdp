@@ -11,6 +11,8 @@ Provides endpoints for:
 2. 意图识别（预处理和意图识别共调用一次模型）
 3. 核心业务处理（根据用户问答获取，生成SQL查询）
 4. SQL结果输出转化（将SQL结果喂给大模型分析）
+
+支持多轮对话：通过 history 参数传递对话历史
 """
 
 from __future__ import annotations
@@ -57,6 +59,7 @@ class ChatExportRequest(BaseModel):
     query: str
     entities: Dict[str, Any]
     structured_query: Optional[Dict[str, Any]] = None  # 新增：结构化查询
+    target_table: Optional[str] = "dws_customer_360"  # 新增：目标表
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -93,9 +96,11 @@ def chat(
     
     使用完整的 AI 对话流程：
     1. 用户输入预处理
-    2. 意图识别
+    2. 意图识别（包含多轮对话历史）
     3. 根据意图处理（业务查询/简单问题/其他问题）
     4. 返回结果和 AI 分析
+    
+    支持多轮对话：通过 history 参数传递对话历史
     """
     q = request.get_query()
     if not q:
@@ -106,11 +111,11 @@ def chat(
             "customers": {"total": 0, "items": [], "page": 1, "page_size": 50},
         }
     
-    # 使用 AI 服务处理完整对话流程
+    # 使用 AI 服务处理完整对话流程（传入对话历史）
     result = process_chat(q, request.history, db)
     
-    # 保持返回格式兼容性
-    return {
+    # 保持返回格式兼容性，并添加多表查询结果
+    response_data = {
         "query": result["query"],
         "entities": result.get("structured_query", {}),
         "response": result["response"],
@@ -118,6 +123,13 @@ def chat(
         "intent": result.get("intent", "other"),
         "preprocessed_query": result.get("preprocessed_query", ""),
     }
+    
+    # 如果查询的是其他表，添加 data 字段
+    if "data" in result:
+        response_data["data"] = result["data"]
+        response_data["target_table"] = result.get("target_table", "dws_customer_360")
+    
+    return response_data
 
 
 @router.post("/chat/export")
@@ -130,6 +142,8 @@ def export_chat_results(
     支持两种导出方式：
     1. 使用 entities（兼容旧版）
     2. 使用 structured_query（新版）
+    
+    支持多表导出：通过 target_table 参数指定目标表
     """
     # 优先使用 structured_query
     structured_query = request.structured_query or request.entities
@@ -141,8 +155,12 @@ def export_chat_results(
         )
     
     try:
-        # 使用 AI 服务导出功能（openpyxl 在 ai_service.export_query_results 中导入）
-        excel_bytes = export_query_results(structured_query, db)
+        # 使用 AI 服务导出功能（传入 target_table）
+        excel_bytes = export_query_results(
+            structured_query, 
+            db, 
+            target_table=request.target_table or "dws_customer_360"
+        )
         
         return Response(
             content=excel_bytes,

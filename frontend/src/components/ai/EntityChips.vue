@@ -20,7 +20,7 @@ const props = defineProps<{
 
 const displayEntities = computed(() => {
   const result: Record<string, any> = {}
-  const allowedKeys = ['industry', 'region', 'stage', 'intent_level', 'channel', 'keyword', 'interaction_min']
+  const allowedKeys = ['industry', 'region', 'stage', 'intent_level', 'channel', 'keyword', 'interaction_min', 'owner_name', 'customer_name', 'contact_count_min', 'active_opp_count_min']
   for (const key of allowedKeys) {
     if (props.entities[key] !== undefined && props.entities[key] !== null) {
       result[key] = props.entities[key]
@@ -36,7 +36,11 @@ const labels: Record<string, string> = {
   intent_level: '意向',
   channel: '渠道',
   keyword: '关键词',
-  interaction_min: '互动',
+  interaction_min: '互动≥',
+  owner_name: '负责人',
+  customer_name: '客户名称',
+  contact_count_min: '联系人≥',
+  active_opp_count_min: '商机数≥',
 }
 
 function getLabel(key: string): string {
@@ -105,5 +109,25 @@ function getLabel(key: string): string {
 .chip-interaction_min {
   background: rgba(20, 184, 166, 0.1);
   border-color: rgba(20, 184, 166, 0.3);
+}
+
+.chip-owner_name {
+  background: rgba(245, 158, 11, 0.1);
+  border-color: rgba(245, 158, 11, 0.3);
+}
+
+.chip-customer_name {
+  background: rgba(59, 130, 246, 0.1);
+  border-color: rgba(59, 130, 246, 0.3);
+}
+
+.chip-contact_count_min {
+  background: rgba(139, 92, 246, 0.1);
+  border-color: rgba(139, 92, 246, 0.3);
+}
+
+.chip-active_opp_count_min {
+  background: rgba(236, 72, 153, 0.1);
+  border-color: rgba(236, 72, 153, 0.3);
 }
 </style>
