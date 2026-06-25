@@ -92,36 +92,106 @@ def get_customer_contacts(
     db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
     """Get customer contacts list from dws_contact_360 with interaction data."""
-    # Get customer_name
-    customer_name = _get_customer_name(db, id)
+    customer_row = db.execute(
+        text(
+            "SELECT customer_name, purchase_stage, intent_level "
+            "FROM dws_customer_360 WHERE id = :cid"
+        ),
+        {"cid": id},
+    ).mappings().fetchone()
+
+    if not customer_row:
+        raise HTTPException(status_code=404, detail=f"Customer {id} not found")
+
+    customer_name = customer_row["customer_name"]
 
     # Query dws_contact_360 which already has interaction counts aggregated
     rows = db.execute(
         text(
-            "SELECT contact_name, mobile, email, department, position, "
-            "       purchase_role, role_category, interaction_count, "
-            "       interaction_count_30d, last_interaction_time, "
-            "       top_content_types, product_interests, activity_level, "
-            "       intent_level, linkflow_contact_id "
-            "FROM dws_contact_360 "
-            "WHERE customer_id = :cid "
-            "ORDER BY interaction_count DESC"
+            "SELECT c.id, c.customer_id, c.contact_name, c.mobile, c.email, "
+            "       c.department, c.position, c.purchase_role, c.role_category, "
+            "       c.interaction_count, c.interaction_count_30d, "
+            "       c.last_interaction_time, c.top_content_types, "
+            "       c.product_interests, c.activity_level, c.intent_level, "
+            "       c.lead_stage, c.source_tables, c.linkflow_contact_id, "
+            "       COALESCE(c.lead_stage, :customer_stage) AS purchase_stage, "
+            "       :customer_stage AS customer_purchase_stage, "
+            "       COALESCE(c.intent_level, :customer_intent_level) AS display_intent_level, "
+            "       :customer_intent_level AS customer_intent_level, "
+            "       CAST(COALESCE(( "
+            "           SELECT SUM(CASE WHEN i.is_high_value = 1 THEN 1 ELSE 0 END) "
+            "           FROM dws_interaction_detail i "
+            "           WHERE i.customer_name = :cname "
+            "             AND i.contact_name <=> c.contact_name "
+            "             AND i.mobile <=> c.mobile "
+            "       ), 0) AS SIGNED) AS high_value_count, "
+            "       ( "
+            "           SELECT i2.channel "
+            "           FROM dws_interaction_detail i2 "
+            "           WHERE i2.customer_name = :cname "
+            "             AND i2.contact_name <=> c.contact_name "
+            "             AND i2.mobile <=> c.mobile "
+            "             AND i2.channel IS NOT NULL AND i2.channel != '' "
+            "           GROUP BY i2.channel "
+            "           ORDER BY COUNT(*) DESC, MAX(i2.event_time) DESC "
+            "           LIMIT 1 "
+            "       ) AS preferred_channel "
+            "FROM dws_contact_360 c "
+            "WHERE c.customer_id = :cid "
+            "ORDER BY c.interaction_count DESC, c.contact_name"
         ),
-        {"cid": id},
+        {
+            "cid": id,
+            "cname": customer_name,
+            "customer_stage": customer_row.get("purchase_stage"),
+            "customer_intent_level": customer_row.get("intent_level"),
+        },
     ).mappings().all()
 
     # If dws_contact_360 is empty (not built yet), fall back to dws_contact_mapping
     if not rows:
         rows = db.execute(
             text(
-                "SELECT contact_name, mobile, email, department, position, "
-                "       purchase_role, role_category, source_table, "
-                "       linkflow_contact_id "
-                "FROM dws_contact_mapping "
-                "WHERE customer_name = :cname "
-                "ORDER BY contact_name"
+                "SELECT cm.id, cm.contact_name, cm.mobile, cm.email, "
+                "       cm.department, cm.position, cm.purchase_role, "
+                "       cm.role_category, cm.source_table, "
+                "       JSON_ARRAY(cm.source_table) AS source_tables, "
+                "       cm.linkflow_contact_id, "
+                "       0 AS interaction_count, 0 AS interaction_count_30d, "
+                "       NULL AS last_interaction_time, NULL AS top_content_types, "
+                "       NULL AS product_interests, NULL AS activity_level, "
+                "       NULL AS intent_level, NULL AS lead_stage, "
+                "       :customer_stage AS purchase_stage, "
+                "       :customer_stage AS customer_purchase_stage, "
+                "       :customer_intent_level AS display_intent_level, "
+                "       :customer_intent_level AS customer_intent_level, "
+                "       CAST(COALESCE(( "
+                "           SELECT SUM(CASE WHEN i.is_high_value = 1 THEN 1 ELSE 0 END) "
+                "           FROM dws_interaction_detail i "
+                "           WHERE i.customer_name = :cname "
+                "             AND i.contact_name <=> cm.contact_name "
+                "             AND i.mobile <=> cm.mobile "
+                "       ), 0) AS SIGNED) AS high_value_count, "
+                "       ( "
+                "           SELECT i2.channel "
+                "           FROM dws_interaction_detail i2 "
+                "           WHERE i2.customer_name = :cname "
+                "             AND i2.contact_name <=> cm.contact_name "
+                "             AND i2.mobile <=> cm.mobile "
+                "             AND i2.channel IS NOT NULL AND i2.channel != '' "
+                "           GROUP BY i2.channel "
+                "           ORDER BY COUNT(*) DESC, MAX(i2.event_time) DESC "
+                "           LIMIT 1 "
+                "       ) AS preferred_channel "
+                "FROM dws_contact_mapping cm "
+                "WHERE cm.customer_name = :cname "
+                "ORDER BY cm.contact_name"
             ),
-            {"cname": customer_name},
+            {
+                "cname": customer_name,
+                "customer_stage": customer_row.get("purchase_stage"),
+                "customer_intent_level": customer_row.get("intent_level"),
+            },
         ).mappings().all()
 
     return {

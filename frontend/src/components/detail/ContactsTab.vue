@@ -20,12 +20,32 @@ const selectedHistoryType = ref('')
 const vipOnly = ref(false)
 const selectedContactKey = ref('')
 
+const EMPTY_VALUES = new Set(['', '-', 'none', 'null', 'undefined', '未知', '无', '[]', '{}'])
+
+const activityLabels = {
+  high: '高',
+  medium: '中',
+  low: '低',
+  none: '无互动',
+  高: '高',
+  中: '中',
+  低: '低',
+}
+
+const sourceLabels = {
+  crm: 'CRM',
+  marketing: 'Marketing',
+  zhique: '致趣',
+  linkflow: 'Linkflow',
+  tianrun: '天润',
+}
+
 const stages = computed(() => {
-  return [...new Set(props.contacts.map(c => c.purchase_stage || c.purchaseStage).filter(Boolean))]
+  return [...new Set(props.contacts.map(c => textValue(c.purchase_stage || c.purchaseStage)).filter(value => value !== '-'))]
 })
 
 const roles = computed(() => {
-  return [...new Set(props.contacts.map(c => c.role_category || c.purchase_role).filter(Boolean))]
+  return [...new Set(props.contacts.map(c => roleLabel(c)).filter(value => value !== '-'))]
 })
 
 const filteredContacts = computed(() => {
@@ -34,19 +54,19 @@ const filteredContacts = computed(() => {
   if (searchQuery.value) {
     const query = searchQuery.value.toLowerCase()
     result = result.filter(c =>
-      c.contact_name?.toLowerCase().includes(query) ||
-      c.mobile?.includes(searchQuery.value) ||
-      c.position?.toLowerCase().includes(query) ||
-      c.department?.toLowerCase().includes(query)
+      String(c.contact_name || '').toLowerCase().includes(query) ||
+      String(c.mobile || '').includes(searchQuery.value) ||
+      String(c.position || '').toLowerCase().includes(query) ||
+      String(c.department || '').toLowerCase().includes(query)
     )
   }
 
   if (selectedRole.value) {
-    result = result.filter(c => (c.role_category || c.purchase_role) === selectedRole.value)
+    result = result.filter(c => roleLabel(c) === selectedRole.value)
   }
 
   if (selectedStage.value) {
-    result = result.filter(c => (c.purchase_stage || c.purchaseStage) === selectedStage.value)
+    result = result.filter(c => textValue(c.purchase_stage || c.purchaseStage) === selectedStage.value)
   }
 
   if (selectedInteractionMin.value) {
@@ -63,7 +83,7 @@ const filteredContacts = computed(() => {
   }
 
   if (vipOnly.value) {
-    result = result.filter(c => c.is_vip_role || c.isVipRole__c || c.role_category === '拍板者' || c.role_category === '决策者')
+    result = result.filter(c => ['拍板者', '决策者'].includes(roleLabel(c)))
   }
 
   return result
@@ -83,10 +103,47 @@ function selectContact(contact) {
   selectedContactKey.value = contactKey(contact)
 }
 
+function isMeaningful(value) {
+  if (value === null || value === undefined) return false
+  if (Array.isArray(value)) return value.some(isMeaningful)
+  if (typeof value === 'object') return Object.values(value).some(isMeaningful)
+  return !EMPTY_VALUES.has(String(value).trim())
+}
+
+function parseJsonValue(value) {
+  if (typeof value !== 'string') return value
+  const text = value.trim()
+  if (!text || (!text.startsWith('[') && !text.startsWith('{'))) return value
+  try {
+    return JSON.parse(text)
+  } catch {
+    return value
+  }
+}
+
+function formatListValue(value) {
+  const parsed = parseJsonValue(value)
+  if (Array.isArray(parsed)) {
+    const values = parsed.map(item => textValue(item)).filter(item => item !== '-')
+    return values.length ? [...new Set(values)].join('、') : '-'
+  }
+  if (parsed && typeof parsed === 'object') {
+    const values = Object.values(parsed).map(item => textValue(item)).filter(item => item !== '-')
+    return values.length ? [...new Set(values)].join('、') : '-'
+  }
+  if (!isMeaningful(parsed)) return '-'
+  return String(parsed).replace(/\|/g, '、')
+}
+
+function textValue(value) {
+  if (!isMeaningful(value)) return '-'
+  return formatListValue(value)
+}
+
 function display(contact, ...keys) {
   for (const key of keys) {
     const value = contact?.[key]
-    if (value !== null && value !== undefined && value !== '') return value
+    if (isMeaningful(value)) return textValue(value)
   }
   return '-'
 }
@@ -99,11 +156,61 @@ function formatTime(val) {
 }
 
 function score(contact) {
-  return display(contact, 'relevance_score', 'priority_score', 'score', 'contactScore')
+  return display(recommendationFor(contact), 'relevance_score', 'priority_score', 'ai_relevance_score')
 }
 
 function roleLabel(contact) {
   return display(contact, 'role_category', 'purchase_role', 'roleTag')
+}
+
+function activityLabel(contact) {
+  const value = contact?.activity_level
+  if (value === null || value === undefined || value === '') return '-'
+  const raw = String(value).trim()
+  if (activityLabels[raw]) return activityLabels[raw]
+  return isMeaningful(raw) ? raw : '-'
+}
+
+function contactStatus(contact) {
+  const activity = activityLabel(contact)
+  if (activity === '-') return '-'
+  return activity === '无互动' ? '暂无互动' : `${activity}活跃`
+}
+
+function sourceText(contact) {
+  const raw = parseJsonValue(contact?.source_tables ?? contact?.source_table ?? contact?.dataSource)
+  const values = Array.isArray(raw)
+    ? raw
+    : raw && typeof raw === 'object'
+      ? Object.values(raw)
+      : [raw]
+  const labels = values
+    .map(value => String(value || '').trim())
+    .filter(isMeaningful)
+    .map(value => sourceLabels[value] || value)
+  return labels.length ? [...new Set(labels)].join('、') : '-'
+}
+
+function subtitle(contact) {
+  const parts = [display(contact, 'position'), display(contact, 'department')]
+    .filter(value => value !== '-')
+  return parts.length ? parts.join(' · ') : '-'
+}
+
+function recommendationFor(contact) {
+  if (!contact) return null
+  const candidates = props.recommendations?.length
+    ? props.recommendations
+    : (props.recommendation ? [props.recommendation] : [])
+  return candidates.find(item =>
+    (item.contact_name && item.contact_name === contact.contact_name) ||
+    (item.mobile && item.mobile === contact.mobile) ||
+    (item.email && item.email === contact.email)
+  ) || null
+}
+
+function recommendDisplay(contact, ...keys) {
+  return display(recommendationFor(contact), ...keys)
 }
 
 const help = {
@@ -129,45 +236,45 @@ const help = {
     title: '手机号 / 办公电话',
     type: 'src',
     meaning: '联系人手机和办公电话。',
-    sourceTables: 'dws_contact_360, dws_contact_mapping',
-    sourceFields: 'dws_contact_360.mobile, dws_contact_mapping.mobile',
-    calculation: '手机号来自联系人聚合表或映射表的 mobile 字段；当前后端联系人接口没有稳定返回 office_phone，办公电话缺失时显示 -。',
+    sourceTables: 'dws_contact_360',
+    sourceFields: 'dws_contact_360.mobile',
+    calculation: '手机号来自 dws_contact_360.mobile；办公电话当前 DWS 未落字段，缺失时显示 -。',
     emptyState: '无号码时显示 -。',
   },
   email: {
     title: '邮箱',
     type: 'src',
     meaning: '联系人邮箱地址。',
-    sourceTables: 'dws_contact_360, dws_contact_mapping',
-    sourceFields: 'dws_contact_360.email, dws_contact_mapping.email',
-    calculation: '邮箱来自联系人聚合表或映射表的 email 字段。',
+    sourceTables: 'dws_contact_360',
+    sourceFields: 'dws_contact_360.email',
+    calculation: '邮箱来自 dws_contact_360.email。',
     emptyState: '无邮箱时显示 -。',
   },
   relation: {
     title: '关系',
     type: 'src',
     meaning: '联系人之间的汇报或业务关系。',
-    sourceTables: 'dws_contact_mapping',
-    sourceFields: 'dws_contact_mapping.contact_name',
-    calculation: '当前联系人接口没有稳定返回 relation_type 或 reports_to_id；如后续 ETL 写入关系字段，页面会展示对应字段值。',
+    sourceTables: '-',
+    sourceFields: '-',
+    calculation: '当前 DWS 未落联系人关系字段，页面保留 -。',
     emptyState: '无关系数据时显示 -。',
   },
   purchaseStage: {
     title: '采购阶段',
     type: 'calc',
     meaning: '联系人关联的采购阶段或线索跟进阶段。',
-    sourceTables: 'dws_contact_360, dws_customer_360, ods_crm_opportunity_day',
-    sourceFields: 'dws_contact_360.purchase_stage, dws_customer_360.purchase_stage, ods_crm_opportunity_day.customer_stage, ods_crm_opportunity_day.forecast_type',
-    calculation: '当前联系人接口通常没有联系人级 purchase_stage；筛选项如存在则来自接口返回字段，客户级阶段由 ods_crm_opportunity_day 聚合到 dws_customer_360。',
+    sourceTables: 'dws_contact_360, dws_customer_360',
+    sourceFields: 'dws_contact_360.lead_stage, dws_customer_360.purchase_stage',
+    calculation: '优先展示联系人级 lead_stage；为空时回退客户级 dws_customer_360.purchase_stage。',
     emptyState: '无法判断时显示 -。',
   },
   status: {
     title: '联系人状态',
     type: 'src',
     meaning: '联系人有效性、线索状态或 CRM 联系人状态。',
-    sourceTables: 'dws_contact_360, dws_contact_mapping',
-    sourceFields: 'dws_contact_360.status, dws_contact_mapping.status, dws_contact_mapping.contact_validity',
-    calculation: '当前表结构中状态字段可能不存在；只有接口返回 status 或 contact_validity 时页面才展示。',
+    sourceTables: 'dws_contact_360',
+    sourceFields: 'dws_contact_360.activity_level',
+    calculation: '当前 DWS 未落稳定联系人状态字段；页面暂按 activity_level 派生活跃/暂无互动状态。',
     emptyState: '无状态时显示 -。',
   },
   contentInterest: {
@@ -194,7 +301,7 @@ const help = {
     meaning: '联系人更适合的触达渠道。',
     sourceTables: 'dws_interaction_detail, dws_contact_360',
     sourceFields: 'dws_interaction_detail.channel, dws_interaction_detail.event_time, dws_contact_360.last_interaction_time',
-    calculation: '当前联系人接口未稳定返回 preferred_channel；后续可按联系人历史 channel 频次和最近互动时间计算。',
+    calculation: '后端按 dws_interaction_detail.channel 对当前联系人分组计数，取互动次数最高且最近的渠道。',
     emptyState: '无互动渠道时显示 -。',
   },
   playbook: {
@@ -203,7 +310,7 @@ const help = {
     meaning: '面向该联系人的建议触达方式和销售话术。',
     sourceTables: 'dws_contact_360, dws_customer_360, dws_interaction_detail',
     sourceFields: 'dws_contact_360.role_category, dws_contact_360.interaction_count_30d, dws_contact_360.mobile, dws_contact_360.email, dws_customer_360.purchase_stage, dws_interaction_detail.is_high_value',
-    calculation: '推进方式和推荐话术由 ai-insight 接口规则生成；联系人详情区只有在当前联系人对象包含 recommend_way 或 recommend_script 时展示。',
+    calculation: '推进方式和推荐话术来自 ai-insight 推荐结果；详情区按当前选中联系人姓名、手机号或邮箱匹配 recommendations。',
     emptyState: '暂无推荐时显示 -。',
   },
   behavior: {
@@ -299,7 +406,7 @@ const help = {
               <em v-if="roleLabel(contact) !== '-'">{{ roleLabel(contact) }}</em>
             </span>
             <span class="contact-row-sub">
-              {{ display(contact, 'position') }} · {{ display(contact, 'department') }}
+              {{ subtitle(contact) }}
             </span>
             <span class="contact-row-meta">
               手机 {{ display(contact, 'mobile') }} · 互动 {{ contact.interaction_count || 0 }} 次 · 最近 {{ formatTime(contact.last_interaction_time) }}
@@ -316,11 +423,11 @@ const help = {
         <div class="contact-detail-header">
           <div>
             <h3>{{ selectedContact.contact_name || '未命名联系人' }}<FieldHelpTooltip :help="help.contactDetail" /></h3>
-            <p>{{ display(selectedContact, 'position') }} · {{ display(selectedContact, 'department') }}</p>
+            <p>{{ subtitle(selectedContact) }}</p>
           </div>
           <div class="contact-detail-badges">
-            <span>{{ roleLabel(selectedContact) }}</span>
-            <span>{{ display(selectedContact, 'activity_level') }}</span>
+            <span v-if="roleLabel(selectedContact) !== '-'">{{ roleLabel(selectedContact) }}</span>
+            <span v-if="activityLabel(selectedContact) !== '-'">{{ activityLabel(selectedContact) }}</span>
           </div>
         </div>
 
@@ -329,12 +436,12 @@ const help = {
           <div><span>邮箱<FieldHelpTooltip :help="help.email" /></span><strong>{{ display(selectedContact, 'email') }}</strong></div>
           <div><span>办公电话<FieldHelpTooltip :help="help.phone" /></span><strong>{{ display(selectedContact, 'office_phone', 'officePhone') }}</strong></div>
           <div><span>关系<FieldHelpTooltip :help="help.relation" /></span><strong>{{ display(selectedContact, 'relation_type', 'relationType', 'reports_to_id') }}</strong></div>
-          <div><span>采购阶段<FieldHelpTooltip :help="help.purchaseStage" /></span><strong>{{ display(selectedContact, 'purchase_stage', 'purchaseStage') }}</strong></div>
-          <div><span>联系人状态<FieldHelpTooltip :help="help.status" /></span><strong>{{ display(selectedContact, 'Status__c', 'status', 'contact_validity') }}</strong></div>
+          <div><span>采购阶段<FieldHelpTooltip :help="help.purchaseStage" /></span><strong>{{ display(selectedContact, 'lead_stage', 'purchase_stage', 'purchaseStage') }}</strong></div>
+          <div><span>联系人状态<FieldHelpTooltip :help="help.status" /></span><strong>{{ contactStatus(selectedContact) }}</strong></div>
           <div><span>内容类型兴趣<FieldHelpTooltip :help="help.contentInterest" /></span><strong>{{ display(selectedContact, 'top_content_types', 'contentInterest') }}</strong></div>
           <div><span>产品兴趣<FieldHelpTooltip :help="help.productInterest" /></span><strong>{{ display(selectedContact, 'product_interests', 'productInterest') }}</strong></div>
-          <div><span>活跃度 / 合作意向</span><strong>{{ display(selectedContact, 'activity_level') }} / {{ display(selectedContact, 'intent_level', 'cooperationIntent') }}</strong></div>
-          <div><span>数据来源</span><strong>{{ display(selectedContact, 'source_table', 'dataSource') }}</strong></div>
+          <div><span>活跃度 / 合作意向</span><strong>{{ activityLabel(selectedContact) }} / {{ display(selectedContact, 'display_intent_level', 'intent_level', 'cooperationIntent') }}</strong></div>
+          <div><span>数据来源</span><strong>{{ sourceText(selectedContact) }}</strong></div>
           <div><span>偏好触达<FieldHelpTooltip :help="help.preferredChannel" /></span><strong>{{ display(selectedContact, 'preferred_channel', 'preferredChannel') }}</strong></div>
           <div><span>linkflow ID</span><strong>{{ display(selectedContact, 'linkflow_contact_id') }}</strong></div>
         </div>
@@ -342,11 +449,11 @@ const help = {
         <div class="contact-playbook">
           <div>
             <span>推进方式<FieldHelpTooltip :help="help.playbook" /></span>
-            <p>{{ display(selectedContact, 'push_way', 'recommend_way') }}</p>
+            <p>{{ recommendDisplay(selectedContact, 'push_way', 'recommend_way') }}</p>
           </div>
           <div>
             <span>推进话术<FieldHelpTooltip :help="help.playbook" /></span>
-            <p>{{ display(selectedContact, 'push_script', 'recommend_script') }}</p>
+            <p>{{ recommendDisplay(selectedContact, 'push_script', 'recommend_script') }}</p>
           </div>
         </div>
 
@@ -543,11 +650,15 @@ const help = {
   padding: 16px 0;
 }
 
-.contact-detail-grid span,
-.contact-playbook span {
-  display: block;
+.contact-detail-grid > div > span,
+.contact-playbook > div > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   color: var(--muted);
   font-size: 11px;
+  line-height: 1.3;
+  white-space: nowrap;
 }
 
 .contact-detail-grid strong {
