@@ -5,7 +5,7 @@ import App from './App.vue'
 import './styles/main.css'
 
 const savedTheme = localStorage.getItem('cdp-theme')
-document.documentElement.dataset.theme = savedTheme === 'light' ? 'light' : 'dark'
+document.documentElement.dataset.theme = savedTheme === 'dark' ? 'dark' : 'light'
 
 const app = createApp(App)
 app.use(createPinia())

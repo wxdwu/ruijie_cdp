@@ -21,7 +21,6 @@ export const customerApi = {
   interactions: (id, params) => http.get(`/customers/${id}/interactions`, { params }),
   opportunities: (id) => http.get(`/customers/${id}/opportunities`),
   aiInsight: (id) => http.get(`/customers/${id}/ai-insight`),
-  priorityContact: (id) => http.get(`/customers/${id}/priority-contact`),
   statisticsByName: (customerName) => http.get('/customers/statistics/by-name', {
     params: { customer_name: customerName },
   }),

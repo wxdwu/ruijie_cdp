@@ -144,7 +144,7 @@ onBeforeUnmount(() => {
             v-model="ownerInput"
             type="text"
             placeholder="输入负责人名称..."
-            class="w-full rounded-lg border border-[var(--line)] bg-[var(--bg1)] px-3 py-2 pr-16 text-sm text-[var(--text)] placeholder:text-[var(--muted)] focus:border-[var(--brand)] focus:outline-none"
+            class="w-full rounded-lg border border-[var(--line)] bg-[var(--bg1)] px-3 py-2 pr-10 text-sm text-[var(--text)] placeholder:text-[var(--muted)] focus:border-[var(--brand)] focus:outline-none"
             role="combobox"
             aria-label="负责人"
             :aria-expanded="ownerComboboxOpen"
@@ -153,15 +153,6 @@ onBeforeUnmount(() => {
             @click="openOwnerCombobox"
             @input="handleOwnerInput"
           />
-          <button
-            v-if="ownerInput"
-            type="button"
-            class="absolute right-8 top-1/2 -translate-y-1/2 text-sm text-[var(--muted)] hover:text-[var(--text)]"
-            aria-label="清空负责人"
-            @click="clearOwner"
-          >
-            x
-          </button>
           <button
             type="button"
             class="absolute right-0 top-0 flex h-full w-9 items-center justify-center rounded-r-lg text-[var(--muted)] hover:text-[var(--text)]"

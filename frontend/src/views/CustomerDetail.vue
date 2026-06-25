@@ -21,6 +21,7 @@ const contacts = ref([])
 const aiInsight = ref({})
 const opportunities = ref([])
 const customerStatistics = ref({})
+const priorityRecommendation = ref(null)
 const priorityRecommendations = ref([])
 const recommendSource = ref('rule')
 
@@ -58,14 +59,16 @@ async function fetchAllData() {
     interactions.value = Array.isArray(interactionsRes) ? interactionsRes : (interactionsRes.interactions || [])
     opportunities.value = Array.isArray(oppsRes) ? oppsRes : (oppsRes.opportunities || [])
     aiInsight.value = aiRes
+    const recommendations = aiRes.recommendations || aiRes.candidates || []
+    const singleRecommendation = aiRes.recommendation || recommendations[0] || null
+    priorityRecommendation.value = singleRecommendation
+    priorityRecommendations.value = recommendations.length
+      ? recommendations
+      : (singleRecommendation ? [singleRecommendation] : [])
+    recommendSource.value = aiRes.source || 'rule'
     results.forEach((result, index) => {
       if (result.status === 'rejected') console.warn(`customer detail request ${index} failed`, result.reason)
     })
-
-    customerApi.priorityContact(customerId).then(priorityRes => {
-      priorityRecommendations.value = priorityRes.recommendations || priorityRes.candidates || []
-      recommendSource.value = priorityRes.source || 'rule'
-    }).catch(error => console.warn('priority contact request failed', error))
 
     if (customer.value.customer_name) {
       customerApi.statisticsByName(customer.value.customer_name).then(statisticsRes => {
@@ -149,6 +152,7 @@ onMounted(() => {
       <OverviewTab
         v-else-if="activeTab === 'overview'"
         :customer="customer"
+        :contacts="contacts"
         :interactions="interactions"
         :ai-insight="aiInsight"
         :priority-recommendations="priorityRecommendations"
@@ -159,6 +163,7 @@ onMounted(() => {
       <ContactsTab
         v-else-if="activeTab === 'contacts'"
         :contacts="contacts"
+        :recommendation="priorityRecommendation"
         :recommendations="priorityRecommendations"
         :recommend-source="recommendSource"
       />
