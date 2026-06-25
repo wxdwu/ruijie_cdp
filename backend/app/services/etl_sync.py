@@ -422,6 +422,7 @@ def _create_etl_temp_tables() -> None:
             industry VARCHAR(255),
             region VARCHAR(255),
             owner_name VARCHAR(255),
+            attribute VARCHAR(4),
             contact_count INT,
             mobile_count INT
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
@@ -525,12 +526,13 @@ def _build_tmp_crm_aggregates() -> None:
 
     n_attr = _exec("""
         INSERT INTO tmp_crm_contact_attr
-          (customer_name, industry, region, owner_name, contact_count, mobile_count)
+          (customer_name, industry, region, owner_name, attribute, contact_count, mobile_count)
         SELECT
           customer_name,
           MAX(industry) AS industry,
           MAX(ruijie_region) AS region,
           MAX(sales_name) AS owner_name,
+          MAX(attribute) AS attribute,
           COUNT(DISTINCT contact_name) AS contact_count,
           COUNT(DISTINCT CASE WHEN mobile IS NOT NULL AND mobile != ''
               THEN mobile END) AS mobile_count
@@ -892,6 +894,7 @@ def _build_customer_360() -> int:
         "  c360.industry       = COALESCE(crm.industry, c360.industry), "
         "  c360.region         = COALESCE(crm.region, c360.region), "
         "  c360.owner_name     = COALESCE(crm.owner_name, c360.owner_name), "
+        "  c360.attribute      = COALESCE(crm.attribute, c360.attribute), "
         "  c360.contact_count  = crm.contact_count, "
         "  c360.mobile_count   = crm.mobile_count"
     )
@@ -1197,6 +1200,35 @@ def _ensure_sync_batch_column(table: str) -> None:
         )
 
 
+def _ensure_attribute_column(table: str) -> None:
+    """Check if attribute column exists on dws_customer_360* tables, add if not."""
+    # First verify the table actually exists (it may have been renamed away by table rotation)
+    table_rows = _exec_query(
+        "SELECT 1 FROM information_schema.tables "
+        "WHERE table_schema = 'app_cdp' "
+        "  AND table_name = :t "
+        "LIMIT 1",
+        {"t": table},
+    )
+    if not table_rows:
+        return
+
+    rows = _exec_query(
+        "SELECT 1 FROM information_schema.columns "
+        "WHERE table_schema = 'app_cdp' "
+        "  AND table_name = :t AND column_name = 'attribute' "
+        "LIMIT 1",
+        {"t": table},
+    )
+    if not rows:
+        logger.info("Adding attribute column to %s", table)
+        _exec(
+            f"ALTER TABLE {table} "
+            "ADD COLUMN attribute VARCHAR(4) DEFAULT NULL "
+            "COMMENT '客户分级 H/M/L/空'"
+        )
+
+
 def ensure_schema_for_incremental() -> None:
     """Ensure all DWS tables have the required fields for incremental sync."""
     tables = [
@@ -1207,6 +1239,11 @@ def ensure_schema_for_incremental() -> None:
     ]
     for tbl in tables:
         _ensure_sync_batch_column(tbl)
+    
+    # Ensure attribute column on dws_customer_360 and its mirror tables
+    for tbl in ("dws_customer_360", "dws_customer_360_temp", "dws_customer_360_backup"):
+        _ensure_attribute_column(tbl)
+    
     logger.info("Schema check for incremental sync completed")
 
 
@@ -1429,19 +1466,18 @@ def run_full_sync(trigger_by: str = "system") -> Dict[str, Any]:
                     ))
             raise Exception("Data validation failed, sync rolled back")
         
-        # Step 10: Commit sync (swap tables permanently)
+        # Step 10: Commit sync (rename old temp tables to backup)
+        # After build, main tables already contain new data.
+        # We only need to move old data (_temp) to _backup for safety.
         logger.info("── Step 10: Committing sync (atomic table rotation) ──")
         with engine.begin() as conn:
             for table in dws_tables:
                 temp_table = f"{table}_temp"
                 backup_table = f"{table}_backup"
-                # RENAME: main (new data) -> backup, temp (old data) -> main
-                conn.execute(text(
-                    f"RENAME TABLE "
-                    f"{table} TO {backup_table}, "
-                    f"{temp_table} TO {table}"
-                ))
-                logger.info("  Committed: %s now points to new data", table)
+                # Drop existing _backup if any, then rename _temp -> _backup
+                conn.execute(text(f"DROP TABLE IF EXISTS {backup_table}"))
+                conn.execute(text(f"RENAME TABLE {temp_table} TO {backup_table}"))
+                logger.info("  Committed: %s stays as new data, %s archived as old data", table, backup_table)
         
         # Step 11: Updating sync metadata
         logger.info("── Step 11: Updating sync metadata ──")
@@ -2373,6 +2409,7 @@ def _incremental_build_customer_360(batch_id: int) -> int:
                     "  c360.industry       = COALESCE(crm.industry, c360.industry), "
                     "  c360.region         = COALESCE(crm.region, c360.region), "
                     "  c360.owner_name     = COALESCE(crm.owner_name, c360.owner_name), "
+                    "  c360.attribute      = COALESCE(crm.attribute, c360.attribute), "
                     "  c360.contact_count  = crm.contact_count, "
                     "  c360.mobile_count   = crm.mobile_count "
                     "WHERE c360.customer_name IN :customers"

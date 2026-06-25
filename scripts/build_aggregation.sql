@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS dws_customer_360 (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
   customer_name VARCHAR(255) NOT NULL,
   industry VARCHAR(128), region VARCHAR(128), owner_name VARCHAR(128),
+  attribute VARCHAR(4) DEFAULT NULL COMMENT '客户分级 H/M/L/空',
   campaign_tag VARCHAR(255) DEFAULT '企业彩光ICT',
   purchase_stage VARCHAR(64), forecast_type VARCHAR(64),
   role_coverage VARCHAR(16), role_detail JSON,

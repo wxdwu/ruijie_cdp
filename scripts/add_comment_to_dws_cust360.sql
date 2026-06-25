@@ -9,6 +9,7 @@ ALTER TABLE `dws_customer_360`
   MODIFY COLUMN `industry` VARCHAR(128) COMMENT '行业（CRM优先->线索->致趣）',
   MODIFY COLUMN `region` VARCHAR(128) COMMENT '区域/省份',
   MODIFY COLUMN `owner_name` VARCHAR(128) COMMENT '负责人（商机所有人频次最高）',
+  MODIFY COLUMN `attribute` VARCHAR(4) COMMENT '客户分级 H/M/L/空',
   MODIFY COLUMN `campaign_tag` VARCHAR(255) DEFAULT '企业彩光ICT' COMMENT '专项标签',
   MODIFY COLUMN `purchase_stage` VARCHAR(64) COMMENT '采购阶段（取最高阶段商机）',
   MODIFY COLUMN `forecast_type` VARCHAR(64) COMMENT '预测类别（最高阶段）',
