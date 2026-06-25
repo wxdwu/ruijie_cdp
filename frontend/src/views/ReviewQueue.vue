@@ -15,7 +15,19 @@
         <div class="progress-bar-container">
           <div class="progress-bar" :style="{ width: dedupProgress + '%' }"></div>
         </div>
-        <div class="progress-text">{{ dedupStep }}</div>
+        <div class="progress-text">
+          {{ dedupStep }}
+          <span class="progress-percent">{{ formatPercent(dedupProgress) }}</span>
+          <span v-if="dedupDetails && dedupDetails.completed > 0 && dedupDetails.total > 0">
+            ({{ dedupDetails.completed }}/{{ dedupDetails.total }})
+          </span>
+        </div>
+        <div v-if="dedupDetails && dedupDetails.message" class="progress-details">
+          {{ dedupDetails.message }}
+        </div>
+        <div v-if="dedupRunning" class="progress-timer">
+          耗时: {{ formatTime(elapsedTime) }}
+        </div>
       </div>
 
       <div v-if="dedupResults && dedupStatus === 'completed'" class="dedup-results">
@@ -113,7 +125,51 @@ const dedupProgress = ref(0)
 const dedupStep = ref('')
 const dedupStatus = ref('idle')
 const dedupResults = ref<Record<string, number> | null>(null)
+const dedupDetails = ref<{step_name: string, completed: number, total: number, message: string} | null>(null)
 let dedupPollTimer: number | null = null
+
+// Timer state (based on backend started_at, survives page refresh)
+const elapsedTime = ref(0)
+const dedupStartedAt = ref<string | null>(null)
+let timerInterval: number | null = null
+
+const startTimer = () => {
+  updateElapsedTime()
+  if (timerInterval) {
+    clearInterval(timerInterval)
+  }
+  timerInterval = window.setInterval(updateElapsedTime, 1000)
+}
+
+const updateElapsedTime = () => {
+  if (dedupStartedAt.value) {
+    const startedMs = new Date(dedupStartedAt.value).getTime()
+    elapsedTime.value = Math.floor((Date.now() - startedMs) / 1000)
+  }
+}
+
+const stopTimer = () => {
+  if (timerInterval) {
+    clearInterval(timerInterval)
+    timerInterval = null
+  }
+  // 最后更新一次时间
+  updateElapsedTime()
+}
+
+const formatTime = (seconds: number): string => {
+  const hrs = Math.floor(seconds / 3600)
+  const mins = Math.floor((seconds % 3600) / 60)
+  const secs = seconds % 60
+  if (hrs > 0) {
+    return `${hrs.toString().padStart(2, '0')}:${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`
+  }
+  return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`
+}
+
+const formatPercent = (progress: number): string => {
+  return progress.toFixed(2) + '%'
+}
 
 const runDedup = async () => {
   try {
@@ -125,6 +181,7 @@ const runDedup = async () => {
       dedupRunning.value = true
       dedupProgress.value = 0
       dedupStep.value = '初始化...'
+      dedupDetails.value = null
       startDedupPolling()
     }
   } catch (error) {
@@ -139,6 +196,13 @@ const fetchDedupProgress = async () => {
     dedupProgress.value = data.progress || 0
     dedupStep.value = data.step || ''
     dedupStatus.value = data.status || 'idle'
+    dedupDetails.value = data.details || null
+
+    // 基于后端时间戳计算已耗时
+    if (data.started_at && dedupStartedAt.value !== data.started_at) {
+      dedupStartedAt.value = data.started_at
+      startTimer()
+    }
 
     if (data.status === 'completed' || data.status === 'failed') {
       dedupRunning.value = false
@@ -146,6 +210,7 @@ const fetchDedupProgress = async () => {
         dedupResults.value = data.results
       }
       stopDedupPolling()
+      stopTimer()
       await refreshAll()
     }
   } catch (error) {
@@ -173,6 +238,7 @@ const checkInitialProgress = async () => {
   if (dedupStatus.value === 'running') {
     dedupRunning.value = true
     startDedupPolling()
+    // 计时器由 fetchDedupProgress 中的 started_at 自动触发
   }
 }
 
@@ -304,6 +370,7 @@ onMounted(() => {
 
 onUnmounted(() => {
   stopDedupPolling()
+  stopTimer()
 })
 </script>
 
@@ -391,6 +458,31 @@ onUnmounted(() => {
   font-size: 12px;
   color: #7f849c;
   text-align: center;
+}
+
+.progress-percent {
+  margin-left: 12px;
+  color: #a6e3a1;
+  font-weight: 700;
+  font-size: 13px;
+  font-family: monospace;
+}
+
+.progress-details {
+  margin-top: 4px;
+  font-size: 11px;
+  color: #a6e3a1;
+  text-align: center;
+  font-family: monospace;
+}
+
+.progress-timer {
+  margin-top: 4px;
+  font-size: 11px;
+  color: #f9e2af;
+  text-align: center;
+  font-family: monospace;
+  font-weight: 600;
 }
 
 .dedup-results {

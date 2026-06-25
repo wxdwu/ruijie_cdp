@@ -13,6 +13,9 @@ class Settings(BaseModel):
     DB_NAME: str = os.getenv("DB_NAME", "app_cdp")
     LLM_API_KEY: str = os.getenv("LLM_API_KEY", "")
     LLM_BASE_URL: str = os.getenv("LLM_BASE_URL", "")
+    # Embedding API 独立配置（DeepSeek 不支持 /embeddings，需单独配置）
+    EMBEDDING_API_KEY: str = os.getenv("EMBEDDING_API_KEY", "")
+    EMBEDDING_BASE_URL: str = os.getenv("EMBEDDING_BASE_URL", "")
 
     @property
     def DATABASE_URL(self) -> str:
