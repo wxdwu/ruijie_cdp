@@ -2,12 +2,12 @@
 AI 优先联系人推荐服务
 
 综合考虑角色权重、互动活跃度、最近互动时间、信息完整度等因素，
-结合 AI 模型（默认 DeepSeek）生成多维度推荐评分和理由。
+生成规则版优先推进对象、推进原因、触达方式和推荐话术。
 
 设计原则：
-- 规则评分作为基础筛选，AI 模型用于最终排序和理由生成
-- 模型调用通过抽象层实现，便于切换不同 LLM 提供商
-- 当 AI 不可用时自动降级为纯规则模式
+- 本阶段不调用大模型，避免详情页等待外部模型响应
+- 规则评分作为排序依据，规则模板生成推进建议
+- 保留单对象和数组两种响应形态，兼容已有前端消费
 """
 
 from __future__ import annotations
@@ -72,7 +72,7 @@ SCORE_WEIGHTS = {
 }
 
 # 固定推荐数量
-MIN_RECOMMENDATIONS = 5
+MIN_RECOMMENDATIONS = 1
 # AI 分析的候选人数上限（选规则分最高的 N 个发送给 AI）
 AI_CANDIDATE_LIMIT = 8
 
@@ -191,7 +191,8 @@ def _fetch_customer_context(db: Session, customer_id: str) -> Dict[str, Any]:
     """
     row = db.execute(
         text(
-            "SELECT customer_name, industry, purchase_stage, intent_level, "
+            "SELECT customer_name, industry, campaign_tag, purchase_stage, "
+            "       forecast_type, highest_stage_opp, intent_level, "
             "       intent_score, interaction_count_30d, active_opp_count, "
             "       active_opp_amount, owner_name "
             "FROM dws_customer_360 "
@@ -203,6 +204,35 @@ def _fetch_customer_context(db: Session, customer_id: str) -> Dict[str, Any]:
     if row:
         return dict(row)
     return {}
+
+
+def _fetch_high_value_count(
+    db: Session,
+    customer_name: str,
+    contact: Dict[str, Any],
+) -> int:
+    """获取联系人高价值行为数；缺少可匹配信息时返回 0。"""
+    params: Dict[str, Any] = {"cname": customer_name}
+    filters: List[str] = ["customer_name = :cname", "is_high_value = 1"]
+
+    contact_name = contact.get("contact_name")
+    mobile = contact.get("mobile")
+    if contact_name:
+        filters.append("contact_name = :contact_name")
+        params["contact_name"] = contact_name
+    elif mobile:
+        filters.append("mobile = :mobile")
+        params["mobile"] = mobile
+    else:
+        return 0
+
+    return int(db.execute(
+        text(
+            "SELECT COUNT(*) FROM dws_interaction_detail "
+            f"WHERE {' AND '.join(filters)}"
+        ),
+        params,
+    ).scalar() or 0)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -493,6 +523,169 @@ def _build_rule_recommendation(contact: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _first_meaningful_value(*values: Any, default: str) -> str:
+    for value in values:
+        if value is None:
+            continue
+        if isinstance(value, (list, tuple)):
+            value = "、".join(str(v) for v in value if v)
+        elif isinstance(value, dict):
+            value = "、".join(str(v) for v in value.values() if v)
+        else:
+            value = str(value)
+        value = value.strip().strip('"').strip("'")
+        if value and value not in {"未知", "无", "-", "null", "None", "[]", "{}"}:
+            return value
+    return default
+
+
+def _format_interest(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, (list, tuple)):
+        return "、".join(str(v).strip() for v in value if str(v).strip())
+    if isinstance(value, dict):
+        return "、".join(str(v).strip() for v in value.values() if str(v).strip())
+
+    raw = str(value).strip()
+    if not raw or raw in {"未知", "无", "-", "[]", "{}"}:
+        return ""
+    try:
+        parsed = json.loads(raw)
+        if parsed != raw:
+            return _format_interest(parsed)
+    except (json.JSONDecodeError, TypeError):
+        pass
+    return raw.strip("|").replace("|", "、")
+
+
+def _stage_text(customer_context: Dict[str, Any]) -> str:
+    return _first_meaningful_value(
+        customer_context.get("purchase_stage"),
+        customer_context.get("forecast_type"),
+        customer_context.get("highest_stage_opp"),
+        default="当前阶段",
+    )
+
+
+def _stage_dialogue_text(stage: str) -> str:
+    """将 CRM 阶段原文转为适合销售话术的表达。"""
+    stage = stage or ""
+    if "阶段1" in stage or stage == "问题识别":
+        return "初步接触阶段"
+    if "阶段2" in stage:
+        return "价值确认阶段"
+    if "阶段3" in stage or stage == "解决方案探索":
+        return "方案评估阶段"
+    if "阶段4" in stage:
+        return "招投标准备阶段"
+    if "阶段5" in stage or stage == "需求构建":
+        return "采购确认阶段"
+    if "阶段6" in stage or stage == "已完成":
+        return "采购落地阶段"
+    return stage if stage and stage != "当前阶段" else "当前推进阶段"
+
+
+def _topic_text(contact: Dict[str, Any], customer_context: Dict[str, Any]) -> str:
+    product = _format_interest(contact.get("product_interests"))
+    content = _format_interest(contact.get("top_content_types"))
+    return _first_meaningful_value(
+        product,
+        content,
+        customer_context.get("industry"),
+        customer_context.get("campaign_tag"),
+        default="当前业务需求",
+    )
+
+
+def _case_text(contact: Dict[str, Any], customer_context: Dict[str, Any]) -> str:
+    industry = _first_meaningful_value(customer_context.get("industry"), default="")
+    product = _format_interest(contact.get("product_interests"))
+    campaign = _first_meaningful_value(customer_context.get("campaign_tag"), default="")
+    if industry and product:
+        return f"{industry}{product}"
+    return _first_meaningful_value(industry, product, campaign, default="同类客户")
+
+
+def _build_recommend_way(contact: Dict[str, Any]) -> str:
+    role = contact.get("role_category") or contact.get("purchase_role") or ""
+    i30d = int(contact.get("interaction_count_30d") or 0)
+    high_value_count = int(contact.get("high_value_count") or 0)
+    has_email = bool(contact.get("email"))
+    has_mobile = bool(contact.get("mobile"))
+
+    if high_value_count > 0 or i30d >= 3:
+        return "先电话或企微承接近期兴趣点，再约 30 分钟沟通"
+    if role in {"决策者", "决策层", "拍板者"}:
+        return "先发送价值摘要与ROI测算，再约 30 分钟决策沟通"
+    if role in {"技术把关", "技术评估者", "关键人"}:
+        return "先邮件发送结构化方案，再约 30 分钟技术评估沟通"
+    if has_email:
+        return "先邮件发送结构化方案，再约 30 分钟沟通"
+    if has_mobile:
+        return "先电话确认关注方向，再约 30 分钟沟通"
+    return "先通过客户经理确认触达方式，再安排 30 分钟沟通"
+
+
+def _build_rule_priority_recommendation(
+    db: Session,
+    customer_name: str,
+    contact: Dict[str, Any],
+    customer_context: Dict[str, Any],
+) -> Dict[str, Any]:
+    """构建单个规则版优先推进对象。"""
+    high_value_count = _fetch_high_value_count(db, customer_name, contact)
+    contact["high_value_count"] = high_value_count
+
+    base = _build_rule_recommendation(contact)
+    role = base.get("role_category") or base.get("purchase_role") or "联系人"
+    i30d = int(base.get("interaction_count_30d") or 0)
+    stage = _stage_text(customer_context)
+    stage_dialogue = _stage_dialogue_text(stage)
+    case = _case_text(base, customer_context)
+    name = base.get("contact_name") or "该联系人"
+
+    reason = (
+        f"联系人在{stage_dialogue}影响成交节奏；近30天互动 {i30d} 次，"
+        f"高价值行为 {high_value_count} 次；"
+    )
+    if high_value_count == 0 and i30d == 0:
+        reason += "暂缺历史行为，适合先做低干扰触达"
+    elif high_value_count > 0:
+        reason += "已有明确兴趣信号，适合优先推进"
+    else:
+        reason += "已有互动基础，适合继续培育推进"
+
+    recommend_way = _build_recommend_way(base)
+    recommend_script = (
+        f"您好{name}，结合贵司当前处于{stage_dialogue}，"
+        "我们建议先围绕“方案”做一次30分钟评估，"
+        f"现场会带上{case}相关案例与ROI测算，"
+        "若方向一致可在本周进入下一步评审。"
+    )
+
+    return {
+        "contact_name": base.get("contact_name", ""),
+        "mobile": base.get("mobile", ""),
+        "email": base.get("email", ""),
+        "department": base.get("department", ""),
+        "position": base.get("position", ""),
+        "purchase_role": base.get("purchase_role", ""),
+        "role_category": role,
+        "relevance_score": round(base.get("ai_relevance_score", base.get("rule_score", 50))),
+        "reason": reason,
+        "recommend_way": recommend_way,
+        "recommend_script": recommend_script,
+        "interaction_count_30d": i30d,
+        "interaction_count": base.get("interaction_count", 0),
+        "high_value_count": high_value_count,
+        "last_interaction_time": str(base.get("last_interaction_time", "")),
+        "activity_level": base.get("activity_level", ""),
+        "intent_level": base.get("intent_level", ""),
+        "rule_detail": base.get("rule_detail", {}),
+    }
+
+
 def _build_rule_fallback(contacts: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """AI 不可用时，从规则评分结果构建推荐列表。"""
     results: List[Dict[str, Any]] = []
@@ -512,14 +705,13 @@ def recommend_priority_contacts(
     top_n: int = MIN_RECOMMENDATIONS,
 ) -> Dict[str, Any]:
     """
-    AI 驱动的优先联系人推荐主函数。
+    规则驱动的优先推进对象推荐主函数。
 
     工作流程：
     1. 获取该客户的所有联系人数据
     2. 规则评分（角色、互动、最近活跃、信息完整度、意向）
-    3. 如果 N > 0 且 LLM 可用，发送 top-k 候选给 AI 做最终排序和理由生成
-    4. 如果 AI 不可用或失败，降级为纯规则推荐
-    5. 确保至少返回 top_n 个推荐
+    3. 选出规则分最高的 top_n 名联系人
+    4. 基于客户阶段、兴趣主题和行业生成推进方式与话术
 
     Args:
         db: 数据库会话
@@ -531,102 +723,44 @@ def recommend_priority_contacts(
         {
             "customer_id": str,
             "customer_name": str,
-            "recommendations": [...],  # 推荐列表，按相关性降序
+            "recommendation": {...} | None,
+            "recommendations": [...],  # 兼容旧数组消费
             "total_candidates": int,
-            "source": "ai" | "rule",
+            "source": "rule",
         }
     """
-    # 1. 获取数据
     contacts = _fetch_contacts(db, customer_name, customer_id)
 
     if not contacts:
         return {
             "customer_id": customer_id,
             "customer_name": customer_name,
+            "recommendation": None,
             "recommendations": [],
             "total_candidates": 0,
             "source": "none",
         }
 
     total_candidates = len(contacts)
-
-    # 2. 规则评分
     scored_contacts = _compute_rule_scores(contacts)
-
-    # 3. AI 二次分析（取规则分最高的 N 个候选发给 AI）
-    llm = LLMClient()
-    source = "rule"
-
-    if llm.is_available and len(scored_contacts) >= 1:
-        candidates_for_ai = scored_contacts[:AI_CANDIDATE_LIMIT]
-        customer_context = _fetch_customer_context(db, customer_id)
-
-        ai_response = llm.chat_completion(
-            messages=[
-                {
-                    "role": "system",
-                    "content": "你是一位专业的 B2B 销售顾问。请严格按照 JSON 格式输出推荐结果。",
-                },
-                {
-                    "role": "user",
-                    "content": _build_ai_prompt(candidates_for_ai, customer_context),
-                },
-            ],
-            temperature=0.3,
-            max_tokens=1000,
-            response_format={"type": "json_object"},
+    customer_context = _fetch_customer_context(db, customer_id)
+    limit = max(1, min(int(top_n or MIN_RECOMMENDATIONS), len(scored_contacts)))
+    recommendations = [
+        _build_rule_priority_recommendation(
+            db=db,
+            customer_name=customer_name,
+            contact=contact,
+            customer_context=customer_context,
         )
-
-        if ai_response:
-            recommendations, source = _parse_ai_response(ai_response, scored_contacts)
-        else:
-            recommendations = _build_rule_fallback(scored_contacts)
-    else:
-        recommendations = _build_rule_fallback(scored_contacts)
-
-    # 4. 确保返回足够的推荐数
-    if len(recommendations) < top_n and len(scored_contacts) > len(recommendations):
-        recommended_names = {r.get("contact_name") for r in recommendations}
-        for c in scored_contacts:
-            if len(recommendations) >= top_n:
-                break
-            if c.get("contact_name") not in recommended_names:
-                recommendations.append(_build_rule_recommendation(c))
-                recommended_names.add(c.get("contact_name"))
-
-    # 5. 最终排序
-    recommendations.sort(
-        key=lambda x: x.get("ai_relevance_score", x.get("rule_score", 0)),
-        reverse=True,
-    )
-
-    # 6. 截断到 top_n 个（不足则全量返回）
-    recommendations = recommendations[:min(len(recommendations), top_n)]
-
-    # 7. 清理输出字段（移除内部字段，只保留前端需要的）
-    clean_recommendations: List[Dict[str, Any]] = []
-    for rec in recommendations:
-        clean_recommendations.append({
-            "contact_name": rec.get("contact_name", ""),
-            "mobile": rec.get("mobile", ""),
-            "email": rec.get("email", ""),
-            "department": rec.get("department", ""),
-            "position": rec.get("position", ""),
-            "purchase_role": rec.get("purchase_role", ""),
-            "role_category": rec.get("role_category", ""),
-            "relevance_score": rec.get("ai_relevance_score", rec.get("rule_score", 50)),
-            "reason": rec.get("reason", ""),
-            "interaction_count_30d": rec.get("interaction_count_30d", 0),
-            "interaction_count": rec.get("interaction_count", 0),
-            "last_interaction_time": str(rec.get("last_interaction_time", "")),
-            "activity_level": rec.get("activity_level", ""),
-            "intent_level": rec.get("intent_level", ""),
-        })
+        for contact in scored_contacts[:limit]
+    ]
+    recommendation = recommendations[0] if recommendations else None
 
     return {
         "customer_id": customer_id,
         "customer_name": customer_name,
-        "recommendations": clean_recommendations,
+        "recommendation": recommendation,
+        "recommendations": recommendations,
         "total_candidates": total_candidates,
-        "source": source,
+        "source": "rule",
     }

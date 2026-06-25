@@ -61,7 +61,25 @@ def get_customer_detail(
     if not row:
         raise HTTPException(status_code=404, detail=f"Customer {id} not found")
 
-    return dict(row)
+    result = dict(row)
+    visit_row = db.execute(
+        text(
+            "SELECT MAX(last_visit_time) AS last_visit_time, "
+            "       MIN(not_visit_days) AS no_visit_days "
+            "FROM ods_crm_contact_day "
+            "WHERE customer_name = :cname"
+        ),
+        {"cname": result.get("customer_name")},
+    ).mappings().fetchone()
+
+    if visit_row:
+        result["last_visit_time"] = visit_row.get("last_visit_time")
+        result["no_visit_days"] = visit_row.get("no_visit_days")
+    else:
+        result["last_visit_time"] = None
+        result["no_visit_days"] = None
+
+    return result
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -188,6 +206,8 @@ def get_customer_ai_insight(
     db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
     """Get AI-generated insight for the customer (rule-based)."""
+    from app.services.contact_recommend import recommend_priority_contacts
+
     # Get customer data
     customer_name = _get_customer_name(db, id)
     customer_row = db.execute(
@@ -240,15 +260,8 @@ def get_customer_ai_insight(
     if opp_count > 0:
         business_conclusion.append(f"客户现有{opp_count}个活跃商机，需重点维护")
 
-    # Contact insights
     contact_count = customer.get("contact_count", 0)
     mobile_count = customer.get("mobile_count", 0)
-    contact_insights = [
-        f"联系人覆盖率：共{contact_count}位联系人，其中{mobile_count}位有手机号",
-    ]
-
-    if mobile_count >= contact_count and contact_count > 0:
-        contact_insights.append("联系人手机号覆盖率100%，信息完整度高")
 
     # Evidence data
     evidence = {
@@ -262,40 +275,18 @@ def get_customer_ai_insight(
         "last_interaction_channel": customer.get("last_interaction_channel", ""),
     }
 
-    return {
-        "business_conclusion": business_conclusion,
-        "contact_insights": contact_insights,
-        "evidence": evidence,
-    }
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# f. GET /api/customers/{id}/priority-contact - AI 优先联系人推荐
-# ─────────────────────────────────────────────────────────────────────────────
-
-@router.get("/{id}/priority-contact")
-def get_customer_priority_contact(
-    id: str,
-    db: Session = Depends(get_db),
-) -> Dict[str, Any]:
-    """AI 驱动的优先联系人推荐。
-
-    综合角色权重、互动活跃度、最近互动时间、信息完整度等多维度因素，
-    结合 AI 模型分析，返回前 5 个推荐联系人及个性化推荐理由（不足 5 个则全量返回）。
-
-    当 AI 不可用时自动降级为规则评分模式。
-    """
-    from app.services.contact_recommend import recommend_priority_contacts
-
-    # 获取客户名称
-    customer_name = _get_customer_name(db, id)
-
-    # 调用 AI 推荐服务
-    result = recommend_priority_contacts(
+    priority_result = recommend_priority_contacts(
         db=db,
         customer_id=id,
         customer_name=customer_name,
-        top_n=5,
+        top_n=3,
     )
 
-    return result
+    return {
+        "business_conclusion": business_conclusion,
+        "evidence": evidence,
+        "recommendation": priority_result.get("recommendation"),
+        "recommendations": priority_result.get("recommendations", []),
+        "total_candidates": priority_result.get("total_candidates", 0),
+        "source": priority_result.get("source", "rule"),
+    }

@@ -587,7 +587,7 @@
     .sourceHelpTrigger:hover,.sourceHelp:focus-within .sourceHelpTrigger,.sourceHelp.isPinned .sourceHelpTrigger{ transform:translateY(-1px); border-color:rgba(126,224,200,.78); color:#dffaf4; background:linear-gradient(180deg, rgba(126,224,200,.22), rgba(90,167,255,.10)); }
     .sourceHelpCard{ position:fixed; right:auto; top:0; left:0; z-index:100000; width:min(430px, calc(100vw - 24px)); max-height:calc(100vh - 24px); overflow:auto; padding:13px 14px; border-radius:10px; border:1px solid rgba(159,176,208,.28); background:rgba(13,20,34,.99); color:var(--text); box-shadow:0 24px 62px rgba(0,0,0,.50), 0 0 0 1px rgba(255,255,255,.03) inset; font-size:12px; line-height:1.55; opacity:0; visibility:hidden; transform:translateY(4px) scale(.98); transform-origin:top right; pointer-events:none; transition:opacity .14s ease, transform .14s ease, visibility .14s ease; }
     .sourceHelpCard::before{ content:""; position:absolute; right:10px; top:-6px; width:10px; height:10px; transform:rotate(45deg); background:rgba(13,20,34,.98); border-left:1px solid rgba(159,176,208,.24); border-top:1px solid rgba(159,176,208,.24); }
-    .sourceHelp.isPinned .sourceHelpCard,.sourceHelpCard.is-tip-open{ opacity:1; visibility:visible; transform:translateY(0) scale(1); pointer-events:auto; }
+    .sourceHelp:hover .sourceHelpCard,.sourceHelp:focus-within .sourceHelpCard,.sourceHelp.isPinned .sourceHelpCard{ opacity:1; visibility:visible; transform:translateY(0) scale(1); pointer-events:auto; }
     .sourceHelpKicker{ display:block; margin-bottom:5px; color:#7ee0c8; font-size:11px; font-weight:800; letter-spacing:0; }
     .sourceHelpCard strong{ display:block; margin-bottom:8px; font-size:13px; color:var(--text); }
     .sourceHelpGrid{ display:grid; gap:7px; }
@@ -774,7 +774,7 @@
     html[data-theme="light"] .srcTip > .srcBtn:hover{ background: rgba(90,167,255,.20); color:#1d4f9c; }
     html[data-theme="light"] .srcTip.is-open > .srcBtn{ color:#fff; }
     .srcTipPanel{ display:none; position:fixed; left:0; top:0; width:340px; max-width:calc(100vw - 24px); padding:10px 12px; border-radius:12px; border:1px solid rgba(90,167,255,.32); background: linear-gradient(180deg, rgba(14,22,38,.99), rgba(8,14,24,.99)); box-shadow:0 24px 56px rgba(2,6,14,.62), 0 0 0 1px rgba(90,167,255,.10); z-index:99999; font-size:11.5px; line-height:1.6; color:var(--text); text-align:left; white-space:normal; }
-    .srcTip.is-open > .srcTipPanel,.srcTipPanel.is-tip-open{ display:block; }
+    .srcTip.is-open > .srcTipPanel{ display:block; }
     .srcTipPanel .srcTag{ display:inline-block; padding:1px 7px; border-radius:6px; font-size:10px; font-weight:800; margin-right:6px; vertical-align:middle; }
     .srcTipPanel .srcTag.src{ background:rgba(45,212,191,.18); color:#7fe9d2; border:1px solid rgba(45,212,191,.32); }
     .srcTipPanel .srcTag.calc{ background:rgba(250,204,21,.16); color:#f7d35a; border:1px solid rgba(250,204,21,.30); }
@@ -2046,23 +2046,8 @@
   }
 
   // 全局：基于 click 切换 .srcTip 的 .is-open，并把 fixed 弹层定位到 summary 旁
-  function closeSrcTip(tip){
-    const panel = tip?.__srcTipPanel || tip?.querySelector?.(":scope > .srcTipPanel");
-    tip?.classList?.remove("is-open");
-    panel?.classList?.remove("is-tip-open");
-  }
-
-  function openSrcTip(tip){
-    if (!tip) return;
-    const panel = portalTipPanel(tip.__srcTipPanel || tip.querySelector?.(":scope > .srcTipPanel"), tip, "__srcTipPanel");
-    if (!panel) return;
-    tip.classList.add("is-open");
-    panel.classList.add("is-tip-open");
-    requestAnimationFrame(()=> placeSrcTipPanel(tip));
-  }
-
   function placeSrcTipPanel(tip){
-    const panel = tip.__srcTipPanel || tip.querySelector(":scope > .srcTipPanel");
+    const panel = tip.querySelector(":scope > .srcTipPanel");
     const btn = tip.querySelector(":scope > .srcBtn");
     if (!panel || !btn) return;
     // 先清空旧约束，避免上一次的 maxHeight/overflow 影响测量
@@ -2104,13 +2089,16 @@
       e.preventDefault();
       const tip = btn.parentElement;
       const wasOpen = tip.classList.contains("is-open");
-      document.querySelectorAll(".srcTip.is-open").forEach((o)=> closeSrcTip(o));
-      if (!wasOpen) openSrcTip(tip);
+      document.querySelectorAll(".srcTip.is-open").forEach((o)=> o.classList.remove("is-open"));
+      if (!wasOpen){
+        tip.classList.add("is-open");
+        requestAnimationFrame(()=> placeSrcTipPanel(tip));
+      }
       return;
     }
     const inside = e.target.closest(".srcTipPanel");
     if (!inside){
-      document.querySelectorAll(".srcTip.is-open").forEach((o)=> closeSrcTip(o));
+      document.querySelectorAll(".srcTip.is-open").forEach((o)=> o.classList.remove("is-open"));
     }
   }, true);
 
@@ -7010,17 +6998,16 @@
 
   document.addEventListener("click", (event)=>{
     const trigger = event.target?.closest?.(".sourceHelpTrigger");
-    const openCard = event.target?.closest?.(".sourceHelpCard");
     document.querySelectorAll(".sourceHelp.isPinned").forEach(item=>{
-      if (!item.contains(event.target) && item.__sourceHelpCard !== openCard) closeSourceHelp(item);
+      if (!item.contains(event.target)) item.classList.remove("isPinned");
     });
     if (trigger){
       event.preventDefault();
       event.stopPropagation();
       const host = trigger.closest(".sourceHelp");
       const wasPinned = host?.classList.contains("isPinned");
-      document.querySelectorAll(".sourceHelp.isPinned").forEach(item=>closeSourceHelp(item));
-      if (host && !wasPinned) openSourceHelp(host);
+      document.querySelectorAll(".sourceHelp.isPinned").forEach(item=>item.classList.remove("isPinned"));
+      if (host && !wasPinned) host.classList.add("isPinned");
     }
   }, true);
 
@@ -8081,31 +8068,8 @@
     return `<span class="srcTip" data-src-key="${escapeHtml(title || "")}"><span class="srcBtn" role="button" tabindex="0" title="点击查看本卡片字段来源">?</span><span class="srcTipPanel">${title ? `<div class="srcTitle">${escapeHtml(title)} · 字段来源</div>` : ""}${rows}${caveat}</span></span>`;
   };
 
-  function portalTipPanel(panel, host, ownerProp){
-    if (!panel || !host) return panel;
-    host[ownerProp] = panel;
-    panel.__tipHost = host;
-    if (panel.parentElement !== document.body) document.body.appendChild(panel);
-    return panel;
-  }
-
-  function closeSourceHelp(host){
-    const card = host?.__sourceHelpCard || host?.querySelector?.(".sourceHelpCard");
-    host?.classList?.remove("isPinned");
-    card?.classList?.remove("is-tip-open");
-  }
-
-  function openSourceHelp(host){
-    if (!host) return;
-    const card = portalTipPanel(host.__sourceHelpCard || host.querySelector?.(".sourceHelpCard"), host, "__sourceHelpCard");
-    if (!card) return;
-    host.classList.add("isPinned");
-    card.classList.add("is-tip-open");
-    requestAnimationFrame(()=>placeSourceHelpCard(host));
-  }
-
   function placeSourceHelpCard(host){
-    const card = host?.__sourceHelpCard || host?.querySelector?.(".sourceHelpCard");
+    const card = host?.querySelector?.(".sourceHelpCard");
     const btn = host?.querySelector?.(".sourceHelpTrigger");
     if (!card || !btn) return;
     const r = btn.getBoundingClientRect();
@@ -8124,14 +8088,14 @@
   }
   document.addEventListener("mouseover", (event)=>{
     const host = event.target?.closest?.(".sourceHelp");
-    if (host?.classList.contains("isPinned")) requestAnimationFrame(()=>placeSourceHelpCard(host));
+    if (host) requestAnimationFrame(()=>placeSourceHelpCard(host));
   }, true);
   document.addEventListener("focusin", (event)=>{
     const host = event.target?.closest?.(".sourceHelp");
-    if (host?.classList.contains("isPinned")) requestAnimationFrame(()=>placeSourceHelpCard(host));
+    if (host) requestAnimationFrame(()=>placeSourceHelpCard(host));
   }, true);
-  window.addEventListener("scroll", ()=>document.querySelectorAll(".sourceHelp.isPinned").forEach(placeSourceHelpCard), true);
-  window.addEventListener("resize", ()=>document.querySelectorAll(".sourceHelp.isPinned").forEach(placeSourceHelpCard));
+  window.addEventListener("scroll", ()=>document.querySelectorAll(".sourceHelp.isPinned,.sourceHelp:hover").forEach(placeSourceHelpCard), true);
+  window.addEventListener("resize", ()=>document.querySelectorAll(".sourceHelp.isPinned,.sourceHelp:hover").forEach(placeSourceHelpCard));
 
   function refreshStaticTipTexts(){
     const map = [

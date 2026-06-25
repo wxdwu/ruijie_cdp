@@ -6,6 +6,7 @@ import AiInsight from './AiInsight.vue'
 
 defineProps({
   customer: { type: Object, default: () => ({}) },
+  contacts: { type: Array, default: () => [] },
   interactions: { type: Array, default: () => [] },
   aiInsight: { type: Object, default: () => ({}) },
   priorityRecommendations: { type: Array, default: () => [] },
@@ -23,7 +24,8 @@ defineProps({
       :interaction-count="customer.interaction_count_30d || 0"
       :stage="customer.purchase_stage"
       :key-roles="customer.role_coverage"
-      :opportunity-count="customer.active_opp_count || 0"
+      :contacts="contacts"
+      :opportunity-count="customer.funnel_opp_count || 0"
       :opportunity-amount="customer.active_opp_amount"
     />
 
@@ -33,6 +35,7 @@ defineProps({
         class="h-full"
         :customer="customer"
         :customer-statistics="customerStatistics"
+        :interactions="interactions"
         :opportunities="opportunities"
       />
       <AiInsight
@@ -40,7 +43,6 @@ defineProps({
         :customer="customer"
         :opportunities="opportunities"
         :business-conclusion="aiInsight.business_conclusion"
-        :top-contacts="aiInsight.contact_insights"
         :priority-contacts="priorityRecommendations"
         :evidence-chain="aiInsight.evidence"
       />

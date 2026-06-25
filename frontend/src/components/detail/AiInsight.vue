@@ -1,11 +1,11 @@
 <script setup>
 import { computed, ref } from 'vue'
+import FieldHelpTooltip from '../customer/FieldHelpTooltip.vue'
 
 const props = defineProps({
   customer: { type: Object, default: () => ({}) },
   opportunities: { type: Array, default: () => [] },
   businessConclusion: { type: Array, default: () => [] },
-  topContacts: { type: Array, default: () => [] },
   priorityContacts: { type: Array, default: () => [] },
   evidenceChain: { type: Object, default: () => ({}) },
 })
@@ -23,9 +23,7 @@ const contactTop3 = computed(() => {
     }))
   }
 
-  return (props.topContacts || []).slice(0, 3).map(contact => ({
-    name: typeof contact === 'string' ? contact : (contact.contact_name || '未命名联系人'),
-  }))
+  return []
 })
 
 function normalizeList(value) {
@@ -118,6 +116,54 @@ function evidenceLabel(key) {
   }
   return map[key] || key
 }
+
+const help = {
+  businessConclusion: {
+    title: 'AI 业务结论',
+    type: 'calc',
+    meaning: '基于客户档案、互动、商机、联系人和风险字段生成的一段业务判断。',
+    sourceTables: 'dws_customer_360, dws_contact_360, dws_interaction_detail, ods_crm_opportunity_day',
+    sourceFields: 'dws_customer_360.intent_score, dws_customer_360.intent_level, dws_customer_360.active_opp_count, dws_customer_360.role_coverage, dws_interaction_detail.event_time, ods_crm_opportunity_day.amount',
+    calculation: '当前业务结论由后端规则生成：先读取客户意向、互动和商机聚合字段，再结合联系人覆盖情况输出可解释结论。',
+    emptyState: '缺少洞察数据时显示暂无业务结论。',
+  },
+  focusFacts: {
+    title: 'AI 深度洞察 Focus',
+    type: 'calc',
+    meaning: '提炼重点主题、主要竞品、关键人缺口和主商机。',
+    sourceTables: 'dws_customer_360, dws_contact_360, dws_interaction_detail, ods_crm_opportunity_day',
+    sourceFields: 'dws_customer_360.product_categories, dws_customer_360.top_channels, dws_customer_360.role_coverage, dws_customer_360.highest_stage_opp, dws_customer_360.active_opp_amount, ods_crm_opportunity_day.forecast_type, ods_crm_opportunity_day.amount',
+    calculation: '重点主题来自 product_categories 和 top_channels；关键人缺口来自 role_coverage；主商机优先使用 highest_stage_opp、forecast_type 和金额字段。',
+    emptyState: '无对应信号时显示 — 或无。',
+  },
+  contactTop3: {
+    title: 'AI 联系人洞察 Top3',
+    type: 'calc',
+    meaning: '推荐最值得优先推进的联系人。',
+    sourceTables: 'dws_contact_360, dws_interaction_detail',
+    sourceFields: 'dws_contact_360.role_category, dws_contact_360.purchase_role, dws_contact_360.interaction_count_30d, dws_contact_360.interaction_count, dws_interaction_detail.is_high_value',
+    calculation: '联系人排序使用 backend/app/services/contact_recommend.py 的规则评分：角色权重、近30天互动、最近互动、信息完整度和意向等级综合计算，取评分最高的前三名。',
+    emptyState: '无联系人或推荐结果时显示暂无可推荐联系人。',
+  },
+  companyInsight: {
+    title: 'AI 公司洞察',
+    type: 'calc',
+    meaning: '从公司级别汇总客户活跃度、商机基础和合作意向。',
+    sourceTables: 'dws_customer_360, ods_crm_opportunity_day, dws_interaction_detail',
+    sourceFields: 'dws_customer_360.industry, dws_customer_360.interaction_count_30d, dws_customer_360.active_opp_count, dws_customer_360.active_opp_amount, dws_customer_360.won_amount, dws_customer_360.last_interaction_channel',
+    calculation: '按公司维度提炼行业、互动活跃度、在途商机、成交金额和最近渠道，每条输出一句可解释证据。',
+    emptyState: '无互动或商机时提示活跃信号不足。',
+  },
+  evidence: {
+    title: 'AI 证据链',
+    type: 'src',
+    meaning: 'AI 洞察所引用的底层字段和值。',
+    sourceTables: 'dws_customer_360, dws_contact_360, dws_interaction_detail, ods_crm_opportunity_day',
+    sourceFields: 'dws_customer_360.intent_score, dws_customer_360.intent_level, dws_customer_360.contact_count, dws_customer_360.mobile_count, dws_customer_360.last_interaction_time, dws_customer_360.last_interaction_channel, dws_customer_360.active_opp_count',
+    calculation: '不生成新结论，只展开当前洞察依赖的字段和值，便于核对。',
+    emptyState: '没有证据字段时显示暂无证据。',
+  },
+}
 </script>
 
 <template>
@@ -129,7 +175,7 @@ function evidenceLabel(key) {
 
     <div class="space-y-5">
       <section>
-        <div class="insight-section-title">💡 业务结论</div>
+        <div class="insight-section-title">业务结论<FieldHelpTooltip :help="help.businessConclusion" /></div>
         <div class="conclusion-panel">
           <p v-if="businessConclusion?.length" class="text-sm leading-7 text-[var(--text)]">
             {{ businessConclusion.join('；') }}
@@ -139,7 +185,6 @@ function evidenceLabel(key) {
       </section>
 
       <section>
-        <div class="insight-section-title">Focus 关键事实</div>
         <div class="focus-grid">
           <div v-for="item in focusFacts" :key="item.label">
             <span>{{ item.label }}</span>
@@ -149,7 +194,7 @@ function evidenceLabel(key) {
       </section>
 
       <section>
-        <div class="insight-section-title">👥 联系人 Top3</div>
+        <div class="insight-section-title">联系人 Top3<FieldHelpTooltip :help="help.contactTop3" /></div>
         <div v-if="contactTop3.length" class="space-y-1">
           <div v-for="(contact, idx) in contactTop3" :key="`${contact.name}-${idx}`" class="contact-row">
             <span class="contact-rank">{{ idx + 1 }}</span>
@@ -170,7 +215,7 @@ function evidenceLabel(key) {
       </section>
 
       <section>
-        <div class="insight-section-title">🏢 公司洞察</div>
+        <div class="insight-section-title">公司洞察<FieldHelpTooltip :help="help.companyInsight" /></div>
         <div class="space-y-1.5">
           <p v-for="(line, idx) in companyInsights" :key="idx" class="text-sm leading-6 text-[var(--muted)]">
             {{ line }}
@@ -179,10 +224,17 @@ function evidenceLabel(key) {
       </section>
 
       <section class="evidence-section">
-        <button class="evidence-toggle" type="button" @click="evidenceExpanded = !evidenceExpanded">
-          <span>查看证据</span>
-          <span class="evidence-chevron" :class="{ expanded: evidenceExpanded }">⌄</span>
-        </button>
+        <div class="evidence-heading">
+          <div class="evidence-title">
+            <button class="evidence-title-button" type="button" @click="evidenceExpanded = !evidenceExpanded">
+              查看证据
+            </button>
+            <FieldHelpTooltip :help="help.evidence" />
+          </div>
+          <button class="evidence-chevron-button" type="button" aria-label="展开证据" @click="evidenceExpanded = !evidenceExpanded">
+            <span class="evidence-chevron" :class="{ expanded: evidenceExpanded }">⌄</span>
+          </button>
+        </div>
         <div v-if="evidenceExpanded" class="evidence-content">
           <div v-for="(val, key) in evidenceChain" :key="key" class="evidence-row">
             <span>{{ evidenceLabel(key) }}</span>
@@ -240,6 +292,46 @@ function evidenceLabel(key) {
   font-weight: 700;
 }
 
+.evidence-heading {
+  position: relative;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 11px 14px;
+  background: var(--bg-secondary);
+}
+
+.evidence-title {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 4px;
+}
+
+.evidence-title-button,
+.evidence-chevron-button {
+  border: 0;
+  background: transparent;
+  color: var(--text-primary);
+  cursor: pointer;
+}
+
+.evidence-title-button {
+  padding: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.evidence-chevron-button {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+}
+
 .contact-row {
   display: flex;
   align-items: flex-start;
@@ -270,23 +362,9 @@ function evidenceLabel(key) {
 }
 
 .evidence-section {
-  overflow: hidden;
+  overflow: visible;
   border: 1px solid var(--border-color);
   border-radius: 10px;
-}
-
-.evidence-toggle {
-  display: flex;
-  width: 100%;
-  align-items: center;
-  justify-content: space-between;
-  padding: 11px 14px;
-  border: 0;
-  background: var(--bg-secondary);
-  color: var(--text-primary);
-  font-size: 13px;
-  font-weight: 600;
-  cursor: pointer;
 }
 
 .evidence-chevron {

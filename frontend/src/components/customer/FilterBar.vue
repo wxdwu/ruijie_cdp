@@ -28,7 +28,6 @@ const channels = [
   { value: 'wechat', label: '微信' },
 ]
 
-<<<<<<< HEAD
 const periodOptions = [
   { value: 30, label: '近30天' },
   { value: 60, label: '近60天' },
@@ -37,13 +36,12 @@ const periodOptions = [
   { value: 365, label: '近1年' },
   { value: 1095, label: '近3年' },
 ]
-=======
+
 const filteredOwners = computed(() => {
   const q = ownerInput.value.trim().toLowerCase()
   if (!q) return owners.value
   return owners.value.filter((item) => item.toLowerCase().includes(q))
 })
->>>>>>> 95bad19 (客户概览界面前端缺失字段补充)
 
 async function fetchFilterOptions() {
   try {
@@ -116,7 +114,7 @@ onBeforeUnmount(() => {
   <div class="relative z-40 overflow-visible rounded-xl border border-[var(--line)] bg-[var(--panel)] p-5 backdrop-blur">
     <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
       <!-- 专项 -->
-      <div class="flex flex-col gap-1.5">
+      <div class="flex min-w-0 flex-col gap-1.5">
         <label class="text-xs font-medium text-[var(--muted)]">专项</label>
         <select disabled
           class="rounded-lg border border-[var(--line)] bg-[var(--bg1)] px-3 py-2 text-sm text-[var(--text)] focus:border-[var(--brand)] focus:outline-none"
@@ -126,7 +124,7 @@ onBeforeUnmount(() => {
       </div>
 
       <!-- 客户关键词 -->
-      <div class="flex flex-col gap-1.5">
+      <div class="flex min-w-0 flex-col gap-1.5">
         <label class="text-xs font-medium text-[var(--muted)]">客户关键词</label>
         <input
           v-model="keyword"
@@ -137,7 +135,7 @@ onBeforeUnmount(() => {
       </div>
 
       <!-- 行业 -->
-      <div class="flex flex-col gap-1.5">
+      <div class="flex min-w-0 flex-col gap-1.5">
         <label class="text-xs font-medium text-[var(--muted)]">行业</label>
         <select
           v-model="industry"
@@ -149,7 +147,7 @@ onBeforeUnmount(() => {
       </div>
 
       <!-- 负责人 -->
-      <div class="flex flex-col gap-1.5">
+      <div class="flex min-w-0 flex-col gap-1.5">
         <label class="text-xs font-medium text-[var(--muted)]">负责人</label>
         <div ref="ownerComboboxRef" class="relative">
           <input
@@ -157,7 +155,7 @@ onBeforeUnmount(() => {
             v-model="ownerInput"
             type="text"
             placeholder="输入负责人名称..."
-            class="w-full rounded-lg border border-[var(--line)] bg-[var(--bg1)] px-3 py-2 pr-16 text-sm text-[var(--text)] placeholder:text-[var(--muted)] focus:border-[var(--brand)] focus:outline-none"
+            class="w-full rounded-lg border border-[var(--line)] bg-[var(--bg1)] px-3 py-2 pr-10 text-sm text-[var(--text)] placeholder:text-[var(--muted)] focus:border-[var(--brand)] focus:outline-none"
             role="combobox"
             aria-label="负责人"
             :aria-expanded="ownerComboboxOpen"
@@ -166,15 +164,6 @@ onBeforeUnmount(() => {
             @click="openOwnerCombobox"
             @input="handleOwnerInput"
           />
-          <button
-            v-if="ownerInput"
-            type="button"
-            class="absolute right-8 top-1/2 -translate-y-1/2 text-sm text-[var(--muted)] hover:text-[var(--text)]"
-            aria-label="清空负责人"
-            @click="clearOwner"
-          >
-            x
-          </button>
           <button
             type="button"
             class="absolute right-0 top-0 flex h-full w-9 items-center justify-center rounded-r-lg text-[var(--muted)] hover:text-[var(--text)]"
@@ -216,12 +205,12 @@ onBeforeUnmount(() => {
       </div>
 
       <!-- 互动次数筛选 -->
-      <div class="flex flex-col gap-1.5">
+      <div class="flex min-w-0 flex-col gap-1.5">
         <label class="text-xs font-medium text-[var(--muted)]">互动次数 ≥</label>
-        <div class="flex gap-1">
+        <div class="grid grid-cols-[minmax(0,1fr)_3.5rem] gap-1">
           <select
             v-model.number="interaction_period"
-            class="rounded-lg border border-[var(--line)] bg-[var(--bg1)] px-2 py-2 text-xs text-[var(--text)] focus:border-[var(--brand)] focus:outline-none"
+            class="min-w-0 rounded-lg border border-[var(--line)] bg-[var(--bg1)] px-2 py-2 text-xs text-[var(--text)] focus:border-[var(--brand)] focus:outline-none"
           >
             <option v-for="p in periodOptions" :key="p.value" :value="p.value">{{ p.label }}</option>
           </select>
@@ -230,13 +219,13 @@ onBeforeUnmount(() => {
             type="number"
             min="0"
             placeholder="0"
-            class="flex-1 rounded-lg border border-[var(--line)] bg-[var(--bg1)] px-3 py-2 text-sm text-[var(--text)] placeholder:text-[var(--muted)] focus:border-[var(--brand)] focus:outline-none"
+            class="min-w-0 rounded-lg border border-[var(--line)] bg-[var(--bg1)] px-2 py-2 text-sm text-[var(--text)] placeholder:text-[var(--muted)] focus:border-[var(--brand)] focus:outline-none"
           />
         </div>
       </div>
 
       <!-- 互动方式 -->
-      <div class="flex flex-col gap-1.5">
+      <div class="flex min-w-0 flex-col gap-1.5">
         <label class="text-xs font-medium text-[var(--muted)]">互动方式</label>
         <select
           v-model="channel"
