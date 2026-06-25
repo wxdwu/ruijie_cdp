@@ -142,7 +142,7 @@ const help = {
         sourceTable: '-',
         sourceFieldDisplay: '-',
         calculation: '当前数据库未落地任务/拜访/跟进记录明细表，暂无法计算。',
-        emptyState: '无字段时显示未提供字段。',
+        emptyState: '无字段时显示字段待填充。',
       },
     ],
   },
@@ -205,7 +205,7 @@ const help = {
       <div class="mt-2 flex items-center gap-2 text-xs font-bold text-[var(--text)]">
         <span>超期任务</span>
         <span class="inline-flex items-center rounded-full border border-red-400/50 bg-red-400/10 px-2 py-0.5 text-[11px] font-bold leading-snug text-red-600">
-          未提供字段
+          字段待填充
         </span>
       </div>
     </div>

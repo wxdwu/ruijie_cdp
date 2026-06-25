@@ -11,6 +11,8 @@ from typing import Any, Dict, List, Optional
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from app.services.region_filter import REGION_OPTIONS
+
 logger = logging.getLogger(__name__)
 
 _EXPORT_COLUMNS = [
@@ -40,12 +42,15 @@ def export_customers_excel(
     *,
     keyword: Optional[str] = None,
     industry: Optional[str] = None,
+    region: Optional[str] = None,
+    region_keyword: Optional[str] = None,
     owner: Optional[str] = None,
     owner_keyword: Optional[str] = None,
     stage: Optional[str] = None,
     intent_level: Optional[str] = None,
     interaction_min: Optional[int] = None,
     interaction_period: int = 30,
+    attribute: Optional[str] = None,
     channel: Optional[str] = None,
     sort_by: str = "intent_score",
     sort_order: str = "DESC",
@@ -60,6 +65,34 @@ def export_customers_excel(
     if industry:
         where_parts.append("industry = :industry")
         params["industry"] = industry
+    if region:
+        if region == "其他":
+            placeholders = []
+            for index, value in enumerate(item for item in REGION_OPTIONS if item != "其他"):
+                key = f"standard_region_{index}"
+                placeholders.append(f":{key}")
+                params[key] = value
+            where_parts.append(
+                "(region IS NULL OR region = '' "
+                f"OR region NOT IN ({', '.join(placeholders)}))"
+            )
+        else:
+            where_parts.append("region = :region")
+            params["region"] = region
+    elif region_keyword:
+        if region_keyword.strip() == "其他":
+            placeholders = []
+            for index, value in enumerate(item for item in REGION_OPTIONS if item != "其他"):
+                key = f"standard_region_{index}"
+                placeholders.append(f":{key}")
+                params[key] = value
+            where_parts.append(
+                "(region IS NULL OR region = '' "
+                f"OR region NOT IN ({', '.join(placeholders)}))"
+            )
+        else:
+            where_parts.append("region LIKE :region_keyword")
+            params["region_keyword"] = f"%{region_keyword}%"
     if owner:
         where_parts.append("owner_name = :owner")
         params["owner"] = owner
@@ -85,6 +118,12 @@ def export_customers_excel(
         """)
         params["interaction_min"] = interaction_min
         params["period"] = interaction_period
+    if attribute == "heavy":
+        where_parts.append("attribute = :heavy_attribute")
+        params["heavy_attribute"] = "H"
+    elif attribute == "non_heavy":
+        where_parts.append("(attribute IS NULL OR attribute != :heavy_attribute)")
+        params["heavy_attribute"] = "H"
     if channel:
         where_parts.append("last_interaction_channel = :channel")
         params["channel"] = channel

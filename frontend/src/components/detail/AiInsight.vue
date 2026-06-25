@@ -87,14 +87,14 @@ const focusFacts = computed(() => {
 const companyInsights = computed(() => {
   const evidence = props.evidenceChain || {}
   const interactions = Number(evidence.interaction_count || 0)
-  const opportunities = Number(evidence.opportunity_count || 0)
+  const opportunities = Number(props.customer?.funnel_opp_count || 0)
   const insights = [
     interactions > 0
       ? `当前记录到 ${interactions} 次互动，可结合最近互动继续判断客户活跃度。`
       : '当前暂无互动记录，客户活跃信号不足。',
     opportunities > 0
-      ? `CRM 当前存在 ${opportunities} 个活跃商机，具备持续跟进基础。`
-      : 'CRM 当前未记录活跃商机。',
+      ? `CRM 当前存在 ${opportunities} 个漏斗内商机，具备持续跟进基础。`
+      : 'CRM 当前未记录漏斗内商机。',
   ]
 
   if (evidence.intent_score != null || evidence.intent_level) {
@@ -108,7 +108,7 @@ function evidenceLabel(key) {
     intent_score: '意向分',
     intent_level: '意向等级',
     interaction_count: '互动次数',
-    opportunity_count: '商机数',
+    opportunity_count: '漏斗商机数',
     contact_count: '联系人',
     mobile_count: '手机号',
     last_interaction_time: '最近互动',
@@ -123,7 +123,7 @@ const help = {
     type: 'calc',
     meaning: '基于客户档案、互动、商机、联系人和风险字段生成的一段业务判断。',
     sourceTables: 'dws_customer_360, dws_contact_360, dws_interaction_detail, ods_crm_opportunity_day',
-    sourceFields: 'dws_customer_360.intent_score, dws_customer_360.intent_level, dws_customer_360.active_opp_count, dws_customer_360.role_coverage, dws_interaction_detail.event_time, ods_crm_opportunity_day.amount',
+    sourceFields: 'dws_customer_360.intent_score, dws_customer_360.intent_level, dws_customer_360.funnel_opp_count, dws_customer_360.role_coverage, dws_interaction_detail.event_time, ods_crm_opportunity_day.amount',
     calculation: '当前业务结论由后端规则生成：先读取客户意向、互动和商机聚合字段，再结合联系人覆盖情况输出可解释结论。',
     emptyState: '缺少洞察数据时显示暂无业务结论。',
   },
@@ -150,8 +150,8 @@ const help = {
     type: 'calc',
     meaning: '从公司级别汇总客户活跃度、商机基础和合作意向。',
     sourceTables: 'dws_customer_360, ods_crm_opportunity_day, dws_interaction_detail',
-    sourceFields: 'dws_customer_360.industry, dws_customer_360.interaction_count_30d, dws_customer_360.active_opp_count, dws_customer_360.active_opp_amount, dws_customer_360.won_amount, dws_customer_360.last_interaction_channel',
-    calculation: '按公司维度提炼行业、互动活跃度、在途商机、成交金额和最近渠道，每条输出一句可解释证据。',
+    sourceFields: 'dws_customer_360.industry, dws_customer_360.interaction_count_30d, dws_customer_360.funnel_opp_count, dws_customer_360.active_opp_amount, dws_customer_360.won_amount, dws_customer_360.last_interaction_channel',
+    calculation: '按公司维度提炼行业、互动活跃度、漏斗内商机、成交金额和最近渠道，每条输出一句可解释证据。',
     emptyState: '无互动或商机时提示活跃信号不足。',
   },
   evidence: {
@@ -159,7 +159,7 @@ const help = {
     type: 'src',
     meaning: 'AI 洞察所引用的底层字段和值。',
     sourceTables: 'dws_customer_360, dws_contact_360, dws_interaction_detail, ods_crm_opportunity_day',
-    sourceFields: 'dws_customer_360.intent_score, dws_customer_360.intent_level, dws_customer_360.contact_count, dws_customer_360.mobile_count, dws_customer_360.last_interaction_time, dws_customer_360.last_interaction_channel, dws_customer_360.active_opp_count',
+    sourceFields: 'dws_customer_360.intent_score, dws_customer_360.intent_level, dws_customer_360.contact_count, dws_customer_360.mobile_count, dws_customer_360.last_interaction_time, dws_customer_360.last_interaction_channel, dws_customer_360.funnel_opp_count',
     calculation: '不生成新结论，只展开当前洞察依赖的字段和值，便于核对。',
     emptyState: '没有证据字段时显示暂无证据。',
   },

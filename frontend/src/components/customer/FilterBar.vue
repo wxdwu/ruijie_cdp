@@ -6,17 +6,24 @@ const emit = defineEmits(['apply'])
 
 const keyword = ref('')
 const industry = ref('')
+const regionInput = ref('')
+const selectedRegion = ref('')
+const regionComboboxOpen = ref(false)
+const regionComboboxRef = ref(null)
+const regionInputRef = ref(null)
 const ownerInput = ref('')
 const selectedOwner = ref('')
 const ownerComboboxOpen = ref(false)
 const ownerComboboxRef = ref(null)
 const ownerInputRef = ref(null)
 const specialProject = ref(null)
+const attribute = ref('')
 const channel = ref('')
 const interaction_min = ref(null)
 const interaction_period = ref(30) // 默认30天
 
 const industries = ref([])
+const regions = ref([])
 const owners = ref([])
 const loading = ref(false)
 
@@ -43,14 +50,49 @@ const filteredOwners = computed(() => {
   return owners.value.filter((item) => item.toLowerCase().includes(q))
 })
 
+const filteredRegions = computed(() => {
+  const q = regionInput.value.trim().toLowerCase()
+  if (!q) return regions.value
+  return regions.value.filter((item) => item.toLowerCase().includes(q))
+})
+
 async function fetchFilterOptions() {
   try {
     const res = await customerApi.filterOptions()
     industries.value = res.industries || []
+    regions.value = res.regions || []
     owners.value = res.owners || []
   } catch (e) {
     console.error('Failed to fetch filter options:', e)
   }
+}
+
+function openRegionCombobox() {
+  regionComboboxOpen.value = true
+}
+
+function openRegionComboboxFromArrow() {
+  regionComboboxOpen.value = true
+  regionInputRef.value?.focus()
+}
+
+function handleRegionInput() {
+  if (regionInput.value !== selectedRegion.value) {
+    selectedRegion.value = ''
+  }
+  regionComboboxOpen.value = true
+}
+
+function selectRegion(value) {
+  selectedRegion.value = value
+  regionInput.value = value
+  regionComboboxOpen.value = false
+}
+
+function clearRegion() {
+  selectedRegion.value = ''
+  regionInput.value = ''
+  regionComboboxOpen.value = false
 }
 
 function openOwnerCombobox() {
@@ -82,6 +124,9 @@ function clearOwner() {
 }
 
 function handleDocumentMouseDown(event) {
+  if (!regionComboboxRef.value?.contains(event.target)) {
+    regionComboboxOpen.value = false
+  }
   if (!ownerComboboxRef.value?.contains(event.target)) {
     ownerComboboxOpen.value = false
   }
@@ -89,13 +134,17 @@ function handleDocumentMouseDown(event) {
 
 function handleApply() {
   const ownerKeyword = ownerInput.value.trim()
+  const regionKeyword = regionInput.value.trim()
   emit('apply', {
     keyword: keyword.value,
     industry: industry.value,
+    region: selectedRegion.value,
+    region_keyword: selectedRegion.value ? '' : regionKeyword,
     owner: selectedOwner.value,
     owner_keyword: selectedOwner.value ? '' : ownerKeyword,
     interaction_min: interaction_min.value,
     interaction_period: interaction_period.value, // 新增：时间范围
+    attribute: attribute.value,
     channel: channel.value,
   })
 }
@@ -112,7 +161,7 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="relative z-40 overflow-visible rounded-xl border border-[var(--line)] bg-[var(--panel)] p-5 backdrop-blur">
-    <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
+    <div class="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-8 gap-4">
       <!-- 专项 -->
       <div class="flex min-w-0 flex-col gap-1.5">
         <label class="text-xs font-medium text-[var(--muted)]">专项</label>
@@ -144,6 +193,64 @@ onBeforeUnmount(() => {
           <option value="">全部行业</option>
           <option v-for="item in industries" :key="item" :value="item">{{ item }}</option>
         </select>
+      </div>
+
+      <!-- 省份 -->
+      <div class="flex min-w-0 flex-col gap-1.5">
+        <label class="text-xs font-medium text-[var(--muted)]">省份</label>
+        <div ref="regionComboboxRef" class="relative">
+          <input
+            ref="regionInputRef"
+            v-model="regionInput"
+            type="text"
+            placeholder="输入省份..."
+            class="w-full rounded-lg border border-[var(--line)] bg-[var(--bg1)] px-3 py-2 pr-10 text-sm text-[var(--text)] placeholder:text-[var(--muted)] focus:border-[var(--brand)] focus:outline-none"
+            role="combobox"
+            aria-label="省份"
+            :aria-expanded="regionComboboxOpen"
+            autocomplete="off"
+            @focus="openRegionCombobox"
+            @click="openRegionCombobox"
+            @input="handleRegionInput"
+          />
+          <button
+            type="button"
+            class="absolute right-0 top-0 flex h-full w-9 items-center justify-center rounded-r-lg text-[var(--muted)] hover:text-[var(--text)]"
+            aria-label="展开省份列表"
+            tabindex="-1"
+            @mousedown.prevent
+            @click="openRegionComboboxFromArrow"
+          >
+            <span class="h-2 w-2 rotate-45 border-b border-r border-current"></span>
+          </button>
+          <div
+            v-if="regionComboboxOpen"
+            class="absolute left-0 right-0 top-[calc(100%+0.25rem)] z-[100] max-h-60 overflow-y-auto rounded-lg border border-[var(--line)] bg-[var(--panel)] py-1 shadow-xl"
+          >
+            <button
+              type="button"
+              class="w-full px-3 py-2 text-left text-sm text-[var(--muted)] hover:bg-white/10"
+              @mousedown.prevent="clearRegion"
+            >
+              全部省份
+            </button>
+            <button
+              v-for="item in filteredRegions"
+              :key="item"
+              type="button"
+              class="w-full px-3 py-2 text-left text-sm text-[var(--text)] hover:bg-white/10"
+              @mousedown.prevent="selectRegion(item)"
+            >
+              {{ item }}
+            </button>
+            <div
+              v-if="filteredRegions.length === 0"
+              class="px-3 py-2 text-sm text-[var(--muted)]"
+            >
+              无匹配省份
+            </div>
+          </div>
+        </div>
       </div>
 
       <!-- 负责人 -->
@@ -222,6 +329,19 @@ onBeforeUnmount(() => {
             class="min-w-0 rounded-lg border border-[var(--line)] bg-[var(--bg1)] px-2 py-2 text-sm text-[var(--text)] placeholder:text-[var(--muted)] focus:border-[var(--brand)] focus:outline-none"
           />
         </div>
+      </div>
+
+      <!-- 是否为重客 -->
+      <div class="flex min-w-0 flex-col gap-1.5">
+        <label class="text-xs font-medium text-[var(--muted)]">是否为重客</label>
+        <select
+          v-model="attribute"
+          class="rounded-lg border border-[var(--line)] bg-[var(--bg1)] px-3 py-2 text-sm text-[var(--text)] focus:border-[var(--brand)] focus:outline-none"
+        >
+          <option value="">全部</option>
+          <option value="heavy">是重客</option>
+          <option value="non_heavy">不是重客</option>
+        </select>
       </div>
 
       <!-- 互动方式 -->

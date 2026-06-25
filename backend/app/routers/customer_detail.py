@@ -228,13 +228,8 @@ def get_customer_ai_insight(
         {"cname": customer_name},
     ).scalar() or 0
 
-    # Get opportunity count
-    opp_count = db.execute(
-        text(
-            "SELECT COUNT(*) FROM ods_crm_opportunity_day WHERE customer_name = :cname AND is_active = 1"
-        ),
-        {"cname": customer_name},
-    ).scalar() or 0
+    # Get funnel opportunity count from dws_customer_360.
+    opp_count = int(customer.get("funnel_opp_count") or 0)
 
     # Build rule-based business conclusions
     business_conclusion = []
@@ -258,7 +253,7 @@ def get_customer_ai_insight(
 
     # Opportunity insight
     if opp_count > 0:
-        business_conclusion.append(f"客户现有{opp_count}个活跃商机，需重点维护")
+        business_conclusion.append(f"客户现有{opp_count}个漏斗内商机，需重点维护")
 
     contact_count = customer.get("contact_count", 0)
     mobile_count = customer.get("mobile_count", 0)

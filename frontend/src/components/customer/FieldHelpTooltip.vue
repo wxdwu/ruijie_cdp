@@ -200,6 +200,11 @@ const fieldBlocks = computed(() => {
   vertical-align: middle;
 }
 
+.field-help:hover,
+.field-help:focus-within {
+  z-index: 1000;
+}
+
 .field-help__trigger {
   display: inline-flex;
   width: 17px;
@@ -226,6 +231,7 @@ const fieldBlocks = computed(() => {
 
 .field-help__panel {
   position: absolute;
+  z-index: 1001;
   top: 24px;
   left: 0;
   display: none;

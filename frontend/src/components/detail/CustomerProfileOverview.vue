@@ -259,7 +259,7 @@ const help = {
         sourceTable: '-',
         sourceFieldDisplay: '-',
         calculation: '当前 dws 表未找到稳定产品预算金额字段，先显示空值。',
-        emptyState: '无字段时显示未提供字段。',
+        emptyState: '无字段时显示字段待填充。',
       },
       {
         type: 'src',
@@ -277,7 +277,7 @@ const help = {
         sourceTable: '-',
         sourceFieldDisplay: '-',
         calculation: '当前 dws 表未找到稳定历史成交金额字段，先显示空值。',
-        emptyState: '无字段时显示未提供字段。',
+        emptyState: '无字段时显示字段待填充。',
       },
     ],
   },
@@ -378,12 +378,12 @@ const help = {
               </strong>
             </div>
             <div><span>最高阶段商机</span><strong>{{ display('highest_stage_opp', 'forecast_type') }}</strong></div>
-            <div><span>产品预算</span><strong><span class="missing-field-tag">未提供字段</span></strong></div>
+            <div><span>产品预算</span><strong><span class="missing-field-tag">字段待填充</span></strong></div>
             <div>
               <span>近2年成交 / 历史</span>
               <strong>
                 {{ formatYuan(pick('won_amount')) }} /
-                <span class="missing-field-tag">未提供字段</span>
+                <span class="missing-field-tag">字段待填充</span>
               </strong>
             </div>
           </div>

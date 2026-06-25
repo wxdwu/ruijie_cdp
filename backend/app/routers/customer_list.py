@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.services.export_service import export_customers_excel
+from app.services.region_filter import REGION_OPTIONS, get_region_options
 
 logger = logging.getLogger(__name__)
 
@@ -32,12 +33,15 @@ def list_customers(
     db: Session = Depends(get_db),
     keyword: Optional[str] = Query(None, description="Search by customer_name"),
     industry: Optional[str] = Query(None, description="Filter by industry"),
+    region: Optional[str] = Query(None, description="Filter by region"),
+    region_keyword: Optional[str] = Query(None, description="Fuzzy search by region"),
     owner: Optional[str] = Query(None, description="Filter by owner_name"),
     owner_keyword: Optional[str] = Query(None, description="Fuzzy search by owner_name"),
     stage: Optional[str] = Query(None, description="Filter by purchase_stage"),
     intent_level: Optional[str] = Query(None, description="Filter by intent_level"),
     interaction_min: Optional[int] = Query(None, description="Minimum interaction count"),
     interaction_period: int = Query(30, description="Interaction period in days (30/60/90/180/365/1095)"),
+    attribute: Optional[str] = Query(None, description="Filter by key customer rating: heavy/non_heavy"),
     channel: Optional[str] = Query(None, description="Filter by last_interaction_channel"),
     sort: Optional[str] = Query(None, description="Sort field and direction, e.g. 'intent_score desc'"),
     page: int = Query(1, ge=1, description="Page number"),
@@ -53,6 +57,34 @@ def list_customers(
     if industry:
         where_parts.append("industry = :industry")
         params["industry"] = industry
+    if region:
+        if region == "其他":
+            placeholders = []
+            for index, value in enumerate(item for item in REGION_OPTIONS if item != "其他"):
+                key = f"standard_region_{index}"
+                placeholders.append(f":{key}")
+                params[key] = value
+            where_parts.append(
+                "(region IS NULL OR region = '' "
+                f"OR region NOT IN ({', '.join(placeholders)}))"
+            )
+        else:
+            where_parts.append("region = :region")
+            params["region"] = region
+    elif region_keyword:
+        if region_keyword.strip() == "其他":
+            placeholders = []
+            for index, value in enumerate(item for item in REGION_OPTIONS if item != "其他"):
+                key = f"standard_region_{index}"
+                placeholders.append(f":{key}")
+                params[key] = value
+            where_parts.append(
+                "(region IS NULL OR region = '' "
+                f"OR region NOT IN ({', '.join(placeholders)}))"
+            )
+        else:
+            where_parts.append("region LIKE :region_keyword")
+            params["region_keyword"] = f"%{region_keyword}%"
     if owner:
         where_parts.append("owner_name = :owner")
         params["owner"] = owner
@@ -78,6 +110,12 @@ def list_customers(
         """)
         params["interaction_min"] = interaction_min
         params["period"] = interaction_period
+    if attribute == "heavy":
+        where_parts.append("attribute = :heavy_attribute")
+        params["heavy_attribute"] = "H"
+    elif attribute == "non_heavy":
+        where_parts.append("(attribute IS NULL OR attribute != :heavy_attribute)")
+        params["heavy_attribute"] = "H"
     if channel:
         where_parts.append("last_interaction_channel = :channel")
         params["channel"] = channel
@@ -120,12 +158,15 @@ def list_customers(
     filters_applied = {
         "keyword": keyword,
         "industry": industry,
+        "region": region,
+        "region_keyword": region_keyword,
         "owner": owner,
         "owner_keyword": owner_keyword,
         "stage": stage,
         "intent_level": intent_level,
         "interaction_min": interaction_min,
         "interaction_period": interaction_period,
+        "attribute": attribute,
         "channel": channel,
         "sort": sort,
     }
@@ -157,6 +198,7 @@ def get_filter_options(db: Session = Depends(get_db)) -> Dict[str, List[str]]:
     """Return distinct values for all filterable facets from dws_customer_360."""
     return {
         "industries": _distinct_values(db, "industry"),
+        "regions": get_region_options(),
         "owners": _distinct_values(db, "owner_name"),
         "stages": _distinct_values(db, "purchase_stage"),
         "intent_levels": _distinct_values(db, "intent_level"),
@@ -294,12 +336,15 @@ def export_customers(
     db: Session = Depends(get_db),
     keyword: Optional[str] = Query(None, description="Search by customer_name"),
     industry: Optional[str] = Query(None, description="Filter by industry"),
+    region: Optional[str] = Query(None, description="Filter by region"),
+    region_keyword: Optional[str] = Query(None, description="Fuzzy search by region"),
     owner: Optional[str] = Query(None, description="Filter by owner_name"),
     owner_keyword: Optional[str] = Query(None, description="Fuzzy search by owner_name"),
     stage: Optional[str] = Query(None, description="Filter by purchase_stage"),
     intent_level: Optional[str] = Query(None, description="Filter by intent_level"),
     interaction_min: Optional[int] = Query(None, description="Minimum interaction count"),
     interaction_period: int = Query(30, description="Interaction period in days (30/60/90/180/365/1095)"),
+    attribute: Optional[str] = Query(None, description="Filter by key customer rating: heavy/non_heavy"),
     channel: Optional[str] = Query(None, description="Filter by last_interaction_channel"),
     sort: Optional[str] = Query(None, description="Sort field and direction, e.g. 'intent_score desc'"),
 ) -> Response:
@@ -323,12 +368,15 @@ def export_customers(
         db,
         keyword=keyword,
         industry=industry,
+        region=region,
+        region_keyword=region_keyword,
         owner=owner,
         owner_keyword=owner_keyword,
         stage=stage,
         intent_level=intent_level,
         interaction_min=interaction_min,
         interaction_period=interaction_period,
+        attribute=attribute,
         channel=channel,
         sort_by=sort_by,
         sort_order=sort_order,
