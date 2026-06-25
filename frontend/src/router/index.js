@@ -21,6 +21,11 @@ const routes = [
   {
     path: '/ai-chat',
     name: 'AiChat',
+    component: () => import('../views/AiChatSqlBot.vue'),
+  },
+  {
+    path: '/ai-chat2',
+    name: 'AiChatClassic',
     component: () => import('../views/AiChat.vue'),
   },
   {
