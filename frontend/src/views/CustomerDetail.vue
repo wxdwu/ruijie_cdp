@@ -40,7 +40,7 @@ async function fetchAllData() {
     const results = await Promise.allSettled([
       customerApi.get(customerId),
       customerApi.contacts(customerId),
-      customerApi.interactions(customerId),
+      customerApi.interactions(customerId, { limit: 18 }),
       customerApi.opportunities(customerId),
       customerApi.aiInsight(customerId),
     ])
