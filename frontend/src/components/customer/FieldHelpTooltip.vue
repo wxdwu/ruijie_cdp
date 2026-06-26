@@ -1,5 +1,5 @@
 <script setup>
-import { computed } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref } from 'vue'
 
 const props = defineProps({
   help: {
@@ -117,95 +117,196 @@ function fieldType(fieldPath, explicitType) {
 
 const fieldBlocks = computed(() => {
   if (Array.isArray(props.help.fields) && props.help.fields.length) {
-    return props.help.fields.map(field => ({
-      type: fieldType(field.sourceField || field.variable || props.help.title, field.type),
-      variable: field.variable || fieldName(field.sourceField || props.help.title),
-      meaning: field.meaning || fieldComment(field.sourceField || props.help.title),
-      sourceTable: field.sourceTable || field.sourceTables || props.help.sourceTables || '-',
-      sourceField: field.sourceFieldDisplay || (field.sourceField ? formatSourceFields(field.sourceField) : (field.sourceFields || props.help.sourceFields || '-')),
-      calculation: field.calculation || props.help.calculation || '-',
-      emptyState: field.emptyState || props.help.emptyState || '-',
-    }))
-  }
+	    return props.help.fields.map(field => ({
+	      type: fieldType(field.sourceField || field.variable || props.help.title, field.type),
+	      variable: field.variable || fieldName(field.sourceField || props.help.title),
+	      meaning: field.meaning || fieldComment(field.sourceField || props.help.title),
+	      path: field.path || props.help.path || field.sourceField || field.variable || props.help.title,
+	      sourceTable: field.sourceTable || field.sourceTables || props.help.sourceTables || '-',
+	      sourceField: field.sourceFieldDisplay || (field.sourceField ? formatSourceFields(field.sourceField) : (field.sourceFields || props.help.sourceFields || '-')),
+	      calculation: field.calculation || props.help.calculation || '-',
+	      timeRule: field.timeRule || props.help.timeRule || '-',
+	      emptyState: field.emptyState || props.help.emptyState || '-',
+	    }))
+	  }
 
   const sourceFields = splitList(props.help.sourceFields)
   const sourceTables = splitList(props.help.sourceTables)
   if (!sourceFields.length) {
-    return [{
-      type: fieldType(props.help.title),
-      variable: props.help.title,
-      meaning: props.help.meaning || props.help.title,
-      sourceTable: props.help.sourceTables || '-',
-      sourceField: '-',
-      calculation: props.help.calculation || '-',
-      emptyState: props.help.emptyState || '-',
-    }]
+	    return [{
+	      type: fieldType(props.help.title),
+	      variable: props.help.title,
+	      meaning: props.help.meaning || props.help.title,
+	      path: props.help.path || props.help.title,
+	      sourceTable: props.help.sourceTables || '-',
+	      sourceField: '-',
+	      calculation: props.help.calculation || '-',
+	      timeRule: props.help.timeRule || '-',
+	      emptyState: props.help.emptyState || '-',
+	    }]
+	  }
+
+	  return sourceFields.map((field, index) => ({
+	    type: fieldType(field),
+	    variable: fieldName(field),
+	    meaning: fieldComment(field),
+	    path: props.help.path || field,
+	    sourceTable: tableName(field, sourceTables, index),
+	    sourceField: formatSourceField(field),
+	    calculation: props.help.calculation || '-',
+	    timeRule: props.help.timeRule || '-',
+	    emptyState: props.help.emptyState || '-',
+	  }))
+	})
+
+const triggerRef = ref(null)
+const isOpen = ref(false)
+const panelStyle = ref({})
+let closeTimer = null
+
+function clearCloseTimer() {
+  if (closeTimer) {
+    window.clearTimeout(closeTimer)
+    closeTimer = null
+  }
+}
+
+function positionPanel() {
+  const trigger = triggerRef.value
+  if (!trigger) return
+
+  const rect = trigger.getBoundingClientRect()
+  const viewportWidth = window.innerWidth
+  const viewportHeight = window.innerHeight
+  const margin = 16
+  const gap = 8
+  const panelWidth = Math.min(500, viewportWidth - margin * 2)
+  const estimatedPanelHeight = Math.min(620, viewportHeight - 96)
+
+  let left = props.align === 'end'
+    ? rect.right - panelWidth
+    : rect.left
+  left = Math.max(margin, Math.min(left, viewportWidth - panelWidth - margin))
+
+  let top = rect.bottom + gap
+  if (top + estimatedPanelHeight > viewportHeight - margin) {
+    top = Math.max(margin, rect.top - estimatedPanelHeight - gap)
   }
 
-  return sourceFields.map((field, index) => ({
-    type: fieldType(field),
-    variable: fieldName(field),
-    meaning: fieldComment(field),
-    sourceTable: tableName(field, sourceTables, index),
-    sourceField: formatSourceField(field),
-    calculation: props.help.calculation || '-',
-    emptyState: props.help.emptyState || '-',
-  }))
+  panelStyle.value = {
+    top: `${top}px`,
+    left: `${left}px`,
+    width: `${panelWidth}px`,
+    maxHeight: `${Math.min(620, viewportHeight - top - margin)}px`,
+  }
+}
+
+async function openPanel() {
+  clearCloseTimer()
+  isOpen.value = true
+  await nextTick()
+  positionPanel()
+  window.addEventListener('resize', positionPanel)
+  window.addEventListener('scroll', positionPanel, true)
+}
+
+function scheduleClose() {
+  clearCloseTimer()
+  closeTimer = window.setTimeout(() => {
+    if (document.activeElement === triggerRef.value) return
+    isOpen.value = false
+    window.removeEventListener('resize', positionPanel)
+    window.removeEventListener('scroll', positionPanel, true)
+  }, 120)
+}
+
+onBeforeUnmount(() => {
+  clearCloseTimer()
+  window.removeEventListener('resize', positionPanel)
+  window.removeEventListener('scroll', positionPanel, true)
 })
 </script>
 
 <template>
-  <span class="field-help" :class="`field-help--${align}`">
+  <span
+    class="field-help"
+    :class="`field-help--${align}`"
+    @mouseenter="openPanel"
+    @mouseleave="scheduleClose"
+  >
     <button
+      ref="triggerRef"
       type="button"
       class="field-help__trigger"
       :aria-label="`查看${help.title}字段来源`"
+      :aria-expanded="isOpen"
+      @click.stop="openPanel"
+      @focus="openPanel"
+      @blur="scheduleClose"
     >
       ?
     </button>
-    <span class="field-help__panel" role="tooltip">
-      <span class="field-help__title">
-        {{ help.title }} · 字段来源
-      </span>
-      <span class="field-help__fields">
-        <span
-          v-for="(field, index) in fieldBlocks"
-          :key="`${field.variable}-${index}`"
-          class="field-help__field-card"
-        >
-          <span class="field-help__field-title">
-            <span
-              class="field-help__type"
-              :class="field.type === 'src' ? 'field-help__type--src' : 'field-help__type--calc'"
-            >
-              {{ field.type === 'src' ? '源字段' : '计算' }}
+    <Teleport to="body">
+      <span
+        v-if="isOpen"
+        class="field-help__panel"
+        :style="panelStyle"
+        role="tooltip"
+        @mouseenter="clearCloseTimer"
+        @mouseleave="scheduleClose"
+      >
+        <span class="field-help__kicker">字段路径</span>
+        <span class="field-help__title">
+          {{ help.title }}
+        </span>
+        <span class="field-help__fields">
+          <span
+            v-for="(field, index) in fieldBlocks"
+            :key="`${field.variable}-${index}`"
+            class="field-help__field-card"
+          >
+            <span class="field-help__field-title">
+              <span
+                class="field-help__type"
+                :class="field.type === 'src' ? 'field-help__type--src' : 'field-help__type--calc'"
+              >
+                {{ field.type === 'src' ? '源字段' : '计算' }}
+              </span>
             </span>
-          </span>
-          <span class="field-help__grid">
-            <span class="field-help__row">
-              <span>含义</span>
-              <b>{{ field.meaning }}</b>
-            </span>
-            <span class="field-help__row">
-              <span>来源表</span>
-              <b>{{ field.sourceTable }}</b>
-            </span>
-            <span class="field-help__row">
-              <span>来源字段</span>
-              <b>{{ field.sourceField }}</b>
-            </span>
-            <span class="field-help__row">
-              <span>计算逻辑</span>
-              <b>{{ field.calculation }}</b>
-            </span>
-            <span class="field-help__row">
-              <span>空值处理</span>
-              <b>{{ field.emptyState }}</b>
+            <span class="field-help__grid">
+              <span class="field-help__row">
+                <span>含义</span>
+                <b>{{ field.meaning }}</b>
+              </span>
+              <span class="field-help__row">
+                <span>字段路径</span>
+                <b>{{ field.path }}</b>
+              </span>
+              <span class="field-help__row">
+                <span>来源表</span>
+                <b>{{ field.sourceTable }}</b>
+              </span>
+              <span class="field-help__row">
+                <span>来源字段</span>
+                <b>{{ field.sourceField }}</b>
+              </span>
+              <span class="field-help__row">
+                <span>计算逻辑</span>
+                <b>{{ field.calculation }}</b>
+              </span>
+              <span class="field-help__row">
+                <span>时间口径</span>
+                <b>{{ field.timeRule }}</b>
+              </span>
+              <span class="field-help__row">
+                <span>空值处理</span>
+                <b>{{ field.emptyState }}</b>
+              </span>
             </span>
           </span>
         </span>
       </span>
-    </span>
+    </Teleport>
   </span>
 </template>
 
@@ -248,40 +349,26 @@ const fieldBlocks = computed(() => {
 }
 
 .field-help__panel {
-  position: absolute;
-  z-index: 1001;
-  top: 24px;
-  left: 0;
-  display: none;
-  width: min(500px, calc(100vw - 48px));
+  position: fixed;
+  z-index: 9999;
   max-height: min(620px, calc(100vh - 96px));
   overflow-y: auto;
   padding: 12px;
-  border: 1px solid rgba(90, 167, 255, .32);
-  border-radius: 12px;
-  background: linear-gradient(180deg, var(--panel2), var(--panel));
-  box-shadow: var(--shadow), 0 0 0 1px rgba(90, 167, 255, .10);
-  color: var(--text);
+  border: 1px solid rgba(107, 141, 190, .42);
+  border-radius: 9px;
+  background: #07111f;
+  box-shadow: 0 18px 44px rgba(0, 0, 0, .36), 0 0 0 1px rgba(90, 167, 255, .10);
+  color: #eaf3ff;
   font-size: 11.5px;
   line-height: 1.55;
   text-align: left;
   white-space: normal;
 }
 
-.field-help--end .field-help__panel {
-  right: 0;
-  left: auto;
-}
-
-.field-help:hover .field-help__panel,
-.field-help:focus-within .field-help__panel {
-  display: block;
-}
-
 .field-help__kicker {
   display: block;
   margin-bottom: 6px;
-  color: var(--brand);
+  color: #5ff2d0;
   font-size: 10px;
   font-weight: 800;
 }
@@ -290,7 +377,7 @@ const fieldBlocks = computed(() => {
   display: flex;
   align-items: center;
   gap: 7px;
-  color: var(--text);
+  color: #f7fbff;
   font-size: 12.5px;
   font-weight: 800;
 }
@@ -303,7 +390,7 @@ const fieldBlocks = computed(() => {
 
 .field-help__field-card {
   display: block;
-  border-top: 1px dashed var(--line);
+  border-top: 1px dashed rgba(107, 141, 190, .28);
   padding-top: 10px;
 }
 
@@ -316,7 +403,7 @@ const fieldBlocks = computed(() => {
   display: flex;
   align-items: center;
   gap: 7px;
-  color: var(--text);
+  color: #f7fbff;
   font-size: 12.5px;
   font-weight: 800;
 }
@@ -350,31 +437,51 @@ const fieldBlocks = computed(() => {
 
 .field-help__row {
   display: grid;
-  grid-template-columns: 64px minmax(0, 1fr);
+  grid-template-columns: 62px minmax(0, 1fr);
   gap: 10px;
   padding-top: 1px;
 }
 
 .field-help__row > span {
-  color: var(--muted);
+  color: #8ea2bf;
   font-weight: 700;
 }
 
 .field-help__row > b {
-  color: var(--text);
+  color: #f7fbff;
   font-weight: 650;
 }
 
-:global(html[data-theme="light"]) .field-help__panel {
-  border-color: rgba(90, 140, 210, .34);
-  box-shadow: 0 18px 48px rgba(21, 45, 83, .16), 0 0 0 1px rgba(90, 167, 255, .08);
+:global(html[data-theme="light"] .field-help__panel) {
+  border-color: var(--line);
+  background: var(--panel2);
+  box-shadow: 0 18px 48px rgba(21, 45, 83, .16), 0 0 0 1px rgba(255, 255, 255, .72);
+  color: var(--text);
 }
 
-:global(html[data-theme="light"]) .field-help__type--src {
+:global(html[data-theme="light"] .field-help__kicker),
+:global(html[data-theme="light"] .field-help__title),
+:global(html[data-theme="light"] .field-help__field-title) {
+  color: var(--brand);
+}
+
+:global(html[data-theme="light"] .field-help__field-card) {
+  border-top-color: rgba(166, 181, 205, .42);
+}
+
+:global(html[data-theme="light"] .field-help__row > span) {
+  color: var(--muted);
+}
+
+:global(html[data-theme="light"] .field-help__row > b) {
+  color: var(--text);
+}
+
+:global(html[data-theme="light"] .field-help__type--src) {
   color: #168f82;
 }
 
-:global(html[data-theme="light"]) .field-help__type--calc {
+:global(html[data-theme="light"] .field-help__type--calc) {
   color: #9b7108;
 }
 

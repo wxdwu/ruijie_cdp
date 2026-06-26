@@ -62,6 +62,16 @@ def get_customer_detail(
         raise HTTPException(status_code=404, detail=f"Customer {id} not found")
 
     result = dict(row)
+    interaction_count_30d = db.execute(
+        text(
+            "SELECT COUNT(*) FROM dws_interaction_detail "
+            "WHERE customer_name = :cname "
+            "  AND event_time >= DATE_SUB(NOW(), INTERVAL 30 DAY)"
+        ),
+        {"cname": result.get("customer_name")},
+    ).scalar() or 0
+    result["interaction_count_30d"] = int(interaction_count_30d)
+
     visit_row = db.execute(
         text(
             "SELECT MAX(last_visit_time) AS last_visit_time, "
