@@ -32,6 +32,7 @@ router = APIRouter(prefix="/api/customers", tags=["customers"])
 def list_customers(
     db: Session = Depends(get_db),
     keyword: Optional[str] = Query(None, description="Search by customer_name"),
+    special_project: Optional[str] = Query(None, description="Filter by campaign_tag"),
     industry: Optional[str] = Query(None, description="Filter by industry"),
     region: Optional[str] = Query(None, description="Filter by region"),
     region_keyword: Optional[str] = Query(None, description="Fuzzy search by region"),
@@ -54,6 +55,9 @@ def list_customers(
     if keyword:
         where_parts.append("customer_name LIKE :keyword")
         params["keyword"] = f"%{keyword}%"
+    if special_project:
+        where_parts.append("campaign_tag = :special_project")
+        params["special_project"] = special_project
     if industry:
         where_parts.append("industry = :industry")
         params["industry"] = industry
@@ -157,6 +161,7 @@ def list_customers(
 
     filters_applied = {
         "keyword": keyword,
+        "special_project": special_project,
         "industry": industry,
         "region": region,
         "region_keyword": region_keyword,

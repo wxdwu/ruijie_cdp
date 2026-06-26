@@ -10,6 +10,7 @@ export const useCustomerStore = defineStore('customer', () => {
 
   const filters = ref({
     keyword: '',
+    special_project: '企业彩光ICT',
     industry: '',
     region: '',
     region_keyword: '',
@@ -83,6 +84,7 @@ export const useCustomerStore = defineStore('customer', () => {
   function reset() {
     filters.value = {
       keyword: '',
+      special_project: '企业彩光ICT',
       industry: '',
       region: '',
       region_keyword: '',

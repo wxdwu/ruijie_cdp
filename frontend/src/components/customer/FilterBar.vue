@@ -16,7 +16,7 @@ const selectedOwner = ref('')
 const ownerComboboxOpen = ref(false)
 const ownerComboboxRef = ref(null)
 const ownerInputRef = ref(null)
-const specialProject = ref(null)
+const specialProject = ref('企业彩光ICT')
 const attribute = ref('')
 const channel = ref('')
 const interaction_min = ref(null)
@@ -137,6 +137,7 @@ function handleApply() {
   const regionKeyword = regionInput.value.trim()
   emit('apply', {
     keyword: keyword.value,
+    special_project: specialProject.value,
     industry: industry.value,
     region: selectedRegion.value,
     region_keyword: selectedRegion.value ? '' : regionKeyword,
@@ -165,9 +166,11 @@ onBeforeUnmount(() => {
       <!-- 专项 -->
       <div class="flex min-w-0 flex-col gap-1.5">
         <label class="text-xs font-medium text-[var(--muted)]">专项</label>
-        <select disabled
+        <select
+          v-model="specialProject"
           class="rounded-lg border border-[var(--line)] bg-[var(--bg1)] px-3 py-2 text-sm text-[var(--text)] focus:border-[var(--brand)] focus:outline-none"
         >
+          <option value="">全部</option>
           <option value="企业彩光ICT">企业彩光ICT</option>
         </select>
       </div>
