@@ -91,8 +91,7 @@ def _ensure_review_table_exists(db: Session) -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _extract_score_fields(item: Dict[str, Any]) -> Dict[str, Any]:
-    """从 evidence JSON 中提取 rule_score, evidence_score, llm_score 等字段，
-    同时兼容前端期望的字段名映射。"""
+    """从 evidence JSON 中提取所有扩展字段并做兼容映射。"""
     import json
     # 解析 JSON evidence
     evidence = item.get("evidence")
@@ -107,42 +106,123 @@ def _extract_score_fields(item: Dict[str, Any]) -> Dict[str, Any]:
     # 优先使用数据库列中的分数值，如果为 None 或 0 则从 evidence 提取作为回退
     for score_key in ("rule_score", "evidence_score", "llm_score"):
         db_val = item.get(score_key)
-        # 如果数据库列有有效值（非 None 且非 0），直接使用
         if db_val is not None and db_val != 0:
             continue
-        # 否则尝试从 evidence 中提取
         if evidence and isinstance(evidence, dict):
             ev_val = evidence.get(score_key)
             if ev_val is not None:
                 item[score_key] = ev_val
-        # 确保有默认值 0
         if item.get(score_key) is None:
             item[score_key] = 0
 
-    # 前端字段名别名：实际数据库列已经是 candidate_a_name/candidate_b_name
-    # 如果 SELECT * 返回了旧的 candidate_a 列名，则自动映射
+    # ── 从 evidence JSON 提取扩展字段，直接挂载到 item 顶层便于前端使用 ──
+    if evidence and isinstance(evidence, dict):
+        item["sources_a"] = evidence.get("sources_a", [])
+        item["sources_b"] = evidence.get("sources_b", [])
+        item["shared_contacts_count"] = evidence.get("shared_contacts_count", 0)
+        item["embedding_similarity"] = evidence.get("embedding_similarity")
+        item["llm_explanation"] = evidence.get("llm_explanation", "")
+
+    # ── 字段别名与默认值 ──
     if "candidate_a" in item and "candidate_a_name" not in item:
         item["candidate_a_name"] = item["candidate_a"]
     if "candidate_b" in item and "candidate_b_name" not in item:
         item["candidate_b_name"] = item["candidate_b"]
 
-    # ID 字段：如果不存在则设为 None
     if "candidate_a_id" not in item:
-        item["candidate_a_id"] = item.get("candidate_a_id") or None
+        item["candidate_a_id"] = None
     if "candidate_b_id" not in item:
-        item["candidate_b_id"] = item.get("candidate_b_id") or None
-
-    # 审核人字段别名
+        item["candidate_b_id"] = None
     if "reviewer" in item and "reviewed_by" not in item:
         item["reviewed_by"] = item["reviewer"]
 
+    # ── 确保所有扩展字段存在默认值 ──
+    item.setdefault("sources_a", [])
+    item.setdefault("sources_b", [])
+    item.setdefault("shared_contacts_count", 0)
+    item.setdefault("embedding_similarity", None)
+    item.setdefault("llm_explanation", "")
+
     # 转换 Decimal 为 float 以便 JSON 序列化
-    for key in ("match_score", "rule_score", "evidence_score", "llm_score"):
+    for key in ("match_score", "rule_score", "evidence_score", "llm_score", "embedding_similarity"):
         val = item.get(key)
-        if hasattr(val, '__float__'):
+        if val is not None and hasattr(val, '__float__'):
             item[key] = float(val)
 
     return item
+
+
+def _enrich_with_company_details(items: List[Dict[str, Any]], db: Session) -> List[Dict[str, Any]]:
+    """为每个审核项补充候选公司的详细字段（从 dws_customer_360 查询）。
+
+    为每条 record 新增 candidate_a_detail 和 candidate_b_detail 字典，
+    包含：industry, region, owner_name, contact_count, interaction_count_30d,
+          last_interaction_time, source_tables, data_coverage 等字段。
+    如果公司在 dws_customer_360 中不存在，详细字段均为 None。
+    """
+    import json
+
+    # 收集所有需要查询的公司名（去重）
+    all_names: set = set()
+    for item in items:
+        a_name = item.get("candidate_a_name", "")
+        b_name = item.get("candidate_b_name", "")
+        if a_name:
+            all_names.add(a_name)
+        if b_name:
+            all_names.add(b_name)
+
+    if not all_names:
+        return items
+
+    # 批量查询 dws_customer_360
+    details_map: Dict[str, Dict[str, Any]] = {}
+    try:
+        placeholders = ", ".join([f":n{i}" for i in range(len(all_names))])
+        params = {f"n{i}": name for i, name in enumerate(all_names)}
+        detail_sql = text(f"""
+            SELECT
+                customer_name,
+                industry,
+                region,
+                owner_name,
+                contact_count,
+                interaction_count_30d,
+                interaction_count_total,
+                last_interaction_time,
+                source_tables,
+                data_coverage,
+                intent_level,
+                purchase_stage,
+                active_opp_count,
+                is_existing_customer
+            FROM dws_customer_360
+            WHERE customer_name IN ({placeholders})
+        """)
+        rows = db.execute(detail_sql, params).mappings().all()
+        for row in rows:
+            detail = dict(row)
+            # 解析 JSON 字段
+            for json_field in ("source_tables", "data_coverage"):
+                val = detail.get(json_field)
+                if isinstance(val, str):
+                    try:
+                        detail[json_field] = json.loads(val)
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+            # 转换时间字段
+            if detail.get("last_interaction_time"):
+                detail["last_interaction_time"] = str(detail["last_interaction_time"])
+            details_map[detail["customer_name"]] = detail
+    except Exception as e:
+        logger.warning(f"Failed to enrich company details: {e}")
+
+    # 挂载详情到每条 item
+    for item in items:
+        item["candidate_a_detail"] = details_map.get(item.get("candidate_a_name", ""))
+        item["candidate_b_detail"] = details_map.get(item.get("candidate_b_name", ""))
+
+    return items
 
 
 @router.get("")
@@ -185,6 +265,9 @@ def get_review_items(
 
     rows = db.execute(data_sql, params).mappings().all()
     items = [_extract_score_fields(dict(r)) for r in rows]
+
+    # 补充每家候选公司在 dws_customer_360 中的详细信息
+    items = _enrich_with_company_details(items, db)
 
     return {
         "total": total,

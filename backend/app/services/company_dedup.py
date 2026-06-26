@@ -19,6 +19,7 @@ import hashlib
 import json
 import logging
 import httpx
+import os
 import re
 import sqlite3
 import threading
@@ -106,6 +107,13 @@ STEP_COMPLETE_PROGRESS = DEDUP_PROGRESS_STEPS[6][2]
 #   - 调低 → 候选对更多、召回率更高，但计算量和噪音也会增大。
 #   - 当前 0.70 是一个相对平衡的值，能召回大部分"同义词/缩写/别称"的情况。
 EMBEDDING_SIMILARITY_THRESHOLD = 0.70
+
+# 公司名称最小长度（字符数，含中英文）
+# 含义：公司名长度 < 此值的记录直接丢弃，不参与去重。
+# 作用：排除如"北京""上海""广州"等极短的地名/碎片，这类名称信息量不足，
+#       容易与包含相同子串的正常公司名产生误匹配。
+# 注意：DEDUP_TEST_MODE_MAX_COMPANIES 的限制在长度过滤之后生效。
+MIN_COMPANY_NAME_LENGTH = 4
 
 # FAISS 搜索每个向量的最近邻数量（k 近邻参数）
 # 含义：对每个公司名向量，从索引中查找余弦相似度最高的前 k 个邻居。
@@ -262,8 +270,9 @@ EVIDENCE_TABLES = [
 # ──────────────────────────────────────────────────────────────────────────────
 
 # 大模型名称（用于调用 LLM judge 判断两条公司名是否代表同一家公司）
-# 当前使用通义千问 qwen3.6-plus，后续可替换为其他兼容 OpenAI 协议的模型。
-DEFAULT_LLM_MODEL = "qwen3.6-plus"
+# 当前使用 DeepSeek Chat（api.deepseek.com），兼容 OpenAI 协议。
+# 也可替换为 deepseek-reasoner 或其他兼容 OpenAI 协议的模型。
+DEFAULT_LLM_MODEL = "deepseek-chat"
 
 # =============================================================================
 # END CONFIGURATION
@@ -1511,11 +1520,16 @@ def generate_review_pairs(
     total_before_filter = len(companies)
     companies_filtered = []
     filtered_empty_name = 0
+    filtered_short_name = 0
     set_default_id_count = 0
     for c in companies:
         name = (c.get("name") or "").strip()
         if not name:
             filtered_empty_name += 1
+            continue
+        # 排除过短的公司名（如"北京""上海"等碎片），这些名称信息量太少，容易误匹配
+        if len(name) < MIN_COMPANY_NAME_LENGTH:
+            filtered_short_name += 1
             continue
         c["name"] = name
         if c.get("customer_id") is None:
@@ -1526,13 +1540,15 @@ def generate_review_pairs(
     names = [c["name"] for c in companies]
     if filtered_empty_name > 0:
         logger.info(f"过滤掉 {filtered_empty_name} 个名称为空的公司")
+    if filtered_short_name > 0:
+        logger.info(f"过滤掉 {filtered_short_name} 个名称过短的公司（少于 {MIN_COMPANY_NAME_LENGTH} 个字符）")
     if set_default_id_count > 0:
         logger.info(f"{set_default_id_count} 个公司缺少 customer_id，已设为 default_id")
     _dedup_progress["details"] = {
         "step_name": "获取公司名称",
         "completed": len(companies),
         "total": total_before_filter,
-        "message": f"已获取 {total_before_filter} 家公司（过滤空名称 {filtered_empty_name}，default_id {set_default_id_count}）"
+        "message": f"已获取 {total_before_filter} 家公司（过滤空名称 {filtered_empty_name}，短名称 {filtered_short_name}，default_id {set_default_id_count}）"
     }
     
     # 测试模式：限制处理的公司数量（通过 .env 中的 DEDUP_TEST_MODE_MAX_COMPANIES 配置，0=不限制）
@@ -1694,12 +1710,10 @@ def generate_review_pairs(
         else:
             evidence_score, shared_count = 0.0, 0
 
-        # LLM 判断（使用 rule+evidence 回落）
-        llm_score_01, explanation = llm_judge(
-            company_a["name"], company_b["name"],
-            rule_score, evidence_score
-        )
-        llm_score_100 = round(llm_score_01 * 100, 2)
+        # LLM 判断：批量写入阶段不调用大模型（性能瓶颈），
+        # 使用规则分+证据分的代理值作为 LLM 分，后续人工审核时可再触发真实 LLM 分析。
+        llm_score_100 = round(rule_score * 0.5 + evidence_score * 0.5, 2)
+        explanation = ""
 
         # Final score uses: rule 30%, evidence 30%, llm 40%
         final_score = calculate_final_score(
