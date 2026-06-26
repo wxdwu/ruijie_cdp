@@ -25,33 +25,22 @@ import time
 from datetime import datetime
 from typing import Any, Dict, List
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 from sqlalchemy.engine import Engine
 
 from app.config import settings
+from app.connection_pool import get_engine as _get_shared_engine, execute_with_retry
 
 logger = logging.getLogger(__name__)
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Database config
+# Database config – use the shared connection pool
 # ─────────────────────────────────────────────────────────────────────────────
-
-_engine: Engine | None = None
 
 
 def get_etl_engine() -> Engine:
-    """Return (or create) a dedicated SQLAlchemy engine for ETL work."""
-    global _engine
-    if _engine is None:
-        _engine = create_engine(
-            settings.DATABASE_URL,
-            pool_size=5,
-            max_overflow=10,
-            pool_recycle=1800,
-            pool_pre_ping=True,
-            echo=False,
-        )
-    return _engine
+    """Return the shared connection pool engine (backward-compatible wrapper)."""
+    return _get_shared_engine()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -91,11 +80,28 @@ LINKFLOW_DEFAULT_CHANNEL = "web"
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _exec(sql: str, params: dict | None = None) -> int:
-    """Execute a SQL statement and return rowcount."""
-    engine = get_etl_engine()
-    with engine.begin() as conn:
-        result = conn.execute(text(sql), params or {})
-        return result.rowcount
+    """Execute a SQL statement and return rowcount.
+
+    Write operations are automatically retried on transient errors
+    (deadlocks, lock wait timeouts) using the shared connection pool.
+    """
+    def _do_exec() -> int:
+        engine = get_etl_engine()
+        with engine.begin() as conn:
+            result = conn.execute(text(sql), params or {})
+            return result.rowcount
+
+    # Only retry DML (INSERT/UPDATE/DELETE/REPLACE); DDL is not safely retryable
+    sql_upper = sql.strip().upper()
+    is_dml = any(
+        sql_upper.startswith(kw) for kw in ("INSERT", "UPDATE", "DELETE", "REPLACE")
+    )
+    if is_dml:
+        return execute_with_retry(
+            _do_exec,
+            operation_name=f"DML: {sql[:100].replace('%', '%%')}",
+        )
+    return _do_exec()
 
 
 def _exec_query(sql: str, params: dict | None = None):

@@ -1,17 +1,12 @@
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker, declarative_base
-from app.config import settings
+from sqlalchemy.orm import declarative_base
 
-engine = create_engine(
-    settings.DATABASE_URL,
-    pool_size=10,
-    max_overflow=20,
-    pool_recycle=3600,
-    pool_pre_ping=True,
-    echo=False,
-)
+from app.connection_pool import get_engine, get_session_factory
 
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+# Shared connection pool engine
+engine = get_engine()
+
+# Shared session factory
+SessionLocal = get_session_factory()
 
 Base = declarative_base()
 
