@@ -76,11 +76,11 @@
           <div class="source-tags">
             <span class="source-label-text">数据表：</span>
             <span
-              v-for="src in (item.sources_a || [])"
-              :key="src"
+              v-for="(src, idx) in (item.sources_a || [])"
+              :key="idx"
               class="source-tag"
-              :title="src"
-            >{{ src }}</span>
+              :title="typeof src === 'object' ? `${src.table} id=${src.record_id}` : src"
+            >{{ typeof src === 'object' ? `${src.table} id=${src.record_id}` : src }}</span>
             <span v-if="!item.sources_a || item.sources_a.length === 0" class="source-tag empty">未知</span>
           </div>
         </div>
@@ -155,11 +155,11 @@
           <div class="source-tags">
             <span class="source-label-text">数据表：</span>
             <span
-              v-for="src in (item.sources_b || [])"
-              :key="src"
+              v-for="(src, idx) in (item.sources_b || [])"
+              :key="idx"
               class="source-tag"
-              :title="src"
-            >{{ src }}</span>
+              :title="typeof src === 'object' ? `${src.table} id=${src.record_id}` : src"
+            >{{ typeof src === 'object' ? `${src.table} id=${src.record_id}` : src }}</span>
             <span v-if="!item.sources_b || item.sources_b.length === 0" class="source-tag empty">未知</span>
           </div>
         </div>
@@ -204,7 +204,43 @@
             </div>
             <div class="ai-evidence-item">
               <span class="ai-evidence-bullet">•</span>
-              <span>共享联系人 <strong>{{ item.shared_contacts_count || 0 }}</strong> 个——<template v-if="(item.shared_contacts_count || 0) >= 5">两家公司共享大量联系人，业务关联度很高</template><template v-else-if="(item.shared_contacts_count || 0) >= 1">存在共享联系人，有业务关联</template><template v-else>未发现共享联系人</template></span>
+              <span>
+                共享联系人 <strong>{{ item.shared_contacts_count || 0 }}</strong> 个
+                <template v-if="(item.shared_contacts_count || 0) >= 1">
+                  ——包括
+                  <template v-for="(contact, ci) in displayContacts" :key="ci">
+                    <span class="contact-name-wrapper">
+                      <span class="contact-name-link">{{ contact.name }}</span>
+                      <div class="contact-tooltip">
+                        <div class="tooltip-contact-name">{{ contact.name }}</div>
+                        <div class="tooltip-contact-value">{{ contact.type === 'phone' ? '📞' : '📧' }} {{ contact.value }}</div>
+                        <div class="tooltip-companies">
+                          <span class="tooltip-label">归属公司：</span>
+                          <a
+                            v-if="item.candidate_a_id"
+                            class="tooltip-company-link"
+                            :href="`/customers/${item.candidate_a_id}`"
+                            @click.stop
+                          >{{ item.candidate_a_name }}</a>
+                          <span v-else class="tooltip-company-text">{{ item.candidate_a_name }}</span>
+                          <span class="tooltip-sep">、</span>
+                          <a
+                            v-if="item.candidate_b_id"
+                            class="tooltip-company-link"
+                            :href="`/customers/${item.candidate_b_id}`"
+                            @click.stop
+                          >{{ item.candidate_b_name }}</a>
+                          <span v-else class="tooltip-company-text">{{ item.candidate_b_name }}</span>
+                        </div>
+                      </div>
+                    </span><template v-if="ci < displayContacts.length - 1">、</template>
+                  </template>
+                  <template v-if="(item.shared_contact_details || []).length > 2">等</template>
+                  <template v-if="(item.shared_contacts_count || 0) >= 5">，两家公司共享大量联系人，业务关联度很高</template>
+                  <template v-else>，存在共享联系人，有业务关联</template>
+                </template>
+                <template v-else>——未发现共享联系人</template>
+              </span>
             </div>
             <div class="ai-evidence-item">
               <span class="ai-evidence-bullet">•</span>
@@ -295,6 +331,7 @@ export interface ReviewItemData {
   sources_a?: string[]
   sources_b?: string[]
   shared_contacts_count?: number
+  shared_contact_details?: { name: string; value: string; type: string }[]
   embedding_similarity?: number | null
   llm_explanation?: string
   // 公司详情（从 dws_customer_360 补充）
@@ -314,6 +351,20 @@ const emit = defineEmits<{
 }>()
 
 const isSelected = computed(() => props.selected)
+
+/** 展示的联系人列表，最多展示前2个（姓名去重） */
+const displayContacts = computed(() => {
+  const details = props.item.shared_contact_details || []
+  const seen = new Set<string>()
+  const result: { name: string; value: string; type: string }[] = []
+  for (const c of details) {
+    if (seen.has(c.name)) continue
+    seen.add(c.name)
+    result.push(c)
+    if (result.length >= 2) break
+  }
+  return result
+})
 
 // AI 建议：基于匹配分给出合并方向提示
 const aiSuggestion = computed(() => {
@@ -793,6 +844,102 @@ const getStatusLabel = (status: string) => {
   font-weight: 700;
 }
 
+/* ── 共享联系人姓名与 Tooltip ── */
+.contact-name-wrapper {
+  position: relative;
+  display: inline-block;
+}
+
+/* 桥接伪元素：覆盖名字到 tooltip 之间的间隙，确保鼠标移动时不丢失 hover */
+.contact-name-wrapper::before {
+  content: '';
+  position: absolute;
+  bottom: 100%;
+  left: 0;
+  right: 0;
+  height: 12px;
+  z-index: 1;
+}
+
+.contact-name-link {
+  color: #89b4fa;
+  cursor: pointer;
+  text-decoration: underline;
+  text-decoration-style: dotted;
+  text-underline-offset: 2px;
+  position: relative;
+}
+
+.contact-name-link:hover {
+  color: #b4d0fb;
+}
+
+.contact-tooltip {
+  display: none;
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  background: #2a2a3c;
+  border: 1px solid #45475a;
+  border-radius: 10px;
+  padding: 12px 16px;
+  min-width: 280px;
+  z-index: 100;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  white-space: normal;
+}
+
+.contact-name-wrapper:hover .contact-tooltip {
+  display: block;
+}
+
+.tooltip-contact-name {
+  font-size: 13px;
+  font-weight: 700;
+  color: #cdd6f4;
+  margin-bottom: 6px;
+}
+
+.tooltip-contact-value {
+  font-size: 12px;
+  color: #a6adc8;
+  margin-bottom: 8px;
+}
+
+.tooltip-companies {
+  font-size: 12px;
+  color: #bac2de;
+  padding-top: 6px;
+  border-top: 1px solid #45475a;
+}
+
+.tooltip-label {
+  color: #6c7086;
+  margin-right: 4px;
+}
+
+.tooltip-company-link {
+  color: #89b4fa;
+  text-decoration: none;
+  font-weight: 600;
+}
+
+.tooltip-company-link:hover {
+  color: #b4d0fb;
+  text-decoration: underline;
+}
+
+.tooltip-company-text {
+  color: #cdd6f4;
+  font-weight: 600;
+}
+
+.tooltip-sep {
+  color: #585b70;
+  margin: 0 4px;
+}
+
 /* ── 底部行：元信息 + 操作按钮 ── */
 .bottom-row {
   display: flex;
@@ -1039,6 +1186,54 @@ html[data-theme="light"] .ai-evidence-bullet {
 
 html[data-theme="light"] .ai-evidence-item strong {
   color: #8b6914;
+}
+
+/* 共享联系人 - 浅色主题 */
+html[data-theme="light"] .contact-name-link {
+  color: #2f7fe8;
+}
+
+html[data-theme="light"] .contact-name-link:hover {
+  color: #1a5dc7;
+}
+
+html[data-theme="light"] .contact-tooltip {
+  background: #ffffff;
+  border-color: #d8dee9;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15);
+}
+
+html[data-theme="light"] .tooltip-contact-name {
+  color: #2e3440;
+}
+
+html[data-theme="light"] .tooltip-contact-value {
+  color: #4a5568;
+}
+
+html[data-theme="light"] .tooltip-companies {
+  color: #3b4a5e;
+  border-top-color: #d8dee9;
+}
+
+html[data-theme="light"] .tooltip-label {
+  color: #8a96a8;
+}
+
+html[data-theme="light"] .tooltip-company-link {
+  color: #2f7fe8;
+}
+
+html[data-theme="light"] .tooltip-company-link:hover {
+  color: #1a5dc7;
+}
+
+html[data-theme="light"] .tooltip-company-text {
+  color: #2e3440;
+}
+
+html[data-theme="light"] .tooltip-sep {
+  color: #8a96a8;
 }
 
 /* 评分栏 - 浅色 */

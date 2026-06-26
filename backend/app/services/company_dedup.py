@@ -136,7 +136,7 @@ AUTO_MERGE_THRESHOLD = 85
 # 影响：
 #   - 调高 → 减少人工审核工作量，但可能漏掉一些需要人工判断的模糊 case。
 #   - 调低 → 增加召回，更多模糊 pair 送人工确认，但审核压力增大。
-NEED_REVIEW_THRESHOLD = 40
+NEED_REVIEW_THRESHOLD = 35
 
 # 高置信度自动合并阈值，范围 [0, 100]
 # 含义：供 auto_merge_high_confidence() 函数使用，对已经处于 need_review 状态的 pair
@@ -1049,14 +1049,17 @@ def batch_calculate_evidence_scores(
 
     # 定义要检查的表（字段名与实际表结构一致）
     tables_to_check = [
-        {"table": "ods_zhique_contact_day", "company_field": "related_company", "phone_field": "phone", "email_field": "email"},
-        {"table": "ods_crm_contact_day", "company_field": "customer_name", "phone_field": "mobile", "email_field": "email"},
-        {"table": "ods_marketing_lead_day", "company_field": "customer_company", "phone_field": "contact_phone", "email_field": "email"},
+        {"table": "ods_zhique_contact_day", "company_field": "related_company", "phone_field": "phone", "email_field": "email", "name_field": "contact_name"},
+        {"table": "ods_crm_contact_day", "company_field": "customer_name", "phone_field": "mobile", "email_field": "email", "name_field": "contact_name"},
+        {"table": "ods_marketing_lead_day", "company_field": "customer_company", "phone_field": "contact_phone", "email_field": "email", "name_field": "customer_name"},
     ]
 
     # 聚合所有公司的联系信息
     company_phones: Dict[str, set] = defaultdict(set)
     company_emails: Dict[str, set] = defaultdict(set)
+    # 共用电话/邮箱 → 联系人姓名（取第一个非空姓名）
+    phone_to_name: Dict[str, str] = {}
+    email_to_name: Dict[str, str] = {}
 
     num_tables = len(tables_to_check)
     for table_idx, table_config in enumerate(tables_to_check):
@@ -1064,6 +1067,7 @@ def batch_calculate_evidence_scores(
         company_field = table_config["company_field"]
         phone_field = table_config["phone_field"]
         email_field = table_config["email_field"]
+        name_field = table_config.get("name_field", "contact_name")
 
         # 进度：告知前端正在查询哪个表
         if progress_callback:
@@ -1078,16 +1082,21 @@ def batch_calculate_evidence_scores(
             params[f"name_{idx}"] = f"%{name}%"
         like_clause = " OR ".join(like_parts) if like_parts else "1=0"
 
-        # 批量查询：公司 → 电话集合
+        # 批量查询：公司 → 电话集合，同时记录电话→姓名
         try:
             phone_sql = text(f"""
-                SELECT {company_field}, {phone_field}
+                SELECT {company_field}, {phone_field}, {name_field}
                 FROM {table_name}
                 WHERE ({like_clause})
                   AND {phone_field} IS NOT NULL AND {phone_field} != ''
             """)
             phone_rows = db.execute(phone_sql, params).fetchall()
-            for company_name, phone in phone_rows:
+            for company_name, phone, contact_name in phone_rows:
+                # 记录电话→姓名（去空格后非空才存）
+                if contact_name:
+                    cn_clean = str(contact_name).strip()
+                    if cn_clean and phone not in phone_to_name:
+                        phone_to_name[phone] = cn_clean
                 # 匹配回原始公司名
                 matched = False
                 for orig_name in all_companies:
@@ -1111,16 +1120,21 @@ def batch_calculate_evidence_scores(
             progress_callback(0, total_pairs,
                              f"已完成 {table_name} 电话查询 ({table_idx + 1}/{num_tables})，正在查邮箱...")
 
-        # 批量查询：公司 → 邮箱集合
+        # 批量查询：公司 → 邮箱集合，同时记录邮箱→姓名
         try:
             email_sql = text(f"""
-                SELECT {company_field}, {email_field}
+                SELECT {company_field}, {email_field}, {name_field}
                 FROM {table_name}
                 WHERE ({like_clause})
                   AND {email_field} IS NOT NULL AND {email_field} != ''
             """)
             email_rows = db.execute(email_sql, params).fetchall()
-            for company_name, email in email_rows:
+            for company_name, email, contact_name in email_rows:
+                # 记录邮箱→姓名
+                if contact_name:
+                    cn_clean = str(contact_name).strip()
+                    if cn_clean and email not in email_to_name:
+                        email_to_name[email] = cn_clean
                 matched = False
                 for orig_name in all_companies:
                     if company_name and orig_name in company_name:
@@ -1146,8 +1160,8 @@ def batch_calculate_evidence_scores(
     if progress_callback:
         progress_callback(0, total_pairs, "数据收集完成，正在计算共享联系人...")
 
-    # 在内存中计算每对的共享联系人
-    scores: Dict[Tuple[str, str], Tuple[float, int]] = {}
+    # 在内存中计算每对的共享联系人和详情
+    scores: Dict[Tuple[str, str], Tuple[float, int, List[Dict[str, str]]]] = {}
     if progress_callback:
         progress_callback(0, total_pairs, "正在从数据库收集证据...")
     # 每 100 对更新一次进度，并添加微小延迟让前端轮询能捕获到中间状态
@@ -1157,8 +1171,10 @@ def batch_calculate_evidence_scores(
         emails_a = company_emails.get(name_a, set())
         emails_b = company_emails.get(name_b, set())
 
-        shared_phones = len(phones_a & phones_b)
-        shared_emails = len(emails_a & emails_b)
+        shared_phone_values = phones_a & phones_b
+        shared_email_values = emails_a & emails_b
+        shared_phones = len(shared_phone_values)
+        shared_emails = len(shared_email_values)
         shared_contacts = shared_phones + shared_emails
 
         if shared_contacts > 0:
@@ -1166,7 +1182,21 @@ def batch_calculate_evidence_scores(
         else:
             evidence_score = 0.0
 
-        scores[(name_a, name_b)] = (round(evidence_score, 2), shared_contacts)
+        # 收集共享联系人详情（去重姓名）
+        shared_details: List[Dict[str, str]] = []
+        seen_names: set = set()
+        for phone in shared_phone_values:
+            contact_name = phone_to_name.get(phone, phone)
+            if contact_name not in seen_names:
+                seen_names.add(contact_name)
+                shared_details.append({"name": contact_name, "value": phone, "type": "phone"})
+        for email in shared_email_values:
+            contact_name = email_to_name.get(email, email)
+            if contact_name not in seen_names:
+                seen_names.add(contact_name)
+                shared_details.append({"name": contact_name, "value": email, "type": "email"})
+
+        scores[(name_a, name_b)] = (round(evidence_score, 2), shared_contacts, shared_details)
 
         if progress_callback and pair_idx % 100 == 0:
             progress_callback(
@@ -1363,15 +1393,17 @@ def fetch_all_company_names(db: Session) -> List[Dict[str, Any]]:
         """)
         result1 = db.execute(sql1).fetchall()
         for row_name, row_id in result1:
+            src_entry = {"table": "dws_customer_360", "record_id": row_id}
             if row_name not in companies:
                 companies[row_name] = {
                     "name": row_name,
                     "customer_id": row_id,
-                    "sources": ["dws_customer_360"]
+                    "sources": [src_entry],
                 }
             else:
-                if "dws_customer_360" not in companies[row_name]["sources"]:
-                    companies[row_name]["sources"].append("dws_customer_360")
+                existing_tables = {s["table"] if isinstance(s, dict) else s for s in companies[row_name]["sources"]}
+                if "dws_customer_360" not in existing_tables:
+                    companies[row_name]["sources"].append(src_entry)
         logger.info(f"[1/5] dws_customer_360: {len(result1)} 条, 耗时 {time.time()-t0:.1f}s")
     except Exception as e:
         logger.warning(f"[1/5] dws_customer_360 查询失败: {e}")
@@ -1381,21 +1413,24 @@ def fetch_all_company_names(db: Session) -> List[Dict[str, Any]]:
         t0 = time.time()
         logger.info("[2/5] 查询 ods_zhique_behavior_list_day...")
         sql2 = text("""
-            SELECT DISTINCT company_name
+            SELECT company_name, MAX(id) AS record_id
             FROM ods_zhique_behavior_list_day
             WHERE company_name IS NOT NULL AND company_name != ''
+            GROUP BY company_name
         """)
         result2 = db.execute(sql2).fetchall()
-        for (company_name,) in result2:
+        for company_name, record_id in result2:
+            src_entry = {"table": "ods_zhique_behavior_list_day", "record_id": record_id}
             if company_name not in companies:
                 companies[company_name] = {
                     "name": company_name,
                     "customer_id": None,
-                    "sources": ["ods_zhique_behavior_list_day"]
+                    "sources": [src_entry],
                 }
             else:
-                if "ods_zhique_behavior_list_day" not in companies[company_name]["sources"]:
-                    companies[company_name]["sources"].append("ods_zhique_behavior_list_day")
+                existing_tables = {s["table"] if isinstance(s, dict) else s for s in companies[company_name]["sources"]}
+                if "ods_zhique_behavior_list_day" not in existing_tables:
+                    companies[company_name]["sources"].append(src_entry)
         logger.info(f"[2/5] ods_zhique_behavior_list_day: {len(result2)} 条, 耗时 {time.time()-t0:.1f}s")
     except Exception as e:
         logger.warning(f"[2/5] ods_zhique_behavior_list_day 查询失败: {e}")
@@ -1405,22 +1440,26 @@ def fetch_all_company_names(db: Session) -> List[Dict[str, Any]]:
         t0 = time.time()
         logger.info("[3/5] 查询 ods_marketing_lead_day...")
         sql3 = text("""
-            SELECT DISTINCT COALESCE(final_company_name, customer_company, opp_customer_name) AS company_name
+            SELECT COALESCE(final_company_name, customer_company, opp_customer_name) AS company_name,
+                   MAX(id) AS record_id
             FROM ods_marketing_lead_day
             WHERE COALESCE(final_company_name, customer_company, opp_customer_name) IS NOT NULL
               AND COALESCE(final_company_name, customer_company, opp_customer_name) != ''
+            GROUP BY company_name
         """)
         result3 = db.execute(sql3).fetchall()
-        for (company_name,) in result3:
+        for company_name, record_id in result3:
+            src_entry = {"table": "ods_marketing_lead_day", "record_id": record_id}
             if company_name not in companies:
                 companies[company_name] = {
                     "name": company_name,
                     "customer_id": None,
-                    "sources": ["ods_marketing_lead_day"]
+                    "sources": [src_entry],
                 }
             else:
-                if "ods_marketing_lead_day" not in companies[company_name]["sources"]:
-                    companies[company_name]["sources"].append("ods_marketing_lead_day")
+                existing_tables = {s["table"] if isinstance(s, dict) else s for s in companies[company_name]["sources"]}
+                if "ods_marketing_lead_day" not in existing_tables:
+                    companies[company_name]["sources"].append(src_entry)
         logger.info(f"[3/5] ods_marketing_lead_day: {len(result3)} 条, 耗时 {time.time()-t0:.1f}s")
     except Exception as e:
         logger.warning(f"[3/5] ods_marketing_lead_day 查询失败: {e}")
@@ -1430,21 +1469,24 @@ def fetch_all_company_names(db: Session) -> List[Dict[str, Any]]:
         t0 = time.time()
         logger.info("[4/5] 查询 ods_zhique_contact_day...")
         sql4 = text("""
-            SELECT DISTINCT related_company
+            SELECT related_company, MAX(id) AS record_id
             FROM ods_zhique_contact_day
             WHERE related_company IS NOT NULL AND related_company != ''
+            GROUP BY related_company
         """)
         result4 = db.execute(sql4).fetchall()
-        for (company_name,) in result4:
+        for company_name, record_id in result4:
+            src_entry = {"table": "ods_zhique_contact_day", "record_id": record_id}
             if company_name not in companies:
                 companies[company_name] = {
                     "name": company_name,
                     "customer_id": None,
-                    "sources": ["ods_zhique_contact_day"]
+                    "sources": [src_entry],
                 }
             else:
-                if "ods_zhique_contact_day" not in companies[company_name]["sources"]:
-                    companies[company_name]["sources"].append("ods_zhique_contact_day")
+                existing_tables = {s["table"] if isinstance(s, dict) else s for s in companies[company_name]["sources"]}
+                if "ods_zhique_contact_day" not in existing_tables:
+                    companies[company_name]["sources"].append(src_entry)
         logger.info(f"[4/5] ods_zhique_contact_day: {len(result4)} 条, 耗时 {time.time()-t0:.1f}s")
     except Exception as e:
         logger.warning(f"[4/5] ods_zhique_contact_day 查询失败: {e}")
@@ -1454,21 +1496,24 @@ def fetch_all_company_names(db: Session) -> List[Dict[str, Any]]:
         t0 = time.time()
         logger.info("[5/5] 查询 ods_crm_contact_day...")
         sql5 = text("""
-            SELECT DISTINCT customer_name
+            SELECT customer_name, MAX(id) AS record_id
             FROM ods_crm_contact_day
             WHERE customer_name IS NOT NULL AND customer_name != ''
+            GROUP BY customer_name
         """)
         result5 = db.execute(sql5).fetchall()
-        for (company_name,) in result5:
+        for company_name, record_id in result5:
+            src_entry = {"table": "ods_crm_contact_day", "record_id": record_id}
             if company_name not in companies:
                 companies[company_name] = {
                     "name": company_name,
                     "customer_id": None,
-                    "sources": ["ods_crm_contact_day"]
+                    "sources": [src_entry],
                 }
             else:
-                if "ods_crm_contact_day" not in companies[company_name]["sources"]:
-                    companies[company_name]["sources"].append("ods_crm_contact_day")
+                existing_tables = {s["table"] if isinstance(s, dict) else s for s in companies[company_name]["sources"]}
+                if "ods_crm_contact_day" not in existing_tables:
+                    companies[company_name]["sources"].append(src_entry)
         logger.info(f"[5/5] ods_crm_contact_day: {len(result5)} 条, 耗时 {time.time()-t0:.1f}s")
     except Exception as e:
         logger.warning(f"[5/5] ods_crm_contact_day 查询失败: {e}")
@@ -1704,11 +1749,11 @@ def generate_review_pairs(
         key = (company_a["name"], company_b["name"])
         rev_key = (company_b["name"], company_a["name"])
         if key in batch_evidence:
-            evidence_score, shared_count = batch_evidence[key]
+            evidence_score, shared_count, shared_details = batch_evidence[key]
         elif rev_key in batch_evidence:
-            evidence_score, shared_count = batch_evidence[rev_key]
+            evidence_score, shared_count, shared_details = batch_evidence[rev_key]
         else:
-            evidence_score, shared_count = 0.0, 0
+            evidence_score, shared_count, shared_details = 0.0, 0, []
 
         # LLM 判断：批量写入阶段不调用大模型（性能瓶颈），
         # 使用规则分+证据分的代理值作为 LLM 分，后续人工审核时可再触发真实 LLM 分析。
@@ -1754,6 +1799,7 @@ def generate_review_pairs(
             "sources_a": company_a["sources"],
             "sources_b": company_b["sources"],
             "shared_contacts_count": shared_count,
+            "shared_contact_details": shared_details,
             "llm_explanation": explanation,
         }
 
@@ -2067,11 +2113,12 @@ def fetch_new_or_updated_companies(
         """)
         rows = db.execute(sql, {"since": since}).fetchall()
         for row_name, row_id in rows:
+            src_entry = {"table": "dws_customer_360", "record_id": row_id}
             if row_name not in companies:
                 companies[row_name] = {
                     "name": row_name,
                     "customer_id": row_id,
-                    "sources": ["dws_customer_360"],
+                    "sources": [src_entry],
                 }
 
         if rows:

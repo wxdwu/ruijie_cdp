@@ -120,6 +120,7 @@ def _extract_score_fields(item: Dict[str, Any]) -> Dict[str, Any]:
         item["sources_a"] = evidence.get("sources_a", [])
         item["sources_b"] = evidence.get("sources_b", [])
         item["shared_contacts_count"] = evidence.get("shared_contacts_count", 0)
+        item["shared_contact_details"] = evidence.get("shared_contact_details", [])
         item["embedding_similarity"] = evidence.get("embedding_similarity")
         item["llm_explanation"] = evidence.get("llm_explanation", "")
 
@@ -140,6 +141,7 @@ def _extract_score_fields(item: Dict[str, Any]) -> Dict[str, Any]:
     item.setdefault("sources_a", [])
     item.setdefault("sources_b", [])
     item.setdefault("shared_contacts_count", 0)
+    item.setdefault("shared_contact_details", [])
     item.setdefault("embedding_similarity", None)
     item.setdefault("llm_explanation", "")
 
@@ -175,11 +177,16 @@ def _enrich_with_company_details(items: List[Dict[str, Any]], db: Session) -> Li
     if not all_names:
         return items
 
-    # 批量查询 dws_customer_360
+    # 批量查询 dws_customer_360（先精确匹配，再 LIKE 模糊匹配）
     details_map: Dict[str, Dict[str, Any]] = {}
     try:
-        placeholders = ", ".join([f":n{i}" for i in range(len(all_names))])
-        params = {f"n{i}": name for i, name in enumerate(all_names)}
+        # 先用精确 IN 匹配；再对未命中的名称补充 LIKE %name% 查询
+        # 分两轮：第一轮精确匹配，第二轮 LIKE 匹配（只查未命中的名称，避免重复）
+        all_names_list = list(all_names)
+
+        # 第一轮：精确匹配
+        placeholders = ", ".join([f":e{i}" for i in range(len(all_names_list))])
+        params_exact = {f"e{i}": name for i, name in enumerate(all_names_list)}
         detail_sql = text(f"""
             SELECT
                 customer_name,
@@ -199,10 +206,12 @@ def _enrich_with_company_details(items: List[Dict[str, Any]], db: Session) -> Li
             FROM dws_customer_360
             WHERE customer_name IN ({placeholders})
         """)
-        rows = db.execute(detail_sql, params).mappings().all()
+        rows = db.execute(detail_sql, params_exact).mappings().all()
+        matched_names: set = set()
         for row in rows:
             detail = dict(row)
-            # 解析 JSON 字段
+            cn = detail["customer_name"]
+            matched_names.add(cn)
             for json_field in ("source_tables", "data_coverage"):
                 val = detail.get(json_field)
                 if isinstance(val, str):
@@ -210,10 +219,61 @@ def _enrich_with_company_details(items: List[Dict[str, Any]], db: Session) -> Li
                         detail[json_field] = json.loads(val)
                     except (json.JSONDecodeError, TypeError):
                         pass
-            # 转换时间字段
             if detail.get("last_interaction_time"):
                 detail["last_interaction_time"] = str(detail["last_interaction_time"])
-            details_map[detail["customer_name"]] = detail
+            details_map[cn] = detail
+
+        # 第二轮：对未命中的原始名称做 LIKE 匹配
+        unmatched = [n for n in all_names_list if n not in details_map]
+        if unmatched:
+            like_parts = []
+            params_like = {}
+            for i, name in enumerate(unmatched):
+                like_parts.append(f"customer_name LIKE :l{i}")
+                params_like[f"l{i}"] = f"%{name}%"
+            like_sql = text(f"""
+                SELECT
+                    customer_name,
+                    industry,
+                    region,
+                    owner_name,
+                    contact_count,
+                    interaction_count_30d,
+                    interaction_count_total,
+                    last_interaction_time,
+                    source_tables,
+                    data_coverage,
+                    intent_level,
+                    purchase_stage,
+                    active_opp_count,
+                    is_existing_customer
+                FROM dws_customer_360
+                WHERE {" OR ".join(like_parts)}
+            """)
+            rows_like = db.execute(like_sql, params_like).mappings().all()
+            for row in rows_like:
+                detail = dict(row)
+                cn = detail["customer_name"]
+                if cn in details_map:
+                    continue
+                matched_names.add(cn)
+                for json_field in ("source_tables", "data_coverage"):
+                    val = detail.get(json_field)
+                    if isinstance(val, str):
+                        try:
+                            detail[json_field] = json.loads(val)
+                        except (json.JSONDecodeError, TypeError):
+                            pass
+                if detail.get("last_interaction_time"):
+                    detail["last_interaction_time"] = str(detail["last_interaction_time"])
+                # 映射回原始搜索名（可能与 customer_name 不同）
+                for orig_name in unmatched:
+                    if orig_name in cn or cn in orig_name:
+                        if orig_name not in details_map:
+                            details_map[orig_name] = detail
+                        break
+                else:
+                    details_map[cn] = detail
     except Exception as e:
         logger.warning(f"Failed to enrich company details: {e}")
 
