@@ -34,11 +34,240 @@ from app.database import get_db
 
 logger = logging.getLogger(__name__)
 
-# Data source priority (higher = more trusted)
+# =============================================================================
+# BUSINESS CONFIGURATION — 去重审核队列业务配置（统一管理，便于调整）
+#
+# 配置概览：
+#   A. 步骤进度 — 去重流水线上各阶段在用户端进度条中占的百分比区间
+#   B. 阈值     — 控制候选对筛选、自动合并/人工审核分流的关键门槛
+#   C. 评分权重 — 综合评分公式中各子项的贡献比例
+#   D. 数据源   — 参与去重的数据表、优先级、证据评分查询表
+#   E. LLM     — 大模型调用相关配置
+#
+# 注意：修改任一配置后需要重启后端服务才能生效。
+# =============================================================================
+
+# ──────────────────────────────────────────────────────────────────────────────
+# A. 去重各步骤进度（每个步骤在整体进度条中的百分比范围）
+# ──────────────────────────────────────────────────────────────────────────────
+# 作用：pipeline 每执行到一个阶段，会将进度更新为对应的百分比数值，
+#       前端定时轮询 /dedup/progress 接口时展示给用户。
+#
+# ★ DEDUP_PROGRESS_STEPS 是步骤进度的【唯一配置源】，
+#   下方所有 STEP_* 常量均从该列表自动计算，修改时只需改此列表，无需手动同步。
+
+DEDUP_PROGRESS_STEPS = [
+    # 步骤名称                  起始%   结束%   说明
+    ("获取公司名称",              0,     10),   # 从多个数据源表中查出所有待去重的公司名
+    ("Computing embeddings",     10,     30),   # 调用 embedding 模型将每条公司名编码为向量
+    ("Finding similar pairs",    30,     45),   # 使用 FAISS 在向量空间中搜索近似最近邻
+    ("计算证据评分（批量）",      45,     60),   # 批量查询 ODS 表，为每对候选计算共享联系人得分
+    ("检查已存在的pair",         60,     80),   # 和数据库已有的 review_queue 记录做比对去重
+    ("计算综合评分并写入队列",   80,     99),   # 计算规则分+证据分+LLM分，写 review_queue 表
+    ("完成",                     100,   100),  # 写入统计日志，结束本次任务
+]
+
+# ↓ 以下 STEP_* 常量全部从 DEDUP_PROGRESS_STEPS 自动提取，请勿手动赋值 ↓
+
+# 步骤1: 获取公司名称 — 完成时进度（取列表第1项的结束%）
+STEP_GET_COMPANIES_PROGRESS = DEDUP_PROGRESS_STEPS[0][2]
+
+# 步骤2: Computing embeddings — 起始值 + 浮动区间（批次内按完成比例线性插值）
+STEP_EMBEDDING_PROGRESS_START = DEDUP_PROGRESS_STEPS[1][1]
+STEP_EMBEDDING_PROGRESS_RANGE = DEDUP_PROGRESS_STEPS[1][2] - DEDUP_PROGRESS_STEPS[1][1]
+
+# 步骤3: Finding similar pairs — 起始值 + 浮动区间
+STEP_SIMILAR_PAIRS_PROGRESS_START = DEDUP_PROGRESS_STEPS[2][1]
+STEP_SIMILAR_PAIRS_PROGRESS_RANGE = DEDUP_PROGRESS_STEPS[2][2] - DEDUP_PROGRESS_STEPS[2][1]
+
+# 步骤4: 计算证据评分（批量）— 起始值 + 浮动区间
+STEP_EVIDENCE_PROGRESS_START = DEDUP_PROGRESS_STEPS[3][1]
+STEP_EVIDENCE_PROGRESS_RANGE = DEDUP_PROGRESS_STEPS[3][2] - DEDUP_PROGRESS_STEPS[3][1]
+
+# 步骤5: 检查已存在的pair — 瞬时操作，取起始%
+STEP_CHECK_EXISTING_PROGRESS = DEDUP_PROGRESS_STEPS[4][1]
+
+# 步骤6: 计算综合评分并写入队列 — 起始值 + 浮动区间
+STEP_SCORE_WRITE_PROGRESS_START = DEDUP_PROGRESS_STEPS[5][1]
+STEP_SCORE_WRITE_PROGRESS_RANGE = DEDUP_PROGRESS_STEPS[5][2] - DEDUP_PROGRESS_STEPS[5][1]
+
+# 步骤7: 完成 — 取结束%
+STEP_COMPLETE_PROGRESS = DEDUP_PROGRESS_STEPS[6][2]
+
+# ──────────────────────────────────────────────────────────────────────────────
+# B. 阈值配置
+# ──────────────────────────────────────────────────────────────────────────────
+# 这些阈值直接决定去重流水线"筛选多少候选对"以及"自动合并/人工审核/丢弃"的分流。
+
+# 嵌入向量余弦相似度最低阈值，范围 (0, 1]
+# 含义：两条公司名的 embedding 向量余弦相似度必须 ≥ 此值，才会被纳入候选 pair 列表。
+# 影响：
+#   - 调高 → 候选对更少、更精准，但可能漏掉一些近似但不完全相同的公司名。
+#   - 调低 → 候选对更多、召回率更高，但计算量和噪音也会增大。
+#   - 当前 0.70 是一个相对平衡的值，能召回大部分"同义词/缩写/别称"的情况。
+EMBEDDING_SIMILARITY_THRESHOLD = 0.70
+
+# FAISS 搜索每个向量的最近邻数量（k 近邻参数）
+# 含义：对每个公司名向量，从索引中查找余弦相似度最高的前 k 个邻居。
+# 影响：k 越大，候选对数量指数级增长（因为每对都在结果里出现两次）。
+#       实际生成 candidate pairs 时还会用 EMBEDDING_SIMILARITY_THRESHOLD 做二次过滤。
+FAISS_K_NEAREST_NEIGHBORS = 50
+
+# 自动合并阈值，范围 [0, 100]
+# 含义：综合评分（rule + evidence + LLM 加权和）> 此值时，系统自动将两条公司记录
+#       合并为一条，无需人工介入。review_queue.status 设为 "auto_merged"。
+# 影响：
+#   - 调高 → 更保守，只有极度相似的 pair 才自动合并，减少误合并风险。
+#   - 调低 → 更激进，更多 pair 被自动合并，减少人工审核压力但风险更高。
+AUTO_MERGE_THRESHOLD = 85
+
+# 人工审核阈值（下界），范围 [0, AUTO_MERGE_THRESHOLD]
+# 含义：综合评分在 (NEED_REVIEW_THRESHOLD, AUTO_MERGE_THRESHOLD] 区间内的 pair
+#       会进入人工审核队列，等待运营人员在 ReviewQueue 页面上做"合并/忽略"决策。
+#       评分 ≤ NEED_REVIEW_THRESHOLD 的 pair 直接丢弃（视为不相关）。
+# 影响：
+#   - 调高 → 减少人工审核工作量，但可能漏掉一些需要人工判断的模糊 case。
+#   - 调低 → 增加召回，更多模糊 pair 送人工确认，但审核压力增大。
+NEED_REVIEW_THRESHOLD = 40
+
+# 高置信度自动合并阈值，范围 [0, 100]
+# 含义：供 auto_merge_high_confidence() 函数使用，对已经处于 need_review 状态的 pair
+#       再次扫描，如果当前综合评分 > 此值则升级为自动合并（适用于数据更新后评分提升的场景）。
+#       通常比 AUTO_MERGE_THRESHOLD 更高，代表"二次确认"级别的高置信度。
+# 注意：此阈值作用于复审阶段，与首次写入队列时使用的 AUTO_MERGE_THRESHOLD 相互独立。
+HIGH_CONFIDENCE_MERGE_THRESHOLD = 90.0
+
+# ──────────────────────────────────────────────────────────────────────────────
+# C. 评分权重配置 — 综合评分 = rule_score × Wr + evidence_score × We + LLM_score × Wl
+# ──────────────────────────────────────────────────────────────────────────────
+# 所有分值都已归一化到 [0, 100] 区间，三个权重之和等于 1.0，确保最终得分可解释。
+
+# 最终综合评分 — 规则分权重
+# 含义：规则引擎（编辑距离、子串包含、前缀后缀、token/Jaccard 等字符串算法）在最终
+#       决策中占 35%。规则分擅长发现字形/字符层面的相似性，速度快、可解释性强。
+FINAL_RULE_WEIGHT = 0.35
+
+# 最终综合评分 — 证据分权重
+# 含义：证据评分（两条公司记录共享的电话/邮箱联系人数量换算得分）在最终决策中占 40%。
+#       证据分反映了业务层面的关联度——共享的联系人越多，两家公司越可能是同一家。
+#       当前权重最高，体现了"以业务数据为锚点"的策略。
+FINAL_EVIDENCE_WEIGHT = 0.40
+
+# 最终综合评分 — LLM 分权重
+# 含义：大模型语义判断分在最终决策中占 25%。LLM 能识别规则引擎难以处理的语义等价
+#       （如"字节跳动"与"ByteDance"、简称/全称替换等），但受限于调用延迟和成本。
+FINAL_LLM_WEIGHT = 0.25
+
+# ── 规则评分各因子权重（规则分 = 各因子得分 × 各自权重后累加） ──────────────────
+# 规则评分内部由 5 个独立的字符串相似度指标加权求和得到，每个因子的得分范围均为 [0,100]。
+# 所有权重之和 > 1 是正常的（各因子之间并非互斥，而是相互补充），最终 scores 列表元素的
+# 加权和就是规则分原始值。
+
+# 编辑距离（Levenshtein）相似度权重
+# 算法：两公司名标准化后计算 Levenshtein 编辑距离，转换为 0~100 的相似度分数。
+# 擅长：发现拼写差异（如 "腾讯科技" vs "腾迅科技" 的"讯/迅"一字之差）。
+RULE_LEVENSHTEIN_WEIGHT = 0.30
+
+# 子串包含权重
+# 算法：如果公司名 A 是 B 的子串（或反之），按长度比给分。
+# 擅长：发现"含与不含"后缀的关系（如 "华为" vs "华为技术有限公司"）。
+RULE_SUBSTRING_WEIGHT = 0.25
+
+# 公共前缀权重
+# 算法：从首字符开始找连续相同的子串长度，按比例给分。
+# 擅长：发现同一集团/品牌下子公司（如 "阿里巴巴(中国)" vs "阿里巴巴(杭州)"）。
+RULE_PREFIX_WEIGHT = 0.10
+
+# 公共后缀权重
+# 算法：从尾字符倒着找连续相同的子串长度，按比例给分。
+# 擅长：发现以相同后缀结尾的公司（如 "XX科技有限公司" vs "YY科技有限公司"）。
+RULE_SUFFIX_WEIGHT = 0.10
+
+# Token（词语）重叠度权重
+# 算法：按空格/分词器拆分后，计算 Jaccard 系数（交集大小/并集大小）。
+# 擅长：发现词序不同但关键词重合度高的情况（如 "中国移动通信" vs "移动通信中国"）。
+RULE_TOKEN_WEIGHT = 0.25
+
+# 字符级 Jaccard 权重
+# 算法：将公司名字符集合做 Jaccard 计算（不关心顺序，只看字符集合重叠）。
+# 擅长：发现简繁体、中英文混杂等情况下的字符重叠度。
+RULE_JACCARD_WEIGHT = 0.20
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 证据评分乘数（每个共享联系人贡献的分数）
+# ──────────────────────────────────────────────────────────────────────────────
+# 含义：在所有 ODS 表中查到两条公司名共享的电话或邮箱数 total_shared，
+#       证据分 = min(100, total_shared × EVIDENCE_SCORE_MULTIPLIER)。
+#       例如：共享 3 个联系人 → 3×20 = 60 分；共享 5 个及以上 → 封顶 100 分。
+# 影响：
+#   - 调高 → 少量共享联系人即可获得高证据分，容易触发自动合并。
+#   - 调低 → 需要更多共享联系人才能获得相同的证据分，更保守。
+EVIDENCE_SCORE_MULTIPLIER = 20.0
+
+# ──────────────────────────────────────────────────────────────────────────────
+# LLM 不可用时回落权重
+# ──────────────────────────────────────────────────────────────────────────────
+# 场景：当 LLM API key 未配置、调用超时/失败、或返回结果无法解析时，
+#       系统回退到只用规则分和证据分估算一个替代 LLM 分。
+#       回落 LLM 分 = (rule_score × LLM_FALLBACK_RULE_WEIGHT
+#                       + evidence_score × LLM_FALLBACK_EVIDENCE_WEIGHT) / 100
+#              （结果归一化到 [0,1]，后续会再乘 FINAL_LLM_WEIGHT）
+# 含义：这两个权重决定了在 LLM 缺席时，规则分和证据分各自贡献多少来补齐 LLM 的缺口。
+#       当前 0.5/0.5 表示等权分配。
+LLM_FALLBACK_RULE_WEIGHT = 0.5
+LLM_FALLBACK_EVIDENCE_WEIGHT = 0.5
+
+# ──────────────────────────────────────────────────────────────────────────────
+# D. 数据源配置
+# ──────────────────────────────────────────────────────────────────────────────
+
+# 数据源优先级（数值越高越可信，用于选择主公司记录）
+# 含义：当一个公司的数据出现在多个数据源中时，优先以哪个源的记录作为主记录
+#       （主记录决定最终展示的公司名、统一社会信用代码等关键字段）。
+#       优先级越高，越可能被选为"代表该公司的记录"。
 SOURCE_PRIORITY = {
-    'crm': 6, 'lead': 5, 'tianrun_session': 4,
-    'zhique_behavior': 3, 'linkflow': 2, 'email_click': 1,
+    'crm': 6,                        # CRM 系统 — 最可信，销售直接维护
+    'lead': 5,                       # 线索系统 — 市场渠道过来的公司
+    'tianrun_session': 4,            # 天润会话 — 客服/电销触达数据
+    'zhique_behavior': 3,            # 知鹊行为 — 网站/小程序行为埋点
+    'linkflow': 2,                   # LinkFlow — 营销自动化
+    'email_click': 1,                # 邮件点击 — 可信度最低的匿名行为
 }
+
+# 去重涉及的数据源表名（全量表扫描时读取这些表获取所有公司名列表）
+DEDUP_DATA_SOURCES = [
+    "dws_customer_360",              # 客户360宽表（已做过多源聚合的主体表）
+    "ods_zhique_behavior_list_day",  # 知鹊行为日表
+    "ods_marketing_lead_day",        # 营销线索日表
+    "ods_zhique_contact_day",        # 知鹊联系人日表
+    "ods_crm_contact_day",           # CRM 联系人日表
+]
+
+# 证据评分查询的 ODS 表定义
+# 含义：计算证据分时，在这些 ODS 表中搜索两条公司名各自的联系信息（电话/邮箱），
+#       统计双方共享的联系人数量作为"两家公司有关联"的证据。
+# 字段说明：
+#   - table:          表名
+#   - company_field:  表中表示公司名的字段
+#   - phone_field:    表中电话号码字段（用于匹配）
+#   - email_field:    表中邮箱字段（用于匹配）
+EVIDENCE_TABLES = [
+    {"table": "ods_zhique_contact_day",  "company_field": "related_company",  "phone_field": "phone",         "email_field": "email"},
+    {"table": "ods_crm_contact_day",     "company_field": "customer_name",    "phone_field": "mobile",        "email_field": "email"},
+    {"table": "ods_marketing_lead_day",  "company_field": "customer_company", "phone_field": "contact_phone", "email_field": "email"},
+]
+
+# ──────────────────────────────────────────────────────────────────────────────
+# E. LLM 配置
+# ──────────────────────────────────────────────────────────────────────────────
+
+# 大模型名称（用于调用 LLM judge 判断两条公司名是否代表同一家公司）
+# 当前使用通义千问 qwen3.6-plus，后续可替换为其他兼容 OpenAI 协议的模型。
+DEFAULT_LLM_MODEL = "qwen3.6-plus"
+
+# =============================================================================
+# END CONFIGURATION
+# =============================================================================
 
 # Global dedup progress tracking
 _dedup_progress = {
@@ -413,8 +642,7 @@ def find_similar_pairs_faiss(
     index.add(emb_array)
 
     # 每个向量搜索 k 个最近邻（包含自身）
-    # 优化：降低 k 值从 100 到 50，减少返回的候选对数量
-    k = min(n, 50)  # 最多返回 50 个最相似邻居
+    k = min(n, FAISS_K_NEAREST_NEIGHBORS)
     if progress_callback:
         progress_callback(0, n, f"FAISS 搜索最近邻中... (k={k})")
     distances, indices = index.search(emb_array, k)
@@ -626,22 +854,22 @@ def calculate_rule_score(name_a: str, name_b: str) -> float:
 
     scores: List[float] = []
     
-    # 1. Levenshtein distance based similarity (权重 0.30)
+    # 1. Levenshtein distance based similarity
     max_len = max(len(norm_a), len(norm_b))
     if max_len > 0:
         lev_dist = _levenshtein(norm_a, norm_b)
         lev_score = (1 - lev_dist / max_len) * 100
-        scores.append(lev_score * 0.30)
+        scores.append(lev_score * RULE_LEVENSHTEIN_WEIGHT)
 
-    # 2. Substring containment (权重 0.25) - 允许与其他特征叠加
+    # 2. Substring containment - 允许与其他特征叠加
     if norm_a in norm_b:
         containment = len(norm_a) / len(norm_b) * 100
-        scores.append(containment * 0.25)
+        scores.append(containment * RULE_SUBSTRING_WEIGHT)
     if norm_b in norm_a:
         containment = len(norm_b) / len(norm_a) * 100
-        scores.append(containment * 0.25)
+        scores.append(containment * RULE_SUBSTRING_WEIGHT)
 
-    # 3. Common prefix/suffix (权重 0.20)
+    # 3. Common prefix/suffix
     # 公共前缀
     prefix_len = 0
     for i in range(min(len(norm_a), len(norm_b))):
@@ -651,7 +879,7 @@ def calculate_rule_score(name_a: str, name_b: str) -> float:
             break
     if prefix_len > 0:
         prefix_score = (prefix_len / max(len(norm_a), len(norm_b))) * 100
-        scores.append(prefix_score * 0.10)
+        scores.append(prefix_score * RULE_PREFIX_WEIGHT)
     
     # 公共后缀
     suffix_len = 0
@@ -662,9 +890,9 @@ def calculate_rule_score(name_a: str, name_b: str) -> float:
             break
     if suffix_len > 0:
         suffix_score = (suffix_len / max(len(norm_a), len(norm_b))) * 100
-        scores.append(suffix_score * 0.10)
+        scores.append(suffix_score * RULE_SUFFIX_WEIGHT)
 
-    # 4. Token-based similarity (权重 0.25)
+    # 4. Token-based similarity
     tokens_a = set(norm_a.split())
     tokens_b = set(norm_b.split())
     if tokens_a and tokens_b:
@@ -672,9 +900,9 @@ def calculate_rule_score(name_a: str, name_b: str) -> float:
         total_tokens = len(tokens_a | tokens_b)
         if total_tokens > 0:
             token_score = (common_tokens / total_tokens) * 100
-            scores.append(token_score * 0.25)
+            scores.append(token_score * RULE_TOKEN_WEIGHT)
 
-    # 5. Character-level Jaccard similarity (权重 0.20)
+    # 5. Character-level Jaccard similarity
     set_a = set(norm_a)
     set_b = set(norm_b)
     if set_a or set_b:
@@ -682,7 +910,7 @@ def calculate_rule_score(name_a: str, name_b: str) -> float:
         total_chars = len(set_a | set_b)
         if total_chars > 0:
             jaccard = (common_chars / total_chars) * 100
-            scores.append(jaccard * 0.20)
+            scores.append(jaccard * RULE_JACCARD_WEIGHT)
 
     # Combine scores (允许累加，但上限100)
     final_score = min(100.0, sum(scores))
@@ -772,7 +1000,7 @@ def calculate_evidence_score(name_a: str, name_b: str, db: Session) -> tuple:
             total_shared += phone_result + email_result
         
         if total_shared > 0:
-            evidence_score = min(100.0, total_shared * 20.0)  # 调整乘数从25到20
+            evidence_score = min(100.0, total_shared * EVIDENCE_SCORE_MULTIPLIER)
             evidence_count = total_shared
 
     except Exception as e:
@@ -925,7 +1153,7 @@ def batch_calculate_evidence_scores(
         shared_contacts = shared_phones + shared_emails
 
         if shared_contacts > 0:
-            evidence_score = min(100.0, shared_contacts * 20.0)
+            evidence_score = min(100.0, shared_contacts * EVIDENCE_SCORE_MULTIPLIER)
         else:
             evidence_score = 0.0
 
@@ -949,8 +1177,6 @@ def batch_calculate_evidence_scores(
 # LLM Judge
 # ─────────────────────────────────────────────────────────────────────────────
 
-DEFAULT_LLM_MODEL = "qwen3.6-plus"
-
 def llm_judge(name_a: str, name_b: str,
               rule_score: float, evidence_score: float,
               api_key: str = "", base_url: str = "") -> tuple[float, str]:
@@ -967,7 +1193,7 @@ def llm_judge(name_a: str, name_b: str,
     """
     # Fallback: if no API key provided, use rule+evidence as proxy
     if not api_key:
-        proxy = (rule_score * 0.5 + evidence_score * 0.5) / 100.0
+        proxy = (rule_score * LLM_FALLBACK_RULE_WEIGHT + evidence_score * LLM_FALLBACK_EVIDENCE_WEIGHT) / 100.0
         return (min(1.0, max(0.0, proxy)),
                 "LLM not configured; score derived from rule + evidence")
 
@@ -1023,7 +1249,7 @@ Examples:
     except Exception as e:
         logger.warning(f"LLM judge call failed: {e}")
         # Fallback on error
-        proxy = (rule_score * 0.5 + evidence_score * 0.5) / 100.0
+        proxy = (rule_score * LLM_FALLBACK_RULE_WEIGHT + evidence_score * LLM_FALLBACK_EVIDENCE_WEIGHT) / 100.0
         return (min(1.0, max(0.0, proxy)), f"LLM call failed ({e}); fallback score")
 
     # Parse response: expect "0.95 | explanation"
@@ -1041,7 +1267,7 @@ Examples:
         llm_score = float(score_str)
         llm_score = min(1.0, max(0.0, llm_score))
     except (ValueError, TypeError):
-        llm_score = (rule_score * 0.5 + evidence_score * 0.5) / 100.0
+        llm_score = (rule_score * LLM_FALLBACK_RULE_WEIGHT + evidence_score * LLM_FALLBACK_EVIDENCE_WEIGHT) / 100.0
         explanation = f"Could not parse LLM output; fallback score"
 
     return (llm_score, explanation)
@@ -1079,9 +1305,9 @@ def calculate_final_score(
     """
     # 调整权重：降低LLM权重从40%到25%，增加evidence权重从30%到40%
     final_score = (
-        rule_score * 0.35 +
-        evidence_score * 0.40 +
-        llm_score * 0.25
+        rule_score * FINAL_RULE_WEIGHT +
+        evidence_score * FINAL_EVIDENCE_WEIGHT +
+        llm_score * FINAL_LLM_WEIGHT
     )
 
     return round(min(100.0, final_score), 2)
@@ -1265,7 +1491,7 @@ def generate_review_pairs(
 
     # Step 1: 获取公司名称（增量或全量）
     _dedup_progress["step"] = "获取公司名称"
-    _dedup_progress["progress"] = 10
+    _dedup_progress["progress"] = STEP_GET_COMPANIES_PROGRESS
     _dedup_progress["details"] = {"step_name": "获取公司名称", "completed": 0, "total": 0, "message": "正在从数据库读取公司名称..."}
 
     if incremental:
@@ -1329,7 +1555,7 @@ def generate_review_pairs(
 
     # Step 2: Compute embeddings
     _dedup_progress["step"] = "Computing embeddings"
-    _dedup_progress["progress"] = 30
+    _dedup_progress["progress"] = STEP_EMBEDDING_PROGRESS_START
     _dedup_progress["details"] = {"step_name": "Computing embeddings", "completed": 0, "total": len(names), "message": f"正在计算嵌入向量... (0/{len(names)})"}
     
     def _embedding_progress_callback(completed: int, total: int):
@@ -1341,14 +1567,14 @@ def generate_review_pairs(
             "total": total,
             "message": f"正在计算嵌入向量... ({completed}/{total})"
         }
-        # 更新总体进度 (30-50 范围)，保留 2 位小数
-        _dedup_progress["progress"] = round(30 + 20 * completed / total, 2)
+        # 更新总体进度 (embedding 范围)，保留 2 位小数
+        _dedup_progress["progress"] = round(STEP_EMBEDDING_PROGRESS_START + STEP_EMBEDDING_PROGRESS_RANGE * completed / total, 2)
     
     embeddings = compute_embeddings_batch(names, progress_callback=_embedding_progress_callback)
 
     # Step 3: Find similar pairs
     _dedup_progress["step"] = "Finding similar pairs"
-    _dedup_progress["progress"] = 50
+    _dedup_progress["progress"] = STEP_SIMILAR_PAIRS_PROGRESS_START
     _dedup_progress["details"] = {"step_name": "Finding similar pairs", "completed": 0, "total": len(names), "message": f"正在查找相似公司对... (输入: {len(names)} 个公司)"}
     
     def _similar_pairs_progress_callback(completed: int, total: int, message: str):
@@ -1360,22 +1586,22 @@ def generate_review_pairs(
             "total": total,
             "message": message
         }
-        # 更新总体进度 (50-60 范围)，保留 2 位小数
+        # 更新总体进度 (similar_pairs 范围)，保留 2 位小数
         if total > 0:
-            _dedup_progress["progress"] = round(50 + 10 * completed / total, 2)
+            _dedup_progress["progress"] = round(STEP_SIMILAR_PAIRS_PROGRESS_START + STEP_SIMILAR_PAIRS_PROGRESS_RANGE * completed / total, 2)
     
-    # 使用阈值0.70（参考代码）
-    similar_pairs = find_similar_pairs(embeddings, names, threshold=0.70, 
+    # 使用嵌入相似度阈值
+    similar_pairs = find_similar_pairs(embeddings, names, threshold=EMBEDDING_SIMILARITY_THRESHOLD, 
                                         progress_callback=_similar_pairs_progress_callback)
     
     _dedup_progress["details"] = {"step_name": "Finding similar pairs", "completed": len(similar_pairs), "total": len(names), "message": f"找到 {len(similar_pairs)} 个相似对 (输入: {len(names)} 个公司)"}
     
     # 仅记录关键诊断日志
-    logger.info(f"获取到 {len(names)} 个公司名，找到 {len(similar_pairs)} 个相似对（阈值=0.70）")
+    logger.info(f"获取到 {len(names)} 个公司名，找到 {len(similar_pairs)} 个相似对（阈值={EMBEDDING_SIMILARITY_THRESHOLD}）")
 
     # Step 4: Score and insert into review queue
     _dedup_progress["step"] = "计算证据评分（批量）"
-    _dedup_progress["progress"] = 60
+    _dedup_progress["progress"] = STEP_EVIDENCE_PROGRESS_START
     _dedup_progress["details"] = {"step_name": "计算证据评分（批量）", "completed": 0, "total": len(similar_pairs), "message": f"正在计算证据评分... (0/{len(similar_pairs)})"}
 
     def _evidence_progress_callback(completed: int, total: int, message: str):
@@ -1387,9 +1613,9 @@ def generate_review_pairs(
             "total": total,
             "message": message
         }
-        # 更新总体进度 (60-65 范围)，保留 2 位小数
+        # 更新总体进度 (evidence 范围)，保留 2 位小数
         if total > 0:
-            _dedup_progress["progress"] = round(60 + 5 * completed / total, 2)
+            _dedup_progress["progress"] = round(STEP_EVIDENCE_PROGRESS_START + STEP_EVIDENCE_PROGRESS_RANGE * completed / total, 2)
 
     # 批量计算证据评分（减少 N+1 查询）
     pair_names = [(companies[idx_a]["name"], companies[idx_b]["name"])
@@ -1400,7 +1626,7 @@ def generate_review_pairs(
     _dedup_progress["details"] = {"step_name": "计算证据评分（批量）", "completed": len(similar_pairs), "total": len(similar_pairs), "message": f"已完成证据评分 ({len(similar_pairs)}/{len(similar_pairs)})"}
 
     _dedup_progress["step"] = "检查已存在的pair"
-    _dedup_progress["progress"] = 65
+    _dedup_progress["progress"] = STEP_CHECK_EXISTING_PROGRESS
     _dedup_progress["details"] = {"step_name": "检查已存在的pair", "completed": 0, "total": 0, "message": "正在检查已存在的pair..."}
 
     # 批量查询已存在的pair，避免循环中逐条查询
@@ -1427,7 +1653,7 @@ def generate_review_pairs(
         _dedup_progress["details"] = {"step_name": "检查已存在的pair", "completed": 0, "total": 0, "message": "检查失败，继续执行"}
 
     _dedup_progress["step"] = "计算综合评分并写入队列"
-    _dedup_progress["progress"] = 70
+    _dedup_progress["progress"] = STEP_SCORE_WRITE_PROGRESS_START
     _dedup_progress["details"] = {"step_name": "计算综合评分并写入队列", "completed": 0, "total": len(similar_pairs), "message": f"正在计算综合评分并写入队列... (0/{len(similar_pairs)})"}
 
     new_pairs_count = 0
@@ -1452,8 +1678,8 @@ def generate_review_pairs(
                 "total": len(similar_pairs),
                 "message": f"正在计算综合评分并写入队列... ({pair_idx}/{len(similar_pairs)})"
             }
-            # 更新总体进度 (70-99 范围)，保留 2 位小数
-            _dedup_progress["progress"] = round(70 + 29 * pair_idx / len(similar_pairs), 2)
+            # 更新总体进度 (score_write 范围)，保留 2 位小数
+            _dedup_progress["progress"] = round(STEP_SCORE_WRITE_PROGRESS_START + STEP_SCORE_WRITE_PROGRESS_RANGE * pair_idx / len(similar_pairs), 2)
 
         # 计算规则评分
         rule_score = calculate_rule_score(company_a["name"], company_b["name"])
@@ -1486,11 +1712,11 @@ def generate_review_pairs(
         all_llm_scores.append(llm_score_100)
         all_final_scores.append(final_score)
 
-        # Determine status (thresholds per document section 10.2)
-        if final_score > 85:
+        # Determine status (thresholds per config)
+        if final_score > AUTO_MERGE_THRESHOLD:
             status = "auto_merged"
             auto_merged_count += 1
-        elif final_score > 60:
+        elif final_score > NEED_REVIEW_THRESHOLD:
             status = "need_review"
             need_review_count += 1
         else:
@@ -1554,7 +1780,7 @@ def generate_review_pairs(
                     f"综合评分 avg={sum(all_final_scores)/len(all_final_scores):.2f}, "
                     f"自动合并: {auto_merged_count}, 待审核: {need_review_count}")
 
-    _dedup_progress["progress"] = 100
+    _dedup_progress["progress"] = STEP_COMPLETE_PROGRESS
     _dedup_progress["details"] = {
         "step_name": "完成",
         "completed": len(similar_pairs),
@@ -1575,7 +1801,7 @@ def generate_review_pairs(
 # Auto-merge High Confidence Pairs
 # ─────────────────────────────────────────────────────────────────────────────
 
-def auto_merge_high_confidence(db: Session, threshold: float = 90.0) -> int:
+def auto_merge_high_confidence(db: Session, threshold: float = HIGH_CONFIDENCE_MERGE_THRESHOLD) -> int:
     """
     Auto-merge pairs with score above threshold.
 
@@ -1890,7 +2116,7 @@ def run_deduplication_background() -> None:
                 _dedup_progress["status"] = "completed"
                 _dedup_progress["results"] = results
                 _dedup_progress["step"] = "Completed"
-                _dedup_progress["progress"] = 100
+                _dedup_progress["progress"] = STEP_COMPLETE_PROGRESS
 
             logger.info(f"Deduplication completed: {results}")
 
