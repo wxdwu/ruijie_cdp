@@ -90,8 +90,8 @@ const companyInsights = computed(() => {
   const opportunities = Number(props.customer?.funnel_opp_count || 0)
   const insights = [
     interactions > 0
-      ? `当前记录到 ${interactions} 次互动，可结合最近互动继续判断客户活跃度。`
-      : '当前暂无互动记录，客户活跃信号不足。',
+      ? `近3个月记录到 ${interactions} 次互动，可结合最近互动继续判断客户活跃度。`
+      : '近3个月暂无互动记录，客户活跃信号不足。',
     opportunities > 0
       ? `CRM 当前存在 ${opportunities} 个漏斗内商机，具备持续跟进基础。`
       : 'CRM 当前未记录漏斗内商机。',
@@ -107,7 +107,7 @@ function evidenceLabel(key) {
   const map = {
     intent_score: '意向分',
     intent_level: '意向等级',
-    interaction_count: '互动次数',
+    interaction_count: '近3个月互动次数',
     opportunity_count: '漏斗商机数',
     contact_count: '联系人',
     mobile_count: '手机号',
@@ -124,6 +124,35 @@ const help = {
     meaning: '基于客户档案、互动、商机、联系人和风险字段生成的一段业务判断。',
     sourceTables: 'dws_customer_360, dws_contact_360, dws_interaction_detail, ods_crm_opportunity_day',
     sourceFields: 'dws_customer_360.intent_score, dws_customer_360.intent_level, dws_customer_360.funnel_opp_count, dws_customer_360.role_coverage, dws_interaction_detail.event_time, ods_crm_opportunity_day.amount',
+    fields: [
+      {
+        type: 'src',
+        variable: 'intent_level',
+        meaning: '合作意向等级',
+        sourceTable: 'dws_customer_360',
+        sourceFieldDisplay: 'intent_level(意向等级)',
+        calculation: '后端读取 dws_customer_360.intent_level，生成“高/中/低意向阶段”的业务判断。',
+        emptyState: '缺失时不输出意向阶段结论。',
+      },
+      {
+        type: 'calc',
+        variable: 'interaction_count',
+        meaning: '近3个月互动次数',
+        sourceTable: 'dws_interaction_detail',
+        sourceFieldDisplay: 'customer_name(客户名称), event_time(行为发生时间), id(互动记录ID)',
+        calculation: '后端执行 COUNT(*) FROM dws_interaction_detail WHERE customer_name = 当前客户名称 AND event_time >= DATE_SUB(NOW(), INTERVAL 3 MONTH)，结果用于“近3个月互动活跃（N次）/ 近3个月有N次互动记录”。',
+        emptyState: '近3个月统计为 0 时输出“客户近3个月暂无互动记录”。',
+      },
+      {
+        type: 'src',
+        variable: 'funnel_opp_count',
+        meaning: '漏斗内商机数',
+        sourceTable: 'dws_customer_360',
+        sourceFieldDisplay: 'funnel_opp_count(漏斗商机数)',
+        calculation: '后端读取 dws_customer_360.funnel_opp_count，生成“现有N个漏斗内商机”的业务判断。',
+        emptyState: '为 0 或缺失时不输出商机维护结论。',
+      },
+    ],
     calculation: '当前业务结论由后端规则生成：先读取客户意向、互动和商机聚合字段，再结合联系人覆盖情况输出可解释结论。',
     emptyState: '缺少洞察数据时显示暂无业务结论。',
   },

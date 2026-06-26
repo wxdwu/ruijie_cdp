@@ -290,10 +290,12 @@ def get_customer_ai_insight(
 
     customer = dict(customer_row)
 
-    # Get interaction count
+    # Get recent interaction count for the business conclusion.
     interaction_count = db.execute(
         text(
-            "SELECT COUNT(*) FROM dws_interaction_detail WHERE customer_name = :cname"
+            "SELECT COUNT(*) FROM dws_interaction_detail "
+            "WHERE customer_name = :cname "
+            "  AND event_time >= DATE_SUB(NOW(), INTERVAL 3 MONTH)"
         ),
         {"cname": customer_name},
     ).scalar() or 0
@@ -315,11 +317,11 @@ def get_customer_ai_insight(
 
     # Interaction insight
     if interaction_count > 10:
-        business_conclusion.append(f"客户近期互动活跃（{interaction_count}次），购买信号强烈")
+        business_conclusion.append(f"客户近3个月互动活跃（{interaction_count}次），购买信号强烈")
     elif interaction_count > 0:
-        business_conclusion.append(f"客户有{interaction_count}次互动记录，保持跟进")
+        business_conclusion.append(f"客户近3个月有{interaction_count}次互动记录，保持跟进")
     else:
-        business_conclusion.append("客户暂无互动记录，建议主动触达")
+        business_conclusion.append("客户近3个月暂无互动记录，建议主动触达")
 
     # Opportunity insight
     if opp_count > 0:
