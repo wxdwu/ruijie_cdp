@@ -44,5 +44,10 @@ env_test/
 frontend-api-integration-guide.html
 architecture-analysis.html
 
+
 # Runtime data
 data/dedup_last_run.txt
+
+.codegraph/
+data/
+

@@ -17,7 +17,10 @@ const FIELD_COMMENTS = {
   active_opp_count: '在途商机数',
   activity_level: '活跃度',
   amount: '商机金额',
+  amount_10k: '金额(万元)',
   campaign_tag: '专项标签',
+  cancel_date: '丢单/取消日期',
+  cancel_reason: '丢单/取消原因',
   channel: '互动渠道',
   contact_count: '联系人数量',
   contact_name: '联系人姓名',
@@ -27,6 +30,8 @@ const FIELD_COMMENTS = {
   department: '部门',
   email: '邮箱',
   event_time: '互动时间',
+  expect_bid_date: '预计开标日期',
+  expect_order_date: '预计下单日期',
   forecast_type: '预测类别',
   funnel_opp_count: '漏斗商机数',
   highest_stage_opp: '最高阶段商机',
@@ -37,13 +42,19 @@ const FIELD_COMMENTS = {
   interaction_count_30d: '近30天互动次数',
   interaction_count_total: '总互动次数',
   is_active: '是否活跃商机',
+  is_cancel_lost: '是否取消/丢单',
   is_existing_customer: '是否存量客户',
+  is_funnel: '是否进入漏斗',
   is_high_value: '是否高价值行为',
   last_interaction_channel: '最近互动渠道',
   last_interaction_time: '最近互动时间',
   mobile: '手机号',
   mobile_count: '手机号数量',
   owner_name: '负责人',
+  order_amount_10k: '订单金额(万元)',
+  order_product_line: '订单产品线名称',
+  opp_code: '业务机会编码',
+  opp_name: '业务机会名称',
   position: '职位',
   product_categories: '产品分类',
   product_interests: '产品兴趣',
@@ -57,6 +68,8 @@ const FIELD_COMMENTS = {
   contact_validity: '联系人有效性',
   top_channels: 'Top互动渠道',
   top_content_types: '内容类型兴趣',
+  win_rate: '赢率(%)',
+  win_rate_1: '赢率2(%)',
   won_amount: '成交金额',
 }
 
@@ -86,6 +99,11 @@ function formatSourceField(fieldPath) {
   return `${name}(${fieldComment(fieldPath)})`
 }
 
+function formatSourceFields(value) {
+  const fields = splitList(value)
+  return fields.length ? fields.map(formatSourceField).join(', ') : '-'
+}
+
 function normalizeType(type) {
   return ['source', 'src'].includes(type) ? 'src' : 'calc'
 }
@@ -104,7 +122,7 @@ const fieldBlocks = computed(() => {
       variable: field.variable || fieldName(field.sourceField || props.help.title),
       meaning: field.meaning || fieldComment(field.sourceField || props.help.title),
       sourceTable: field.sourceTable || field.sourceTables || props.help.sourceTables || '-',
-      sourceField: field.sourceFieldDisplay || (field.sourceField ? formatSourceField(field.sourceField) : (field.sourceFields || props.help.sourceFields || '-')),
+      sourceField: field.sourceFieldDisplay || (field.sourceField ? formatSourceFields(field.sourceField) : (field.sourceFields || props.help.sourceFields || '-')),
       calculation: field.calculation || props.help.calculation || '-',
       emptyState: field.emptyState || props.help.emptyState || '-',
     }))
