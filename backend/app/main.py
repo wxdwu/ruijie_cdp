@@ -8,12 +8,15 @@ Exposes a manual trigger endpoint at POST /api/admin/etl/run.
 import asyncio
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
 
-from app.routers import customer_list, customer_detail, ai_chat, campaign, review, sync
+from app.routers import customer_list, customer_detail, ai_chat, campaign, review, sync, pool
 from app.services.etl_scheduler import start_scheduler, stop_scheduler
+from app.connection_pool import dispose_engine
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +33,8 @@ async def lifespan(app: FastAPI):
     yield
     logger.info("Stopping ETL scheduler …")
     stop_scheduler()
+    logger.info("Disposing connection pool …")
+    dispose_engine()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -59,6 +64,7 @@ app.include_router(ai_chat.router)
 app.include_router(campaign.router)
 app.include_router(review.router)
 app.include_router(sync.router)
+app.include_router(pool.router)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -68,6 +74,19 @@ app.include_router(sync.router)
 @app.get("/api/health")
 def health_check():
     return {"status": "ok", "service": "CDP ABM 360"}
+
+
+# ── Demo page (prototype, no navigation entry) ──
+
+_demo_html_path = Path(__file__).parent / "static" / "demo.html"
+
+
+@app.get("/demo", response_class=HTMLResponse)
+async def demo():
+    """Serve the CDP MVP prototype HTML page."""
+    if not _demo_html_path.exists():
+        raise HTTPException(status_code=404, detail="Demo page not found")
+    return _demo_html_path.read_text(encoding="utf-8")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
