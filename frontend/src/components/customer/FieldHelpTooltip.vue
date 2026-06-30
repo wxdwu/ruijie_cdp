@@ -1,5 +1,5 @@
 <script setup>
-import { computed } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref } from 'vue'
 
 const props = defineProps({
   help: {
@@ -158,69 +158,155 @@ const fieldBlocks = computed(() => {
 	    emptyState: props.help.emptyState || '-',
 	  }))
 	})
+
+const triggerRef = ref(null)
+const isOpen = ref(false)
+const panelStyle = ref({})
+let closeTimer = null
+
+function clearCloseTimer() {
+  if (closeTimer) {
+    window.clearTimeout(closeTimer)
+    closeTimer = null
+  }
+}
+
+function positionPanel() {
+  const trigger = triggerRef.value
+  if (!trigger) return
+
+  const rect = trigger.getBoundingClientRect()
+  const viewportWidth = window.innerWidth
+  const viewportHeight = window.innerHeight
+  const margin = 16
+  const gap = 8
+  const panelWidth = Math.min(500, viewportWidth - margin * 2)
+  const estimatedPanelHeight = Math.min(620, viewportHeight - 96)
+
+  let left = props.align === 'end'
+    ? rect.right - panelWidth
+    : rect.left
+  left = Math.max(margin, Math.min(left, viewportWidth - panelWidth - margin))
+
+  let top = rect.bottom + gap
+  if (top + estimatedPanelHeight > viewportHeight - margin) {
+    top = Math.max(margin, rect.top - estimatedPanelHeight - gap)
+  }
+
+  panelStyle.value = {
+    top: `${top}px`,
+    left: `${left}px`,
+    width: `${panelWidth}px`,
+    maxHeight: `${Math.min(620, viewportHeight - top - margin)}px`,
+  }
+}
+
+async function openPanel() {
+  clearCloseTimer()
+  isOpen.value = true
+  await nextTick()
+  positionPanel()
+  window.addEventListener('resize', positionPanel)
+  window.addEventListener('scroll', positionPanel, true)
+}
+
+function scheduleClose() {
+  clearCloseTimer()
+  closeTimer = window.setTimeout(() => {
+    if (document.activeElement === triggerRef.value) return
+    isOpen.value = false
+    window.removeEventListener('resize', positionPanel)
+    window.removeEventListener('scroll', positionPanel, true)
+  }, 120)
+}
+
+onBeforeUnmount(() => {
+  clearCloseTimer()
+  window.removeEventListener('resize', positionPanel)
+  window.removeEventListener('scroll', positionPanel, true)
+})
 </script>
 
 <template>
-  <span class="field-help" :class="`field-help--${align}`">
+  <span
+    class="field-help"
+    :class="`field-help--${align}`"
+    @mouseenter="openPanel"
+    @mouseleave="scheduleClose"
+  >
     <button
+      ref="triggerRef"
       type="button"
       class="field-help__trigger"
       :aria-label="`查看${help.title}字段来源`"
+      :aria-expanded="isOpen"
+      @click.stop="openPanel"
+      @focus="openPanel"
+      @blur="scheduleClose"
     >
       ?
     </button>
-    <span class="field-help__panel" role="tooltip">
-      <span class="field-help__kicker">字段路径</span>
-      <span class="field-help__title">
-        {{ help.title }}
-      </span>
-      <span class="field-help__fields">
-        <span
-          v-for="(field, index) in fieldBlocks"
-          :key="`${field.variable}-${index}`"
-          class="field-help__field-card"
-        >
-          <span class="field-help__field-title">
-            <span
-              class="field-help__type"
-              :class="field.type === 'src' ? 'field-help__type--src' : 'field-help__type--calc'"
-            >
-              {{ field.type === 'src' ? '源字段' : '计算' }}
+    <Teleport to="body">
+      <span
+        v-if="isOpen"
+        class="field-help__panel"
+        :style="panelStyle"
+        role="tooltip"
+        @mouseenter="clearCloseTimer"
+        @mouseleave="scheduleClose"
+      >
+        <span class="field-help__kicker">字段路径</span>
+        <span class="field-help__title">
+          {{ help.title }}
+        </span>
+        <span class="field-help__fields">
+          <span
+            v-for="(field, index) in fieldBlocks"
+            :key="`${field.variable}-${index}`"
+            class="field-help__field-card"
+          >
+            <span class="field-help__field-title">
+              <span
+                class="field-help__type"
+                :class="field.type === 'src' ? 'field-help__type--src' : 'field-help__type--calc'"
+              >
+                {{ field.type === 'src' ? '源字段' : '计算' }}
+              </span>
             </span>
-          </span>
-          <span class="field-help__grid">
-            <span class="field-help__row">
-              <span>含义</span>
-              <b>{{ field.meaning }}</b>
-            </span>
-            <span class="field-help__row">
-              <span>字段路径</span>
-              <b>{{ field.path }}</b>
-            </span>
-            <span class="field-help__row">
-              <span>来源表</span>
-              <b>{{ field.sourceTable }}</b>
-            </span>
-            <span class="field-help__row">
-              <span>来源字段</span>
-              <b>{{ field.sourceField }}</b>
-            </span>
-            <span class="field-help__row">
-              <span>计算逻辑</span>
-              <b>{{ field.calculation }}</b>
-            </span>
-            <span class="field-help__row">
-              <span>时间口径</span>
-              <b>{{ field.timeRule }}</b>
-            </span>
-            <span class="field-help__row">
-              <span>空值处理</span>
-              <b>{{ field.emptyState }}</b>
+            <span class="field-help__grid">
+              <span class="field-help__row">
+                <span>含义</span>
+                <b>{{ field.meaning }}</b>
+              </span>
+              <span class="field-help__row">
+                <span>字段路径</span>
+                <b>{{ field.path }}</b>
+              </span>
+              <span class="field-help__row">
+                <span>来源表</span>
+                <b>{{ field.sourceTable }}</b>
+              </span>
+              <span class="field-help__row">
+                <span>来源字段</span>
+                <b>{{ field.sourceField }}</b>
+              </span>
+              <span class="field-help__row">
+                <span>计算逻辑</span>
+                <b>{{ field.calculation }}</b>
+              </span>
+              <span class="field-help__row">
+                <span>时间口径</span>
+                <b>{{ field.timeRule }}</b>
+              </span>
+              <span class="field-help__row">
+                <span>空值处理</span>
+                <b>{{ field.emptyState }}</b>
+              </span>
             </span>
           </span>
         </span>
       </span>
-    </span>
+    </Teleport>
   </span>
 </template>
 
@@ -263,12 +349,8 @@ const fieldBlocks = computed(() => {
 }
 
 .field-help__panel {
-  position: absolute;
-  z-index: 1001;
-  top: 24px;
-  left: 0;
-  display: none;
-  width: min(500px, calc(100vw - 48px));
+  position: fixed;
+  z-index: 9999;
   max-height: min(620px, calc(100vh - 96px));
   overflow-y: auto;
   padding: 12px;
@@ -281,16 +363,6 @@ const fieldBlocks = computed(() => {
   line-height: 1.55;
   text-align: left;
   white-space: normal;
-}
-
-.field-help--end .field-help__panel {
-  right: 0;
-  left: auto;
-}
-
-.field-help:hover .field-help__panel,
-.field-help:focus-within .field-help__panel {
-  display: block;
 }
 
 .field-help__kicker {

@@ -29,13 +29,16 @@ const stageData = ref({ stages: [], total: 0 })
 const roleData = ref({ roles: [], total_customers: 0 })
 const tagData = ref({ signals: [] })
 const contentData = ref({ data: [] })
-const customerData = ref({ flat: [], filter_options: { stages: [], owners: [] } })
+const customerData = ref({ flat: [], total: 0, page: 1, page_size: 10, total_pages: 1, filter_options: { stages: [], owners: [] } })
+const customerPage = ref(1)
+const CUSTOMER_PAGE_SIZE = 10
 
 const channelLabels = {
   web: '官网',
   email: '邮件',
   event: '直播/活动',
   wechat: '微信',
+  '无渠道/未触达': '无渠道/未触达',
 }
 
 const kpiCards = computed(() => [
@@ -44,7 +47,7 @@ const kpiCards = computed(() => [
     key: 'total_customers',
     label: '总客户数',
     value: formatNumber(kpiData.value.total_customers),
-    caption: '专项/行业/渠道/时间筛选后的去重客户',
+    caption: '专项/行业筛选后的去重客户',
     tag: 'Accounts',
     tone: 'blue',
   },
@@ -62,7 +65,7 @@ const kpiCards = computed(() => [
     key: 'opportunity_count',
     label: '商机数',
     value: formatNumber(kpiData.value.opportunity_count),
-    caption: 'active_opp_count 优先，缺省回退漏斗商机',
+    caption: '当前客户池内可追踪商机数量',
     tag: 'Oppty',
     tone: 'green',
   },
@@ -80,7 +83,7 @@ const kpiCards = computed(() => [
     key: 'deal_customers',
     label: '对单客户',
     value: formatNumber(kpiData.value.deal_customers),
-    caption: 'won_amount>0 或阶段6',
+    caption: '已成交或已进入采购完成阶段',
     tag: 'Deal',
     tone: 'gold',
   },
@@ -93,6 +96,7 @@ const filterHint = computed(() => {
   const industry = filters.industry || '全部行业'
   return `${campaign} ｜窗口 ${start} 至 ${end} ｜${industry} ｜样例客户 ${formatNumber(kpiData.value.total_customers)} 家`
 })
+const customerTotalPages = computed(() => Math.max(1, Number(customerData.value.total_pages || 1)))
 
 function formatNumber(value, digits = 0) {
   const number = Number(value || 0)
@@ -148,8 +152,10 @@ async function fetchFilterOptions() {
 async function fetchCustomerData() {
   customerData.value = await fetchJson('/customers-by-stage', {
     ...customerFilters,
-    limit: 30,
+    page: customerPage.value,
+    page_size: CUSTOMER_PAGE_SIZE,
   })
+  customerPage.value = customerData.value.page || customerPage.value
 }
 
 async function fetchData() {
@@ -189,10 +195,19 @@ async function applyFilters() {
   customerFilters.stage = ''
   customerFilters.owner = ''
   customerFilters.keyword = ''
+  customerPage.value = 1
   await fetchData()
 }
 
 async function applyCustomerFilters() {
+  customerPage.value = 1
+  await fetchCustomerData()
+}
+
+async function changeCustomerPage(page) {
+  const nextPage = Math.min(Math.max(1, page), customerTotalPages.value)
+  if (nextPage === customerPage.value) return
+  customerPage.value = nextPage
   await fetchCustomerData()
 }
 
@@ -287,7 +302,7 @@ onMounted(async () => {
     </section>
 
     <div class="grid-two">
-      <section class="panel">
+      <section class="panel opportunity-panel">
         <div class="panel-header">
           <div class="panel-meta">
             <b>商机预测类别分布 <FieldHelpTooltip :help="getCampaignHelp('opportunity_distribution')" /></b>
@@ -295,7 +310,7 @@ onMounted(async () => {
           </div>
           <span class="panel-tag">Opportunity</span>
         </div>
-        <div class="stack-list">
+        <div class="stack-list opportunity-list">
           <div v-for="item in opportunityData.categories" :key="item.forecast_type" class="stack-item">
             <div class="stack-row">
               <b>{{ item.forecast_type }}</b>
@@ -313,27 +328,29 @@ onMounted(async () => {
         </div>
       </section>
 
-      <section class="panel">
+      <section class="panel channel-panel">
         <div class="panel-header">
           <div class="panel-meta">
             <b>渠道归因 <FieldHelpTooltip :help="getCampaignHelp('channel_attribution')" /></b>
-            <span class="panel-sub">官网 / 直播 / 邮件 / 微信</span>
+            <span class="panel-sub">按最近互动渠道归因</span>
           </div>
           <span class="panel-tag">Pie</span>
         </div>
-        <div class="channel-ring">
-          <div class="ring-core">
-            <strong>{{ formatNumber(channelData.total) }}</strong>
-            <span>互动</span>
+        <div class="channel-layout">
+          <div class="channel-ring">
+            <div class="ring-core">
+              <strong>{{ formatNumber(channelData.total) }}</strong>
+              <span>客户</span>
+            </div>
           </div>
-        </div>
-        <div class="channel-list">
-          <div v-for="item in channelData.channels" :key="item.channel" class="channel-item">
-            <span>{{ channelLabel(item.channel) }}</span>
-            <b>{{ item.percentage }}%</b>
-            <em>{{ formatNumber(item.count) }} 次</em>
+          <div class="channel-list">
+            <div v-for="item in channelData.channels" :key="item.channel" class="channel-item">
+              <span>{{ channelLabel(item.channel) }}</span>
+              <b>{{ item.percentage }}%</b>
+              <em>{{ formatNumber(item.count) }} 家</em>
+            </div>
+            <div v-if="!channelData.channels?.length" class="empty-state">暂无数据</div>
           </div>
-          <div v-if="!channelData.channels?.length" class="empty-state">暂无数据</div>
         </div>
       </section>
     </div>
@@ -377,14 +394,16 @@ onMounted(async () => {
         <div class="panel-header">
           <div class="panel-meta">
             <b>标签与痛点信号 <FieldHelpTooltip :help="getCampaignHelp('tag_signals')" /></b>
-            <span class="panel-sub">DWS 可用字段降级抽取</span>
+            <span class="panel-sub">按客户主表行业标签统计</span>
           </div>
           <span class="panel-tag">Tags</span>
         </div>
-        <div class="signal-cloud">
-          <span v-for="item in tagData.signals" :key="`${item.type}-${item.signal}`">
-            {{ item.signal }} <b>{{ item.count }}</b>
-          </span>
+        <div class="compact-bars">
+          <div v-for="item in tagData.signals" :key="`${item.type}-${item.signal}`" class="compact-bar">
+            <span>{{ item.signal }}</span>
+            <div class="bar-track"><i :style="{ width: barWidth(item.count, tagData.signals) }"></i></div>
+            <b>{{ formatNumber(item.count) }} 家</b>
+          </div>
           <div v-if="!tagData.signals?.length" class="empty-state">暂无信号</div>
         </div>
       </section>
@@ -415,12 +434,12 @@ onMounted(async () => {
             </tr>
           </thead>
           <tbody>
-            <tr v-for="item in contentData.data" :key="`${item.content}-${item.type}`">
+            <tr v-for="item in contentData.data" :key="item.content" class="content-effect-row">
               <td><b>{{ item.content }}</b></td>
               <td>{{ item.type }}</td>
               <td>{{ item.role }}</td>
               <td>{{ item.content_interest }}</td>
-              <td>{{ item.product_interest }}</td>
+              <td>{{ item.product_interest || '-' }}</td>
               <td>{{ item.open_rate }}%</td>
               <td>{{ item.click_rate }}%</td>
               <td>{{ item.mql }}</td>
@@ -515,6 +534,28 @@ onMounted(async () => {
             </tr>
           </tbody>
         </table>
+      </div>
+      <div class="pagination-bar">
+        <span>共 {{ formatNumber(customerData.total) }} 家客户</span>
+        <div class="pagination-actions">
+          <button
+            class="secondary-btn"
+            type="button"
+            :disabled="customerPage <= 1"
+            @click="changeCustomerPage(customerPage - 1)"
+          >
+            上一页
+          </button>
+          <b>第 {{ customerPage }} / {{ customerTotalPages }} 页</b>
+          <button
+            class="secondary-btn"
+            type="button"
+            :disabled="customerPage >= customerTotalPages"
+            @click="changeCustomerPage(customerPage + 1)"
+          >
+            下一页
+          </button>
+        </div>
       </div>
     </section>
   </div>
@@ -656,6 +697,13 @@ onMounted(async () => {
   color: var(--brand);
 }
 
+.secondary-btn:disabled {
+  border-color: var(--line);
+  background: var(--surface);
+  color: var(--muted);
+  cursor: not-allowed;
+}
+
 .kpi-grid {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
@@ -716,7 +764,8 @@ onMounted(async () => {
 
 .grid-two {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(340px, .72fr);
+  align-items: stretch;
+  grid-template-columns: minmax(0, 1.28fr) minmax(360px, .9fr);
   gap: 16px;
 }
 
@@ -733,11 +782,25 @@ onMounted(async () => {
   gap: 12px;
 }
 
+.opportunity-panel,
+.channel-panel {
+  min-height: 300px;
+}
+
+.opportunity-list {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
 .stack-item {
   border: 1px solid rgba(90, 167, 255, .12);
   border-radius: 8px;
   background: var(--surface);
   padding: 12px;
+}
+
+.opportunity-list .stack-item {
+  padding: 10px 12px;
 }
 
 .stack-row b,
@@ -767,7 +830,7 @@ onMounted(async () => {
 }
 
 .stack-item .bar-track {
-  margin: 10px 0 8px;
+  margin: 8px 0 7px;
 }
 
 .bar-track i {
@@ -785,15 +848,23 @@ onMounted(async () => {
 .channel-ring {
   display: grid;
   place-items: center;
-  min-height: 150px;
+  min-height: 0;
+}
+
+.channel-layout {
+  display: grid;
+  grid-template-columns: 168px minmax(0, 1fr);
+  align-items: center;
+  gap: 18px;
+  min-height: 210px;
 }
 
 .ring-core {
   display: grid;
   place-items: center;
-  width: 132px;
-  height: 132px;
-  border: 16px solid rgba(90, 167, 255, .20);
+  width: 142px;
+  height: 142px;
+  border: 17px solid rgba(90, 167, 255, .20);
   border-top-color: #5aa7ff;
   border-right-color: #2dd4bf;
   border-radius: 999px;
@@ -811,8 +882,12 @@ onMounted(async () => {
 }
 
 .channel-item {
-  border-top: 1px solid var(--line);
-  padding-top: 9px;
+  display: grid;
+  grid-template-columns: minmax(72px, 1fr) 64px minmax(76px, auto);
+  border: 1px solid rgba(90, 167, 255, .12);
+  border-radius: 8px;
+  background: var(--surface);
+  padding: 10px 12px;
 }
 
 .channel-item b,
@@ -824,7 +899,7 @@ onMounted(async () => {
 
 .compact-bar {
   display: grid;
-  grid-template-columns: minmax(120px, 1fr) minmax(100px, 1fr) 42px;
+  grid-template-columns: minmax(120px, 1fr) minmax(100px, 1fr) 72px;
 }
 
 .signal-panel {
@@ -871,6 +946,33 @@ td {
   padding: 11px 9px;
   text-align: left;
   vertical-align: top;
+}
+
+.content-effect-row td {
+  padding-top: 15px;
+  padding-bottom: 15px;
+}
+
+.pagination-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 14px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.pagination-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.pagination-actions b {
+  color: var(--text);
+  font-size: 13px;
+  white-space: nowrap;
 }
 
 th {
@@ -933,6 +1035,11 @@ td small {
 @media (max-width: 900px) {
   .filter-grid,
   .follow-filter-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .opportunity-list,
+  .channel-layout {
     grid-template-columns: 1fr;
   }
 

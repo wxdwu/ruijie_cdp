@@ -207,6 +207,10 @@ def get_campaign_kpis(
 ) -> Dict[str, Any]:
     """Get 5 campaign KPI cards using the shared campaign filters."""
 
+    total_customer_where, total_customer_params = _campaign_filters(
+        campaign_tag=campaign_tag,
+        industry=industry,
+    )
     customer_where, customer_params = _campaign_filters(
         campaign_tag=campaign_tag,
         industry=industry,
@@ -224,8 +228,8 @@ def get_campaign_kpis(
     )
 
     total_customers = db.execute(
-        text(f"SELECT COUNT(DISTINCT c.customer_name) FROM dws_customer_360 c WHERE {_where_sql(customer_where)}"),
-        customer_params,
+        text(f"SELECT COUNT(DISTINCT c.customer_name) FROM dws_customer_360 c WHERE {_where_sql(total_customer_where)}"),
+        total_customer_params,
     ).scalar() or 0
 
     active_customers = db.execute(
@@ -270,9 +274,6 @@ def get_funnel_distribution(
     where_parts, params = _campaign_filters(
         campaign_tag=campaign_tag,
         industry=industry,
-        channel=channel,
-        start_date=start_date,
-        end_date=end_date,
     )
     rows = db.execute(
         text(
@@ -314,31 +315,30 @@ def get_channel_distribution(
     industry: Optional[str] = None,
     db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
-    """Get channel attribution from dws_interaction_detail."""
+    """Get customer-level channel attribution from dws_customer_360."""
 
-    where_parts, params = _interaction_filters(
+    where_parts, params = _campaign_filters(
         campaign_tag=campaign_tag,
         industry=industry,
-        channel=channel,
-        start_date=start_date,
-        end_date=end_date,
     )
     rows = db.execute(
         text(
-            "SELECT i.channel, COUNT(*) AS count, COUNT(DISTINCT i.customer_name) AS customers "
-            "FROM dws_interaction_detail i "
+            "SELECT COALESCE(NULLIF(c.last_interaction_channel, ''), '无渠道/未触达') AS channel, "
+            "COUNT(DISTINCT c.customer_name) AS customer_count "
+            "FROM dws_customer_360 c "
             f"WHERE {_where_sql(where_parts)} "
-            "GROUP BY i.channel ORDER BY count DESC"
+            "GROUP BY COALESCE(NULLIF(c.last_interaction_channel, ''), '无渠道/未触达') "
+            "ORDER BY customer_count DESC"
         ),
         params,
     ).fetchall()
-    total = sum(int(row.count or 0) for row in rows)
+    total = sum(int(row.customer_count or 0) for row in rows)
     channels = [
         {
             "channel": row.channel,
-            "count": int(row.count or 0),
-            "customers": int(row.customers or 0),
-            "percentage": _percentage(int(row.count or 0), total),
+            "count": int(row.customer_count or 0),
+            "customers": int(row.customer_count or 0),
+            "percentage": _percentage(int(row.customer_count or 0), total),
         }
         for row in rows
     ]
@@ -359,9 +359,6 @@ def get_role_coverage(
     where_parts, params = _campaign_filters(
         campaign_tag=campaign_tag,
         industry=industry,
-        channel=channel,
-        start_date=start_date,
-        end_date=end_date,
     )
     rows = db.execute(
         text(
@@ -400,9 +397,6 @@ def get_stage_distribution(
     where_parts, params = _campaign_filters(
         campaign_tag=campaign_tag,
         industry=industry,
-        channel=channel,
-        start_date=start_date,
-        end_date=end_date,
     )
     rows = db.execute(
         text(
@@ -436,16 +430,6 @@ def get_tag_signals(
     customer_where, customer_params = _campaign_filters(
         campaign_tag=campaign_tag,
         industry=industry,
-        channel=channel,
-        start_date=start_date,
-        end_date=end_date,
-    )
-    interaction_where, interaction_params = _interaction_filters(
-        campaign_tag=campaign_tag,
-        industry=industry,
-        channel=channel,
-        start_date=start_date,
-        end_date=end_date,
     )
 
     industry_rows = db.execute(
@@ -457,19 +441,10 @@ def get_tag_signals(
         ),
         customer_params,
     ).fetchall()
-    behavior_rows = db.execute(
-        text(
-            "SELECT i.behavior_type AS signal_name, COUNT(*) AS signal_count, '行为/内容' AS signal_type "
-            "FROM dws_interaction_detail i "
-            f"WHERE {_where_sql(interaction_where)} AND i.behavior_type IS NOT NULL AND i.behavior_type != '' "
-            "GROUP BY i.behavior_type ORDER BY signal_count DESC LIMIT 8"
-        ),
-        interaction_params,
-    ).fetchall()
     signals = [
         {"signal": row.signal_name, "count": int(row.signal_count or 0), "type": row.signal_type}
-        for row in [*industry_rows, *behavior_rows]
-    ][:12]
+        for row in industry_rows
+    ]
     return {"signals": signals, "help_key": "tag_signals"}
 
 
@@ -494,18 +469,27 @@ def get_content_effect(
     rows = db.execute(
         text(
             "SELECT "
-            "COALESCE(NULLIF(i.content, ''), NULLIF(i.behavior_type, ''), '未标注内容') AS content, "
-            "COALESCE(NULLIF(i.behavior_type, ''), '互动事件') AS type, "
+            "i.content AS content, "
             "COUNT(*) AS touch_count, "
             "COUNT(DISTINCT i.customer_name) AS unique_customers, "
-            "SUM(CASE WHEN i.behavior_type = '打开邮件' THEN 1 ELSE 0 END) AS opens, "
-            "SUM(CASE WHEN i.behavior_type != '打开邮件' THEN 1 ELSE 0 END) AS clicks, "
+            "SUM(CASE WHEN CONCAT_WS(' ', i.behavior_type, i.content) LIKE '%打开%' "
+            " OR CONCAT_WS(' ', i.behavior_type, i.content) LIKE '%浏览%' "
+            " OR CONCAT_WS(' ', i.behavior_type, i.content) LIKE '%触达%' "
+            " OR UPPER(CONCAT_WS(' ', i.behavior_type, i.content)) LIKE '%PAGE_VIEW%' "
+            " THEN 1 ELSE 0 END) AS opens, "
+            "SUM(CASE WHEN CONCAT_WS(' ', i.behavior_type, i.content) LIKE '%点击%' "
+            " OR CONCAT_WS(' ', i.behavior_type, i.content) LIKE '%下载%' "
+            " OR CONCAT_WS(' ', i.behavior_type, i.content) LIKE '%提交%' "
+            " OR CONCAT_WS(' ', i.behavior_type, i.content) LIKE '%咨询%' "
+            " OR CONCAT_WS(' ', i.behavior_type, i.content) LIKE '%报名%' "
+            " OR CONCAT_WS(' ', i.behavior_type, i.content) LIKE '%留资%' "
+            " OR LOWER(CONCAT_WS(' ', i.behavior_type, i.content)) LIKE '%click_%' "
+            " THEN 1 ELSE 0 END) AS clicks, "
             "SUM(CASE WHEN i.is_high_value = 1 THEN 1 ELSE 0 END) AS mql "
             "FROM dws_interaction_detail i "
-            f"WHERE {_where_sql(where_parts)} "
-            "GROUP BY COALESCE(NULLIF(i.content, ''), NULLIF(i.behavior_type, ''), '未标注内容'), "
-            "COALESCE(NULLIF(i.behavior_type, ''), '互动事件') "
-            "ORDER BY touch_count DESC LIMIT 20"
+            f"WHERE {_where_sql(where_parts)} AND i.content IS NOT NULL AND i.content != '' "
+            "GROUP BY i.content "
+            "ORDER BY unique_customers DESC, clicks DESC, touch_count DESC LIMIT 10"
         ),
         params,
     ).fetchall()
@@ -513,14 +497,14 @@ def get_content_effect(
     data = [
         {
             "content": row.content,
-            "type": row.type,
+            "type": "互动内容",
             "role": "按内容主题识别",
             "content_interest": row.content,
-            "product_interest": row.type,
+            "product_interest": "",
             "touch_count": int(row.touch_count or 0),
             "unique_customers": int(row.unique_customers or 0),
-            "open_rate": round((int(row.opens or 0) / max(1, int(row.touch_count or 0)) * 100), 2),
-            "click_rate": round((int(row.clicks or 0) / max(1, int(row.touch_count or 0)) * 100), 2),
+            "open_rate": round((int(row.opens or 0) / max(1, int(row.unique_customers or 0)) * 100), 2),
+            "click_rate": round((int(row.clicks or 0) / max(1, int(row.unique_customers or 0)) * 100), 2),
             "mql": int(row.mql or 0),
             "sql": 0,
             "deal": 0,
@@ -540,7 +524,8 @@ def get_customers_by_stage(
     stage: Optional[str] = Query(None, description="Filter by purchase stage"),
     owner: Optional[str] = Query(None, description="Filter by owner name"),
     keyword: Optional[str] = Query(None, description="Search by customer name"),
-    limit: int = Query(20, ge=1, le=100, description="Maximum customers to return"),
+    page: int = Query(1, ge=1, description="Page number"),
+    page_size: int = Query(10, ge=1, le=100, description="Customers per page"),
     db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
     """Get customers for follow-up table."""
@@ -548,9 +533,6 @@ def get_customers_by_stage(
     where_parts, params = _campaign_filters(
         campaign_tag=campaign_tag,
         industry=industry,
-        channel=channel,
-        start_date=start_date,
-        end_date=end_date,
         stage=stage,
         owner=owner,
         keyword=keyword,
@@ -561,6 +543,9 @@ def get_customers_by_stage(
         text(f"SELECT COUNT(*) FROM dws_customer_360 c WHERE {where_sql}"),
         params,
     ).scalar() or 0
+    total_pages = max(1, (int(total) + page_size - 1) // page_size)
+    current_page = min(page, total_pages)
+    offset = (current_page - 1) * page_size
 
     rows = db.execute(
         text(
@@ -572,9 +557,9 @@ def get_customers_by_stage(
             "FROM dws_customer_360 c "
             f"WHERE {where_sql} "
             "ORDER BY c.intent_score DESC, c.active_opp_amount DESC, c.customer_name ASC "
-            "LIMIT :limit"
+            "LIMIT :page_size OFFSET :offset"
         ),
-        {**params, "limit": limit},
+        {**params, "page_size": page_size, "offset": offset},
     ).fetchall()
 
     customers = [
@@ -607,9 +592,6 @@ def get_customers_by_stage(
     option_where, option_params = _campaign_filters(
         campaign_tag=campaign_tag,
         industry=industry,
-        channel=channel,
-        start_date=start_date,
-        end_date=end_date,
     )
     option_sql = _where_sql(option_where)
     stage_rows = db.execute(
@@ -633,6 +615,9 @@ def get_customers_by_stage(
         "grouped": grouped,
         "flat": customers,
         "total": total,
+        "page": current_page,
+        "page_size": page_size,
+        "total_pages": total_pages,
         "filters_applied": {
             "campaign_tag": campaign_tag,
             "start_date": start_date,
