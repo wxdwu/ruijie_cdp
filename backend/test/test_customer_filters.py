@@ -39,8 +39,8 @@ def _run_router_query(db, **filters):
         owner_keyword=None,
         stage=None,
         intent_level=None,
-        interaction_min=None,
-        interaction_period=30,
+        interaction_min=filters.get("interaction_min"),
+        interaction_period=filters.get("interaction_period", 30),
         attribute=filters.get("attribute"),
         channel=None,
         sort=None,
@@ -129,6 +129,32 @@ class TestCustomerFilters(unittest.TestCase):
                 sql, params = db.calls[0]
                 self.assertIn("(attribute IS NULL OR attribute != :heavy_attribute)", sql)
                 self.assertEqual(params["heavy_attribute"], "H")
+
+    def test_zero_interaction_min_does_not_filter_interactions(self):
+        for runner in self.runners:
+            with self.subTest(runner=runner.__name__):
+                db = _RecordingDb()
+
+                runner(db, interaction_min=0)
+
+                sql, params = db.calls[0]
+                self.assertNotIn("dws_interaction_detail", sql)
+                self.assertNotIn("HAVING COUNT(*)", sql)
+                self.assertNotIn("interaction_min", params)
+                self.assertNotIn("period", params)
+
+    def test_positive_interaction_min_filters_by_interactions(self):
+        for runner in self.runners:
+            with self.subTest(runner=runner.__name__):
+                db = _RecordingDb()
+
+                runner(db, interaction_min=1, interaction_period=30)
+
+                sql, params = db.calls[0]
+                self.assertIn("dws_interaction_detail", sql)
+                self.assertIn("HAVING COUNT(*) >= :interaction_min", sql)
+                self.assertEqual(params["interaction_min"], 1)
+                self.assertEqual(params["period"], 30)
 
 
 if __name__ == "__main__":

@@ -88,7 +88,7 @@ def get_customer_list(
     if intent_level:
         where_parts.append("intent_level = :intent_level")
         params["intent_level"] = intent_level
-    if interaction_min is not None:
+    if interaction_min is not None and interaction_min > 0:
         # 使用子查询动态计算指定时间范围内的互动次数
         where_parts.append("""
             customer_name IN (

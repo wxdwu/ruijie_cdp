@@ -73,7 +73,8 @@ const help = {
         meaning: '合作意向分',
         sourceTable: 'dws_customer_360',
         sourceFieldDisplay: 'intent_score(合作意向分)',
-        calculation: '页面直接展示 dws_customer_360.intent_score。',
+        calculation: 'ETL 计算：intent_score = min(100, interaction_count_30d × 2 + (active_opp_count > 0 ? 20 : 0) + (contact_count >= 3 ? 10 : contact_count × 3))。即近30天每次互动加2分，有在途商机加20分，联系人数量最多加10分，最终封顶100分。',
+        timeRule: 'interaction_count_30d 为近30天互动次数；详情页展示时会按当前日期往前30天动态覆盖近30天互动数。',
         emptyState: '无意向信号时显示 0。',
       },
       {
@@ -82,7 +83,7 @@ const help = {
         meaning: '合作意向等级',
         sourceTable: 'dws_customer_360',
         sourceFieldDisplay: 'intent_level(合作意向等级)',
-        calculation: '页面直接展示 dws_customer_360.intent_level。',
+        calculation: 'ETL 映射：近30天互动次数 >= 10 且存在在途商机时为“高”；近30天互动次数 >= 3 时为“中”；历史总互动次数 > 0 时为“低”；否则为“无”。',
         emptyState: '无意向等级时显示无或 -。',
       },
       {
@@ -91,7 +92,8 @@ const help = {
         meaning: '近30天互动次数',
         sourceTable: 'dws_customer_360',
         sourceFieldDisplay: 'interaction_count_30d(近30天互动次数)',
-        calculation: '-',
+        calculation: '用于意向分计算的互动活跃度信号；当前详情页按 dws_interaction_detail.event_time >= DATE_SUB(NOW(), INTERVAL 30 DAY) 重新计算展示值。',
+        timeRule: '以当前日期为基准向前推30天。',
         emptyState: '无互动信号时显示 0 次。',
       },
     ],
