@@ -24,6 +24,8 @@ services:
       timeout: 10s
       retries: 10
       start_period: 30s
+    networks:
+      - ruijie_cdp
 
   nginx:
     build:
@@ -34,4 +36,10 @@ services:
       backend:
         condition: service_started
     ports:
-      - "${NGINX_PORT:-8081}:80"
+      - "${NGINX_PORT:-28080}:80"
+    networks:
+      - ruijie_cdp
+
+networks:
+  ruijie_cdp:
+    driver: bridge
