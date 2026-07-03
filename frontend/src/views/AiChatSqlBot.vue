@@ -17,7 +17,8 @@ onMounted(() => {
   const script = document.createElement('script')
   script.defer = true
   script.async = true
-  script.src = 'http://117.50.145.93:8010/xpack_static/sqlbot-embedded-dynamic.umd.js'
+  // script.src = 'http://117.50.145.93:8010/xpack_static/sqlbot-embedded-dynamic.umd.js'
+  script.src = 'http://192.168.159.22:18000/xpack_static/sqlbot-embedded-dynamic.umd.js'
   
   // 添加加载成功回调
   script.onload = () => {
@@ -27,7 +28,8 @@ onMounted(() => {
   // 添加加载失败回调
   script.onerror = () => {
     console.error('[SQLBot] SDK 脚本加载失败，请检查：')
-    console.error('  1. SQLBot 服务是否运行在 http://117.50.145.93:8010')
+    console.error('  1. SQLBot 服务是否运行在 192.168.159.22:18000')
+    // console.error('  1. SQLBot 服务是否运行在 http://117.50.145.93:8010')
     console.error('  2. 浏览器是否阻止了 HTTP 资源（混合内容）')
     console.error('  3. 网络连接是否正常')
   }
@@ -44,7 +46,8 @@ onMounted(() => {
       console.log('[SQLBot] SDK 已就绪，开始挂载...')
       try {
         ;(window as any).sqlbot_embedded_handler.mounted('.copilot', {
-          embeddedId: '7478264506984960000',
+          //embeddedId: '7478264506984960000',
+          embeddedId: '7475721140279709696',
         })
         console.log('[SQLBot] 挂载成功！')
         if (sqlbot_embedded_timer) clearInterval(sqlbot_embedded_timer)
