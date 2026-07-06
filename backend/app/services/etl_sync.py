@@ -984,6 +984,49 @@ def _build_customer_360() -> int:
         "  END"
     )
 
+    # ── Phase 5: Enrich/Insert with ods_key_customer (重要客户) ─────────
+    logger.info("Phase 5: Enriching with ods_key_customer...")
+
+    # Step 1: UPDATE existing customers (match by key_customer_name -> customer_name)
+    # 字段映射：
+    #   ods.key_customer_name -> dws.customer_name (客户公司名称, 用于匹配)
+    #   ods.customer_name      -> dws.owner_name    (客户公司负责人)
+    #   ods.department_level3  -> dws.region        (区域)
+    #   ods.industry_category  -> dws.industry      (行业)
+    #   ods.attribute          -> dws.attribute     (属性 H/M/L/空)
+    n = _exec(
+        "UPDATE dws_customer_360 c360 "
+        "INNER JOIN ods_key_customer kc "
+        "  ON kc.key_customer_name = c360.customer_name COLLATE utf8mb4_0900_ai_ci "
+        "SET "
+        "  c360.owner_name = COALESCE(kc.customer_name, c360.owner_name), "
+        "  c360.region    = COALESCE(kc.department_level3, c360.region), "
+        "  c360.industry  = COALESCE(kc.industry_category, c360.industry), "
+        "  c360.attribute = COALESCE(kc.attribute, c360.attribute)"
+    )
+    logger.info("  Updated %d rows by key_customer_name", n)
+
+    # Step 2: INSERT new customers (by key_customer_name)
+    n = _exec(
+        "INSERT IGNORE INTO dws_customer_360 ("
+        "  customer_name, owner_name, region, industry, attribute, updated_at"
+        ") "
+        "SELECT DISTINCT "
+        "  kc.key_customer_name, "
+        "  kc.customer_name, "
+        "  kc.department_level3, "
+        "  kc.industry_category, "
+        "  kc.attribute, "
+        "  NOW() "
+        "FROM ods_key_customer kc "
+        "WHERE kc.key_customer_name IS NOT NULL AND kc.key_customer_name != '' "
+        "  AND kc.key_customer_name NOT IN ("
+        "    SELECT customer_name FROM dws_customer_360"
+        "  )"
+    )
+    logger.info("  Inserted %d new rows by key_customer_name", n)
+    logger.info("Phase 5 done: ods_key_customer enriched")
+
     total = _table_count("dws_customer_360")
     logger.info("Customer 360 complete: %d rows", total)
     return total
@@ -2519,7 +2562,55 @@ def _incremental_build_customer_360(batch_id: int) -> int:
             {"customers": tuple(affected_customers)}
         )
     
-    logger.info("  customer_360 updated: %d customers (complete with Phase 1-4)", total_updated)
+    # ── Phase 5: Enrich/Insert with ods_key_customer (重要客户) ─────────
+    logger.info("    Enriching with ods_key_customer...")
+
+    # Step 1: UPDATE existing customers (match by key_customer_name -> customer_name)
+    # 字段映射：
+    #   ods.key_customer_name -> dws.customer_name (客户公司名称, 用于匹配)
+    #   ods.customer_name      -> dws.owner_name    (客户公司负责人)
+    #   ods.department_level3  -> dws.region        (区域)
+    #   ods.industry_category  -> dws.industry      (行业)
+    #   ods.attribute          -> dws.attribute     (属性 H/M/L/空)
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "UPDATE dws_customer_360_temp c360 "
+                "INNER JOIN ods_key_customer kc "
+                "  ON kc.key_customer_name = c360.customer_name COLLATE utf8mb4_0900_ai_ci "
+                "SET "
+                "  c360.owner_name = COALESCE(kc.customer_name, c360.owner_name), "
+                "  c360.region    = COALESCE(kc.department_level3, c360.region), "
+                "  c360.industry  = COALESCE(kc.industry_category, c360.industry), "
+                "  c360.attribute = COALESCE(kc.attribute, c360.attribute) "
+                "WHERE c360.customer_name IN :customers"
+            ),
+            {"customers": tuple(affected_customers)}
+        )
+
+    # Step 2: INSERT new customers (by key_customer_name)
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT IGNORE INTO dws_customer_360_temp ("
+                "  customer_name, owner_name, region, industry, attribute, updated_at"
+                ") "
+                "SELECT DISTINCT "
+                "  kc.key_customer_name, "
+                "  kc.customer_name, "
+                "  kc.department_level3, "
+                "  kc.industry_category, "
+                "  kc.attribute, "
+                "  NOW() "
+                "FROM ods_key_customer kc "
+                "WHERE kc.key_customer_name IS NOT NULL AND kc.key_customer_name != '' "
+                "  AND kc.key_customer_name NOT IN ("
+                "    SELECT customer_name FROM dws_customer_360_temp"
+                "  )"
+            )
+        )
+
+    logger.info("  customer_360 updated: %d customers (complete with Phase 1-5)", total_updated)
     return total_updated
 
 
