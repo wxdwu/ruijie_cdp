@@ -102,6 +102,7 @@ import { ref, nextTick, onMounted, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import ChatThread from '../components/ai/ChatThread.vue'
 import DataTable from '../components/ai/DataTable.vue'
+import { BASE_URL } from '../config'
 
 const router = useRouter()
 
@@ -244,7 +245,7 @@ async function handleSubmit() {
 
   try {
     const history = messages.value.slice(-10).map(msg => ({ role: msg.role, text: msg.text }))
-    const response = await fetch('/api/ai/chat', {
+    const response = await fetch(`${BASE_URL}/api/ai/chat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ query, history: history.slice(0, -1) }),
@@ -286,7 +287,7 @@ async function handleExport() {
     }
     if (currentResult.value.target_table) requestBody.target_table = currentResult.value.target_table
 
-    const response = await fetch('/api/ai/chat/export', {
+    const response = await fetch(`${BASE_URL}/api/ai/chat/export`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(requestBody),
@@ -316,7 +317,7 @@ async function handleExportData() {
       structured_query: currentResult.value.entities,
       target_table: currentResult.value.target_table,
     }
-    const response = await fetch('/api/ai/chat/export', {
+    const response = await fetch(`${BASE_URL}/api/ai/chat/export`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(requestBody),

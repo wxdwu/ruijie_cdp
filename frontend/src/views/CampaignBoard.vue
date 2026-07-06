@@ -3,9 +3,10 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import FieldHelpTooltip from '../components/customer/FieldHelpTooltip.vue'
 import { getCampaignHelp } from '../components/campaign/campaignHelpConfig'
+import { BASE_URL } from '../config'
 
 const router = useRouter()
-const API_BASE = '/api/campaign'
+const API_BASE = `${BASE_URL}/api/campaign`
 
 const filters = reactive({
   campaign_tag: '',

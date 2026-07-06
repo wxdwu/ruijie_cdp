@@ -1,7 +1,8 @@
 import axios from 'axios'
+import { BASE_URL } from '../config'
 
 const http = axios.create({
-  baseURL: '/api',
+  baseURL: BASE_URL,
   timeout: 30000,
   headers: { 'Content-Type': 'application/json' },
 })
@@ -15,51 +16,51 @@ http.interceptors.response.use(
 )
 
 export const customerApi = {
-  list: (params) => http.get('/customers', { params }),
-  get: (id) => http.get(`/customers/${id}`),
-  contacts: (id) => http.get(`/customers/${id}/contacts`),
-  interactions: (id, params) => http.get(`/customers/${id}/interactions`, { params }),
-  opportunities: (id) => http.get(`/customers/${id}/opportunities`),
-  aiInsight: (id) => http.get(`/customers/${id}/ai-insight`),
-  statisticsByName: (customerName) => http.get('/customers/statistics/by-name', {
+  list: (params) => http.get('/api/customers', { params }),
+  get: (id) => http.get(`/api/customers/${id}`),
+  contacts: (id) => http.get(`/api/customers/${id}/contacts`),
+  interactions: (id, params) => http.get(`/api/customers/${id}/interactions`, { params }),
+  opportunities: (id) => http.get(`/api/customers/${id}/opportunities`),
+  aiInsight: (id) => http.get(`/api/customers/${id}/ai-insight`),
+  statisticsByName: (customerName) => http.get('/api/customers/statistics/by-name', {
     params: { customer_name: customerName },
   }),
-  filterOptions: () => http.get('/customers/filter-options'),
-  export: (params) => http.get('/customers/export', { params, responseType: 'blob' }),
+  filterOptions: () => http.get('/api/customers/filter-options'),
+  export: (params) => http.get('/api/customers/export', { params, responseType: 'blob' }),
 }
 
 export const campaignApi = {
-  kpis: () => http.get('/campaign/kpis'),
-  funnelDistribution: () => http.get('/campaign/funnel-distribution'),
-  channelDistribution: (period = 'all') => http.get('/campaign/channel-distribution', {
+  kpis: () => http.get('/api/campaign/kpis'),
+  funnelDistribution: () => http.get('/api/campaign/funnel-distribution'),
+  channelDistribution: (period = 'all') => http.get('/api/campaign/channel-distribution', {
     params: { period },
   }),
-  roleCoverage: () => http.get('/campaign/role-coverage'),
-  contentEffect: (period = 'all') => http.get('/campaign/content-effect', {
+  roleCoverage: () => http.get('/api/campaign/role-coverage'),
+  contentEffect: (period = 'all') => http.get('/api/campaign/content-effect', {
     params: { period },
   }),
-  customersByStage: (params) => http.get('/campaign/customers-by-stage', { params }),
+  customersByStage: (params) => http.get('/api/campaign/customers-by-stage', { params }),
 }
 
 export const aiApi = {
-  parse: (data) => http.post('/ai/parse', data),
-  chat: (data) => http.post('/ai/chat', data),
-  chatExport: (data) => http.post('/ai/chat/export', data, { responseType: 'blob' }),
+  parse: (data) => http.post('/api/ai/parse', data),
+  chat: (data) => http.post('/api/ai/chat', data),
+  chatExport: (data) => http.post('/api/ai/chat/export', data, { responseType: 'blob' }),
 }
 
 export const reviewApi = {
-  list: (params) => http.get('/review', { params }),
-  stats: () => http.get('/review/stats'),
-  approve: (id) => http.post(`/review/${id}/approve`),
-  reject: (id) => http.post(`/review/${id}/reject`),
-  batchApprove: (ids) => http.post('/review/batch-approve', { ids }),
-  batchReject: (ids) => http.post('/review/batch-reject', { ids }),
-  runDedup: () => http.post('/review/run-dedup'),
-  dedupProgress: () => http.get('/review/dedup-progress'),
+  list: (params) => http.get('/api/review', { params }),
+  stats: () => http.get('/api/review/stats'),
+  approve: (id) => http.post(`/api/review/${id}/approve`),
+  reject: (id) => http.post(`/api/review/${id}/reject`),
+  batchApprove: (ids) => http.post('/api/review/batch-approve', { ids }),
+  batchReject: (ids) => http.post('/api/review/batch-reject', { ids }),
+  runDedup: () => http.post('/api/review/run-dedup'),
+  dedupProgress: () => http.get('/api/review/dedup-progress'),
 }
 
 export const adminApi = {
-  runEtl: () => http.post('/admin/etl/run'),
+  runEtl: () => http.post('/api/admin/etl/run'),
 }
 
 export default http

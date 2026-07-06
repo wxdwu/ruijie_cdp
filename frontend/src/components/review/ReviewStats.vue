@@ -42,6 +42,7 @@
 
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
+import { BASE_URL } from '../../config'
 
 const stats = ref({
   pending: 0,
@@ -53,7 +54,7 @@ const stats = ref({
 
 const fetchStats = async () => {
   try {
-    const response = await fetch('/api/review/stats')
+    const response = await fetch(`${BASE_URL}/api/review/stats`)
     const data = await response.json()
     stats.value = data
   } catch (error) {

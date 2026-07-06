@@ -100,6 +100,7 @@ import ReviewStats from '../components/review/ReviewStats.vue'
 import BatchActionBar from '../components/review/BatchActionBar.vue'
 import ReviewList from '../components/review/ReviewList.vue'
 import type { ReviewItemData } from '../components/review/ReviewItem.vue'
+import { BASE_URL } from '../config'
 
 const statsRef = ref<InstanceType<typeof ReviewStats> | null>(null)
 
@@ -173,7 +174,7 @@ const formatPercent = (progress: number): string => {
 
 const runDedup = async () => {
   try {
-    const response = await fetch('/api/review/run-dedup', {
+    const response = await fetch(`${BASE_URL}/api/review/run-dedup`, {
       method: 'POST',
     })
     const data = await response.json()
@@ -191,7 +192,7 @@ const runDedup = async () => {
 
 const fetchDedupProgress = async () => {
   try {
-    const response = await fetch('/api/review/dedup-progress')
+    const response = await fetch(`${BASE_URL}/api/review/dedup-progress`)
     const data = await response.json()
     dedupProgress.value = data.progress || 0
     dedupStep.value = data.step || ''
@@ -250,7 +251,7 @@ const fetchItems = async () => {
     params.append('page', page.value.toString())
     params.append('size', size.value.toString())
 
-    const response = await fetch(`/api/review?${params}`)
+    const response = await fetch(`${BASE_URL}/api/review?${params}`)
     const data = await response.json()
     items.value = data.items || []
     total.value = data.total || 0
@@ -305,7 +306,7 @@ const onClearSelection = () => {
 
 const onApprove = async (id: number) => {
   try {
-    const response = await fetch(`/api/review/${id}/approve`, {
+    const response = await fetch(`${BASE_URL}/api/review/${id}/approve`, {
       method: 'POST',
     })
     if (response.ok) {
@@ -319,7 +320,7 @@ const onApprove = async (id: number) => {
 
 const onReject = async (id: number) => {
   try {
-    const response = await fetch(`/api/review/${id}/reject`, {
+    const response = await fetch(`${BASE_URL}/api/review/${id}/reject`, {
       method: 'POST',
     })
     if (response.ok) {
@@ -333,7 +334,7 @@ const onReject = async (id: number) => {
 
 const onBatchApprove = async (ids: number[]) => {
   try {
-    const response = await fetch('/api/review/batch-approve', {
+    const response = await fetch(`${BASE_URL}/api/review/batch-approve`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ ids }),
@@ -349,7 +350,7 @@ const onBatchApprove = async (ids: number[]) => {
 
 const onBatchReject = async (ids: number[]) => {
   try {
-    const response = await fetch('/api/review/batch-reject', {
+    const response = await fetch(`${BASE_URL}/api/review/batch-reject`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ ids }),
