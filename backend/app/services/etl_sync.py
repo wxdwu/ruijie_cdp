@@ -1215,6 +1215,14 @@ def run_etl() -> Dict[str, Any]:
         logger.info("   Customer 360:       %d rows", c360_count)
         logger.info("   Contact 360:        %d rows", ct360_count)
         logger.info("═══════════════════════════════════════════════════")
+
+        # ── 同步到 ElasticSearch（best-effort，失败不影响 ETL 主流程）──
+        try:
+            from app.services import es_sync
+            stats["steps"]["elasticsearch"] = es_sync.sync_after_etl("full")
+        except Exception as es_exc:
+            logger.error("ES sync after ETL failed (best-effort): %s", es_exc)
+
         return stats
 
     except Exception as exc:
@@ -1547,7 +1555,14 @@ def run_full_sync(trigger_by: str = "system") -> Dict[str, Any]:
             rows_synced=sum(cm_stats.values()) + total_interaction_rows,
             details=stats["steps"],
         )
-        
+
+        # ── 同步到 ElasticSearch（best-effort，失败不影响 ETL 主流程）──
+        try:
+            from app.services import es_sync
+            stats["steps"]["elasticsearch"] = es_sync.sync_after_etl("full")
+        except Exception as es_exc:
+            logger.error("ES sync after full ETL failed (best-effort): %s", es_exc)
+
         logger.info("═══════════════════════════════════════════════════")
         logger.info(" Full sync completed in %.1f s", elapsed)
         logger.info("═══════════════════════════════════════════════════")
@@ -1774,6 +1789,13 @@ def run_incremental_sync(trigger_by: str = "system") -> Dict[str, Any]:
             rows_synced=accurate_rows_synced,
             details=stats["steps"],
         )
+
+        # ── 同步到 ElasticSearch（best-effort，失败不影响 ETL 主流程）──
+        try:
+            from app.services import es_sync
+            stats["steps"]["elasticsearch"] = es_sync.sync_after_etl("incremental")
+        except Exception as es_exc:
+            logger.error("ES sync after incremental ETL failed (best-effort): %s", es_exc)
 
         logger.info("═══════════════════════════════════════════════════")
         logger.info(" Incremental sync completed in %.1f s", elapsed)

@@ -4,17 +4,16 @@ services:
       context: .
       dockerfile: docker/backend.Dockerfile
     restart: unless-stopped
+    # 后端配置统一从 backend/.env 读取（ES / LLM / Embedding 等），
+    # 不再依赖项目根目录 .env。
+    env_file:
+      - backend/.env
     environment:
       DB_HOST: ${DB_HOST:-192.168.159.22}
       DB_PORT: ${DB_PORT:-33307}
       DB_USER: ${DB_USER:-app_cdp}
       DB_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD is required}
       DB_NAME: ${DB_NAME:-app_cdp}
-      LLM_API_KEY: ${LLM_API_KEY:-}
-      LLM_BASE_URL: ${LLM_BASE_URL:-https://api.deepseek.com}
-      EMBEDDING_API_KEY: ${EMBEDDING_API_KEY:-}
-      EMBEDDING_BASE_URL: ${EMBEDDING_BASE_URL:-https://api.openai.com/v1}
-      DEDUP_TEST_MODE_MAX_COMPANIES: ${DEDUP_TEST_MODE_MAX_COMPANIES:-0}
       TZ: Asia/Shanghai
     expose:
       - "8000"
