@@ -14,7 +14,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 
-from app.routers import customer_list, customer_detail, ai_chat, campaign, review, sync, pool, es_sync, es_crud
+from app.routers import customer_list, customer_detail, ai_chat, campaign, review, sync, pool, es_sync, es_crud, monitor
 from app.services.etl_scheduler import start_scheduler, stop_scheduler
 from app.connection_pool import dispose_engine
 
@@ -67,6 +67,7 @@ app.include_router(sync.router)
 app.include_router(pool.router)
 app.include_router(es_sync.router)
 app.include_router(es_crud.router)
+app.include_router(monitor.router)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
