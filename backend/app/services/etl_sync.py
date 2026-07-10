@@ -152,7 +152,20 @@ def _create_indexes() -> None:
     _ensure_index("ods_linkflow_events_day", "idx_lfe_cid", "contact_id")
     _ensure_index("ods_zhique_behavior_list_day", "idx_zqb_mobile", "mobile_phone")
     _ensure_index("ods_tianrun_session_day", "idx_tr_vid", "visitor_id")
-    
+
+    # ── 聚合/分组提速索引 ───────────────────────────────────────────────
+    # 1) CRM 两张源表按 customer_name 分组（预聚合联系人属性、商机指标）时避免全表 filesort
+    _ensure_index("ods_crm_contact_day", "idx_crm_custname", "customer_name")
+    _ensure_index("ods_crm_opportunity_day", "idx_opp_custname", "customer_name")
+    # 2) 智渠联系人按 related_company 取 ICP 客户（DISTINCT）及按 mobile 取 ICP 手机号
+    _ensure_index("ods_zhique_contact_day", "idx_zqc_related", "related_company")
+    _ensure_index("ods_zhique_contact_day", "idx_zqc_mobile", "mobile")
+    # 3) 天润会话按 customer_name 过滤（建 contact_mapping 与交互明细时跳过 NULL）
+    _ensure_index("ods_tianrun_session_day", "idx_tr_custname", "customer_name")
+    # 4) 交互明细按 (contact_name, mobile) 分组构建 dws_contact_360 时避免 filesort
+    #    （增量临时表由 LIKE 主表创建，会自动继承该索引）
+    _ensure_index("dws_interaction_detail", "idx_contact_mobile", "contact_name, mobile")
+
     # NOTE: Removed redundant/duplicate indexes:
     # - idx_cm_mobile (duplicate of idx_mobile on dws_contact_mapping)
     # - idx_cm_custname (redundant - uk_customer_mobile prefix covers customer_name)
@@ -815,6 +828,73 @@ def _load_interactions_linkflow() -> int:
     return n
 
 
+def _load_interactions_crm_lead() -> int:
+    """Load CRM leads (ods_crm_lead_data_day) → dws_interaction_detail.
+
+    线索表为全量更新，整表扫描即可。一条线索视为一次客户交互（线索获取）：
+    - customer_name ← 客户单位，contact_name ← 客户姓名，mobile ← 联系电话
+    - source_id 用行内容稳定哈希（bigint），靠 (source_table, source_id) 唯一键去重
+    """
+    logger.info("  Loading CRM leads → interaction_detail ...")
+    n = _exec(
+        "INSERT IGNORE INTO dws_interaction_detail "
+        "  (customer_name, contact_name, mobile, source_table, "
+        "   channel, behavior_type, content, event_time, source_id, etl_time) "
+        "SELECT "
+        "  NULLIF(TRIM(l.`客户单位`), ''), "
+        "  NULLIF(TRIM(l.`客户姓名`), ''), "
+        "  NULLIF(TRIM(l.`联系电话`), ''), "
+        "  'crm_lead', "
+        "  COALESCE(NULLIF(TRIM(l.`线索来源大类`), ''), 'crm'), "
+        "  '线索', "
+        "  COALESCE(NULLIF(TRIM(l.`活动名称`), ''), NULLIF(TRIM(l.`线索来源类型`), ''), ''), "
+        "  l.`线索获得日期`, "
+        "  CAST(CONV(SUBSTRING(MD5(CONCAT_WS('|', l.`线索编号`, l.`客户单位`, "
+        "        l.`客户姓名`, l.`联系电话`, l.`线索获得日期`, l.`活动名称`)), 1, 15), 16, 10) "
+        "       AS UNSIGNED), "
+        "  NOW() "
+        "FROM ods_crm_lead_data_day l "
+        "WHERE NULLIF(TRIM(l.`客户单位`), '') IS NOT NULL "
+        "  AND l.`线索获得日期` IS NOT NULL"
+    )
+    logger.info("  CRM leads → interaction_detail: %d rows", n)
+    return n
+
+
+def _load_interactions_crm_opportunity() -> int:
+    """Load CRM opportunities (ods_crm_opportunity_data_day) → dws_interaction_detail.
+
+    商机表为全量更新，整表扫描即可。一条商机视为一次客户交互（商机创建）：
+    - customer_name ← 客户名；contact_name ← 业务机会所有人名称（商机联系人/负责人），
+      mobile 在商机表中无对应字段，置空
+    - source_id 用行内容稳定哈希（bigint），靠 (source_table, source_id) 唯一键去重
+    """
+    logger.info("  Loading CRM opportunities → interaction_detail ...")
+    n = _exec(
+        "INSERT IGNORE INTO dws_interaction_detail "
+        "  (customer_name, contact_name, mobile, source_table, "
+        "   channel, behavior_type, content, event_time, source_id, etl_time) "
+        "SELECT "
+        "  NULLIF(TRIM(o.`客户名`), ''), "
+        "  NULLIF(TRIM(o.`业务机会所有人名称`), ''), "
+        "  NULL, "
+        "  'crm_opportunity', "
+        "  COALESCE(NULLIF(TRIM(o.`商机来源`), ''), 'crm'), "
+        "  '商机', "
+        "  COALESCE(NULLIF(TRIM(o.`业务机会名称`), ''), ''), "
+        "  o.`创建日期-转化`, "
+        "  CAST(CONV(SUBSTRING(MD5(CONCAT_WS('|', o.`业务机会编码`, o.`客户名`, "
+        "        o.`业务机会名称`, o.`创建日期-转化`, o.`商机来源`)), 1, 15), 16, 10) "
+        "       AS UNSIGNED), "
+        "  NOW() "
+        "FROM ods_crm_opportunity_data_day o "
+        "WHERE NULLIF(TRIM(o.`客户名`), '') IS NOT NULL "
+        "  AND o.`创建日期-转化` IS NOT NULL"
+    )
+    logger.info("  CRM opportunities → interaction_detail: %d rows", n)
+    return n
+
+
 def _load_interaction_detail() -> Dict[str, int]:
     """Load interactions from all sources into dws_interaction_detail.
 
@@ -827,6 +907,8 @@ def _load_interaction_detail() -> Dict[str, int]:
     stats["zhique"] = _load_interactions_zhique()
     stats["tianrun"] = _load_interactions_tianrun()
     stats["linkflow"] = _load_interactions_linkflow()
+    stats["crm_lead"] = _load_interactions_crm_lead()
+    stats["crm_opportunity"] = _load_interactions_crm_opportunity()
 
     total = sum(stats.values())
     logger.info(
@@ -1032,10 +1114,20 @@ def _build_customer_360() -> int:
     return total
 
 
-def _build_contact_360() -> int:
-    """Build dws_contact_360 from contact_mapping and interaction_detail."""
-    logger.info("Truncating dws_contact_360 for full rebuild…")
-    _exec("TRUNCATE TABLE dws_contact_360")
+def _build_contact_360(
+    target: str = "dws_contact_360",
+    mapping_tbl: str = "dws_contact_mapping",
+    interaction_tbl: str = "dws_interaction_detail",
+    customer_tbl: str = "dws_customer_360",
+) -> int:
+    """从 contact_mapping + interaction_detail 构建 dws_contact_360。
+
+    通过参数化表名，增量同步可传入 *_temp 基表来重建临时表，从而与全量同步
+    得到完全一致的结果（避免此前“仅重建受影响客户”时 DELETE/INSERT 键不一致
+    导致 dws_contact_360 行数偏差）。
+    """
+    logger.info("Truncating %s for full rebuild…", target)
+    _exec(f"TRUNCATE TABLE {target}")
 
     logger.info("Building contact-level interaction aggregates…")
     _exec("TRUNCATE TABLE tmp_contact_interactions")
@@ -1049,7 +1141,7 @@ def _build_contact_360() -> int:
         "  SUM(CASE WHEN event_time >= DATE_SUB(NOW(), INTERVAL 30 DAY) "
         "      THEN 1 ELSE 0 END) AS interaction_count_30d, "
         "  MAX(event_time) AS last_interaction_time "
-        "FROM dws_interaction_detail "
+        f"FROM {interaction_tbl} "
         "WHERE contact_name IS NOT NULL "
         "GROUP BY contact_name, mobile"
     )
@@ -1058,7 +1150,7 @@ def _build_contact_360() -> int:
     logger.info("Building contact-level 360 aggregates…")
 
     n = _exec(
-        "INSERT IGNORE INTO dws_contact_360 ( "
+        "INSERT IGNORE INTO " + target + " ( "
         "  customer_id, contact_name, mobile, email, department, position, "
         "  purchase_role, role_category, interaction_count, interaction_count_30d, "
         "  last_interaction_time, source_tables, linkflow_contact_id, updated_at "
@@ -1073,8 +1165,8 @@ def _build_contact_360() -> int:
         "  CAST(CONCAT('[\"', cm.source_table, '\"]') AS JSON), "
         "  cm.linkflow_contact_id, "
         "  NOW() "
-        "FROM dws_contact_mapping cm "
-        "LEFT JOIN dws_customer_360 c360 ON c360.customer_name = cm.customer_name "
+        f"FROM {mapping_tbl} cm "
+        f"LEFT JOIN {customer_tbl} c360 ON c360.customer_name = cm.customer_name "
         "LEFT JOIN tmp_contact_interactions agg "
         "  ON agg.contact_name = cm.contact_name "
         " AND agg.mobile <=> cm.mobile "
@@ -1085,9 +1177,9 @@ def _build_contact_360() -> int:
         "  updated_at            = NOW()"
     )
 
-    # Compute activity_level and lead_stage
+    # Compute activity_level
     _exec(
-        "UPDATE dws_contact_360 SET "
+        f"UPDATE {target} SET "
         "  activity_level = CASE "
         "    WHEN interaction_count_30d >= 10 THEN 'high' "
         "    WHEN interaction_count_30d >= 3 THEN 'medium' "
@@ -1096,7 +1188,7 @@ def _build_contact_360() -> int:
         "  END"
     )
 
-    total = _table_count("dws_contact_360")
+    total = _table_count(target)
     logger.info("Contact 360 complete: %d rows (affected %d)", total, n)
     return total
 
@@ -1126,17 +1218,31 @@ def _update_sync_meta(total_rows: int) -> None:
 
     for tbl in _ODS_TABLES:
         cnt = _table_count_approx(tbl)
-        _exec(
-            "INSERT INTO dws_sync_meta "
-            "  (table_name, last_sync_time, last_run_time, rows_synced, status) "
-            "VALUES (:tbl, :ts, :ts, :cnt, 'success') "
-            "ON DUPLICATE KEY UPDATE "
-            "  last_sync_time = VALUES(last_sync_time), "
-            "  last_run_time  = VALUES(last_run_time), "
-            "  rows_synced    = VALUES(rows_synced), "
-            "  status         = 'success'",
-            {"tbl": tbl, "ts": now_str, "cnt": cnt},
-        )
+        if tbl in ODS_INCREMENTAL_CONFIG:
+            # 已配置表的水位（时间/ID）由 _set_watermark_after_load 维护，
+            # 这里只刷新运行时间与行数，避免用 now 覆盖真实水位。
+            _exec(
+                "INSERT INTO dws_sync_meta "
+                "  (table_name, last_sync_time, last_run_time, rows_synced, status) "
+                "VALUES (:tbl, '1970-01-01 00:00:00', :ts, :cnt, 'success') "
+                "ON DUPLICATE KEY UPDATE "
+                "  last_run_time = VALUES(last_run_time), "
+                "  rows_synced   = VALUES(rows_synced), "
+                "  status        = 'success'",
+                {"tbl": tbl, "ts": now_str, "cnt": cnt},
+            )
+        else:
+            _exec(
+                "INSERT INTO dws_sync_meta "
+                "  (table_name, last_sync_time, last_run_time, rows_synced, status) "
+                "VALUES (:tbl, :ts, :ts, :cnt, 'success') "
+                "ON DUPLICATE KEY UPDATE "
+                "  last_sync_time = VALUES(last_sync_time), "
+                "  last_run_time  = VALUES(last_run_time), "
+                "  rows_synced    = VALUES(rows_synced), "
+                "  status         = 'success'",
+                {"tbl": tbl, "ts": now_str, "cnt": cnt},
+            )
 
     logger.info("Sync metadata updated for %d tables", len(_ODS_TABLES))
 
@@ -1300,7 +1406,10 @@ def ensure_schema_for_incremental() -> None:
     # Ensure attribute column on dws_customer_360 and its mirror tables
     for tbl in ("dws_customer_360", "dws_customer_360_temp", "dws_customer_360_backup"):
         _ensure_attribute_column(tbl)
-    
+
+    # 确保 ID 类字段水位列存在
+    _ensure_watermark_column()
+
     logger.info("Schema check for incremental sync completed")
 
 
@@ -1324,6 +1433,123 @@ def _get_last_sync_time(table_name: str) -> datetime | None:
     if rows and rows[0][0]:
         return rows[0][0]
     return None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 数仓 ODS 表增量同步模式配置（集中管理，便于扩展新表）
+#   mode="full"         ：数仓全量提供，增量同步中也整表重跑（统一全量更新）
+#   mode="incremental"  ：按 field 做水位判断 已同步/未同步
+#     field_type="time"      ：field 为时间字段（如 behavior_time），水位 = MAX(field)
+#     field_type="unix_time" ：field 为 unix 秒（如 start_time_sec），用 FROM_UNIXTIME 比较
+#     field_type="id"        ：field 为递增 ID（如 contact_id/extra_id），水位 = MAX(id)
+# 仅对现有增量逻辑已涉及的表套用配置；全量/暂未接入的表仅作记录，不改逻辑。
+ODS_INCREMENTAL_CONFIG: Dict[str, Dict[str, Any]] = {
+    "ods_zhique_behavior_list_day":      {"mode": "incremental", "field": "behavior_time",   "field_type": "time"},
+    "ods_linkflow_contacts_day":         {"mode": "incremental", "field": "contact_id",      "field_type": "id"},
+    "ods_linkflow_events_day":           {"mode": "incremental", "field": "extra_id",        "field_type": "id"},
+    "ods_tianrun_session_day":           {"mode": "incremental", "field": "start_time_sec",  "field_type": "unix_time"},
+    # 以下为全量或暂未接入增量路径的表，仅记录便于后续扩展：
+    "ods_tianrun_customer_profile_day":    {"mode": "full"},
+    "ods_crm_opportunity_data_day":        {"mode": "full"},
+    "ods_crm_lead_data_day":               {"mode": "full"},
+    "ods_crm_key_account_output_list_day": {"mode": "full"},
+    "ods_tianrun_session_detail_day":      {"mode": "incremental", "field": "start_time_sec", "field_type": "unix_time"},
+    "ods_ruijie_website_user_day":         {"mode": "incremental", "field": "register_time",  "field_type": "time"},
+}
+
+
+def _get_last_watermark_id(table_name: str):
+    """获取 ID 类字段表的上一轮最大 id 水位（dws_sync_meta.last_watermark_value）。"""
+    rows = _exec_query(
+        "SELECT last_watermark_value FROM dws_sync_meta "
+        "WHERE table_name = :tbl AND status = 'success' "
+        "ORDER BY last_run_time DESC LIMIT 1",
+        {"tbl": table_name},
+    )
+    if rows and rows[0][0] is not None:
+        return int(rows[0][0])
+    return None
+
+
+def _ensure_watermark_column() -> None:
+    """幂等为 dws_sync_meta 增加 last_watermark_value 列（存储 ID 类字段最大 id 水位）。"""
+    engine = get_etl_engine()
+    with engine.connect() as conn:
+        exists = conn.execute(
+            text(
+                "SELECT 1 FROM information_schema.columns "
+                "WHERE table_schema = 'app_cdp' "
+                "  AND table_name = 'dws_sync_meta' "
+                "  AND column_name = 'last_watermark_value' "
+                "LIMIT 1"
+            )
+        ).fetchone()
+    if not exists:
+        _exec(
+            "ALTER TABLE dws_sync_meta "
+            "ADD COLUMN last_watermark_value BIGINT NOT NULL DEFAULT 0 "
+            "COMMENT 'ID 类字段增量同步的水位：上次同步到的最大 id'"
+        )
+        logger.info("已为 dws_sync_meta 增加 last_watermark_value 列")
+
+
+def _watermark_filter(table_name: str, alias: str):
+    """返回增量过滤片段与水位值 (filter_clause, watermark_value)。
+
+    - mode="full" 或 首次无水位 → ("", None)，调用方不加过滤（整表处理）
+    - 否则返回 "AND <alias>.<field> > :watermark"（unix 时间用 FROM_UNIXTIME 包装）与水位值
+    """
+    cfg = ODS_INCREMENTAL_CONFIG.get(table_name)
+    if cfg is None or cfg["mode"] == "full":
+        return "", None
+
+    if cfg["field_type"] == "id":
+        wm = _get_last_watermark_id(table_name)
+    else:
+        wm = _get_last_sync_time(table_name)
+
+    if wm is None:
+        return "", None
+
+    field = cfg["field"]
+    if cfg["field_type"] == "unix_time":
+        clause = f"AND FROM_UNIXTIME({alias}.{field}) > :watermark"
+    else:
+        clause = f"AND {alias}.{field} > :watermark"
+    return clause, wm
+
+
+def _set_watermark_after_load(table_name: str) -> None:
+    """增量加载某表后，把当前最大水位写回 dws_sync_meta。
+
+    时间字段 → last_sync_time（unix 时间存 FROM_UNIXTIME(MAX)）；ID 字段 → last_watermark_value。
+    """
+    cfg = ODS_INCREMENTAL_CONFIG.get(table_name)
+    if cfg is None or cfg["mode"] == "full":
+        return
+    field = cfg["field"]
+    if cfg["field_type"] == "id":
+        _exec(
+            "INSERT INTO dws_sync_meta "
+            "  (table_name, last_watermark_value, last_sync_time, last_run_time, status) "
+            "VALUES (:tbl, (SELECT COALESCE(MAX(" + field + "), 0) FROM " + table_name + "), '1970-01-01 00:00:00', NOW(), 'success') "
+            "ON DUPLICATE KEY UPDATE "
+            "  last_watermark_value = VALUES(last_watermark_value), "
+            "  last_sync_time = VALUES(last_sync_time), "
+            "  last_run_time = NOW(), status = 'success'",
+            {"tbl": table_name},
+        )
+    else:
+        max_expr = f"FROM_UNIXTIME(MAX({field}))" if cfg["field_type"] == "unix_time" else f"MAX({field})"
+        _exec(
+            "INSERT INTO dws_sync_meta "
+            "  (table_name, last_sync_time, last_run_time, status) "
+            "VALUES (:tbl, (SELECT COALESCE(" + max_expr + ", '1970-01-01 00:00:00') FROM " + table_name + "), NOW(), 'success') "
+            "ON DUPLICATE KEY UPDATE "
+            "  last_sync_time = VALUES(last_sync_time), "
+            "  last_run_time = NOW(), status = 'success'",
+            {"tbl": table_name},
+        )
 
 
 def _count_table_rows(table: str, where_clause: str = "", params: dict | None = None) -> int:
@@ -1435,6 +1661,9 @@ def run_full_sync(trigger_by: str = "system") -> Dict[str, Any]:
             for table in dws_tables:
                 temp_table = f"{table}_temp"
                 backup_table = f"{table}_backup"
+                # 增量同步被中断可能遗留 *_temp 表，先清理避免 RENAME 报
+                # "Table 'xxx_temp' already exists" (1050)
+                conn.execute(text(f"DROP TABLE IF EXISTS {temp_table}"))
                 # RENAME: main -> temp, backup -> main
                 conn.execute(text(
                     f"RENAME TABLE "
@@ -1515,6 +1744,8 @@ def run_full_sync(trigger_by: str = "system") -> Dict[str, Any]:
                 for table in dws_tables:
                     temp_table = f"{table}_temp"
                     backup_table = f"{table}_backup"
+                    # 清理可能残留的 backup 表，避免 RENAME 报 1050 (Table already exists)
+                    conn.execute(text(f"DROP TABLE IF EXISTS {backup_table}"))
                     # RENAME: main -> backup, temp -> main (restore original)
                     conn.execute(text(
                         f"RENAME TABLE "
@@ -1588,6 +1819,8 @@ def run_full_sync(trigger_by: str = "system") -> Dict[str, Any]:
                         "LIMIT 1"
                     ), {"t": temp_table})
                     if result.fetchone():
+                        # 清理可能残留的 backup 表，避免 RENAME 报 1050 (Table already exists)
+                        conn.execute(text(f"DROP TABLE IF EXISTS {backup_table}"))
                         # RENAME: main -> backup, temp -> main (restore original)
                         conn.execute(text(
                             f"RENAME TABLE "
@@ -1660,8 +1893,11 @@ def run_incremental_sync(trigger_by: str = "system") -> Dict[str, Any]:
                 temp_table = f"{table}_temp"
                 backup_table = f"{table}_backup"
 
-                # Ensure temp table exists with same structure
-                conn.execute(text(f"CREATE TABLE IF NOT EXISTS {temp_table} LIKE {table}"))
+                # 重建临时表（先删除可能残留的脏表），避免上一轮中断遗留的
+                # dws_xxx_temp 影响本轮增量结果（否则会在陈旧残留上累加，导致
+                # dws_contact_mapping 等表数据量严重偏少）
+                conn.execute(text(f"DROP TABLE IF EXISTS {temp_table}"))
+                conn.execute(text(f"CREATE TABLE {temp_table} LIKE {table}"))
 
                 # Copy existing data from main to temp (for ON DUPLICATE KEY UPDATE to work)
                 # Use INSERT IGNORE to avoid duplicate primary key errors
@@ -1751,6 +1987,8 @@ def run_incremental_sync(trigger_by: str = "system") -> Dict[str, Any]:
                 for table in dws_tables:
                     temp_table = f"{table}_temp"
                     backup_table = f"{table}_backup"
+                    # 清理可能残留的 backup 表，避免 RENAME 报 1050 (Table already exists)
+                    conn.execute(text(f"DROP TABLE IF EXISTS {backup_table}"))
                     # RENAME: main -> backup, temp -> main (restore original)
                     conn.execute(text(
                         f"RENAME TABLE "
@@ -1823,6 +2061,8 @@ def run_incremental_sync(trigger_by: str = "system") -> Dict[str, Any]:
                         "LIMIT 1"
                     ), {"t": temp_table})
                     if result.fetchone():
+                        # 清理可能残留的 backup 表，避免 RENAME 报 1050 (Table already exists)
+                        conn.execute(text(f"DROP TABLE IF EXISTS {backup_table}"))
                         # RENAME: main -> backup, temp -> main (restore original)
                         conn.execute(text(
                             f"RENAME TABLE "
@@ -1988,16 +2228,13 @@ def _incremental_upsert_contact_mapping(batch_id: int) -> Dict[str, int]:
     last_sync_zhique = _get_last_sync_time("ods_zhique_contact_day")
     last_sync_crm = _get_last_sync_time("ods_crm_contact_day")
     last_sync_marketing = _get_last_sync_time("ods_marketing_lead_day")
-    last_sync_linkflow = _get_last_sync_time("ods_linkflow_contacts_day")
-    last_sync_tianrun = _get_last_sync_time("ods_tianrun_session_day")
-    
+    # 注：ods_linkflow_contacts_day / ods_tianrun_session_day 的增量水位由配置驱动，见 _watermark_filter
+
     # Debug: log last sync times
     logger.info("Last sync times:")
     logger.info("  zhique: %s", last_sync_zhique)
     logger.info("  crm: %s", last_sync_crm)
     logger.info("  marketing: %s", last_sync_marketing)
-    logger.info("  linkflow: %s", last_sync_linkflow)
-    logger.info("  tianrun: %s", last_sync_tianrun)
     
     # Zhique contacts - only new/updated records
     zhique_filter = ""
@@ -2111,12 +2348,11 @@ def _incremental_upsert_contact_mapping(batch_id: int) -> Dict[str, int]:
     stats["marketing"] = n
     logger.info("  Marketing: %d records upserted (incremental)", n)
     
-    # Linkflow contacts - only new/updated records
-    linkflow_filter = ""
+    # Linkflow contacts - 按 contact_id 最大 ID 水位增量（配置为 id 类字段）
+    linkflow_filter, _wm = _watermark_filter("ods_linkflow_contacts_day", "l")
     linkflow_params = {"batch_id": batch_id}
-    if last_sync_linkflow:
-        linkflow_filter = "AND l.etl_time > :last_sync_time"
-        linkflow_params["last_sync_time"] = last_sync_linkflow
+    if _wm is not None:
+        linkflow_params["watermark"] = _wm
     
     n = _exec(
         "INSERT INTO dws_contact_mapping_temp "
@@ -2138,13 +2374,13 @@ def _incremental_upsert_contact_mapping(batch_id: int) -> Dict[str, int]:
     )
     stats["linkflow"] = n
     logger.info("  Linkflow: %d records upserted (incremental)", n)
+    _set_watermark_after_load("ods_linkflow_contacts_day")
     
-    # Tianrun contacts - only new/updated records
-    tianrun_filter = ""
+    # Tianrun contacts - 按 start_time_sec（unix 秒）水位增量
+    tianrun_filter, _wm = _watermark_filter("ods_tianrun_session_day", "s")
     tianrun_params = {"batch_id": batch_id}
-    if last_sync_tianrun:
-        tianrun_filter = "AND s.etl_time > :last_sync_time"
-        tianrun_params["last_sync_time"] = last_sync_tianrun
+    if _wm is not None:
+        tianrun_params["watermark"] = _wm
     
     n = _exec(
         "INSERT INTO dws_contact_mapping_temp "
@@ -2162,6 +2398,7 @@ def _incremental_upsert_contact_mapping(batch_id: int) -> Dict[str, int]:
     )
     stats["tianrun"] = n
     logger.info("  Tianrun: %d records upserted (incremental)", n)
+    _set_watermark_after_load("ods_tianrun_session_day")
     
     # For incremental sync, we don't delete records (only add/update)
     # Delete detection can be implemented separately if needed
@@ -2188,20 +2425,17 @@ def _incremental_upsert_interaction_detail(batch_id: int) -> Dict[str, int]:
     
     logger.info("Incremental sync: UPSERT dws_interaction_detail (true incremental)...")
     
-    # Get last sync time for interaction tables
-    last_sync_zhique = _get_last_sync_time("ods_zhique_behavior_list_day")
-    last_sync_tianrun = _get_last_sync_time("ods_tianrun_session_day")
-    last_sync_linkflow = _get_last_sync_time("ods_linkflow_events_day")
+    # 各表的增量水位由配置驱动（见 _watermark_filter），此处不再单独取 last_sync_time
     
     # Zhique behaviors - single INSERT IGNORE ... SELECT
     channel_case = _build_zhique_channel_case()
     zhique_filter = ""
     zhique_params: Dict[str, Any] = {"batch_id": batch_id}
 
-    if last_sync_zhique:
-        zhique_filter = "AND b.etl_time > :last_sync_time"
-        zhique_params["last_sync_time"] = last_sync_zhique
-        logger.info("  Zhique: filtering behaviors after %s", last_sync_zhique)
+    zhique_filter, _wm = _watermark_filter("ods_zhique_behavior_list_day", "b")
+    if _wm is not None:
+        zhique_params["watermark"] = _wm
+        logger.info("  Zhique: filtering behaviors by watermark")
 
     engine = get_etl_engine()
     sql = text(
@@ -2224,13 +2458,20 @@ def _incremental_upsert_interaction_detail(batch_id: int) -> Dict[str, int]:
         stats["zhique"] = result.rowcount
     
     logger.info("  Zhique: %d new interactions (incremental)", stats["zhique"])
+    _set_watermark_after_load("ods_zhique_behavior_list_day")
     
-    # Tianrun sessions - single INSERT IGNORE ... SELECT
-    stats["tianrun"] = _incremental_load_tianrun(batch_id, last_sync_tianrun)
-    
-    # Linkflow events - single INSERT IGNORE ... SELECT
-    stats["linkflow"] = _incremental_load_linkflow(batch_id, last_sync_linkflow)
-    
+    # Tianrun sessions - single INSERT IGNORE ... SELECT（水位在内部按配置计算）
+    stats["tianrun"] = _incremental_load_tianrun(batch_id)
+    _set_watermark_after_load("ods_tianrun_session_day")
+
+    # Linkflow events - single INSERT IGNORE ... SELECT（水位在内部按配置计算）
+    stats["linkflow"] = _incremental_load_linkflow(batch_id)
+    _set_watermark_after_load("ods_linkflow_events_day")
+
+    # CRM 线索 / 商机（全量模式：每轮整表重跑，靠 (source_table, source_id) 唯一键去重）
+    stats["crm_lead"] = _incremental_load_crm_lead(batch_id)
+    stats["crm_opportunity"] = _incremental_load_crm_opportunity(batch_id)
+
     # 精确统计各数据源的实际影响行数（避免使用不准确的 rowcount）
     accurate_stats = _get_accurate_stats_by_source("dws_interaction_detail", batch_id)
     # 用精确统计的结果更新 stats
@@ -2241,21 +2482,21 @@ def _incremental_upsert_interaction_detail(batch_id: int) -> Dict[str, int]:
     return stats
 
 
-def _incremental_load_tianrun(batch_id: int, last_sync_time: datetime | None = None) -> int:
+def _incremental_load_tianrun(batch_id: int) -> int:
     """True incremental load of new Tianrun sessions.
 
-    Uses etl_time (instead of unindexed start_time_sec) for filtering and
-    joins tmp_icp_customers to restrict to ICP customers.
+    按配置（ods_tianrun_session_day: start_time_sec / unix_time）计算水位过滤，
+    仅处理 start_time_sec 大于上一轮最大水位的会话。
     """
     engine = get_etl_engine()
 
-    time_filter = ""
+    # 按配置计算水位过滤（start_time_sec 用 FROM_UNIXTIME 比较）
+    time_filter, _wm = _watermark_filter("ods_tianrun_session_day", "s")
     params: Dict[str, Any] = {"batch_id": batch_id}
 
-    if last_sync_time:
-        time_filter = "AND s.etl_time > :last_sync_time"
-        params["last_sync_time"] = last_sync_time
-        logger.info("  Tianrun: filtering sessions after %s", last_sync_time)
+    if _wm is not None:
+        params["watermark"] = _wm
+        logger.info("  Tianrun: filtering sessions by watermark")
 
     sql = text(
         "INSERT IGNORE INTO dws_interaction_detail_temp "
@@ -2290,21 +2531,21 @@ def _incremental_load_tianrun(batch_id: int, last_sync_time: datetime | None = N
     return inserted
 
 
-def _incremental_load_linkflow(batch_id: int, last_sync_time: datetime | None = None) -> int:
+def _incremental_load_linkflow(batch_id: int) -> int:
     """True incremental load of new Linkflow events.
 
-    Uses etl_time (instead of unindexed event_date_ms) for filtering and
-    tmp_valid_linkflow_contacts to drive the idx_lfe_cid index.
+    按配置（ods_linkflow_events_day: extra_id / id）计算水位过滤，
+    仅处理 extra_id 大于上一轮最大 id 的事件。
     """
     engine = get_etl_engine()
 
-    time_filter = ""
+    # 按配置计算水位过滤（extra_id 最大 ID 水位）
+    time_filter, _wm = _watermark_filter("ods_linkflow_events_day", "e")
     params: Dict[str, Any] = {"batch_id": batch_id}
 
-    if last_sync_time:
-        time_filter = "AND e.etl_time > :last_sync_time"
-        params["last_sync_time"] = last_sync_time
-        logger.info("  Linkflow: filtering events after %s", last_sync_time)
+    if _wm is not None:
+        params["watermark"] = _wm
+        logger.info("  Linkflow: filtering events by watermark")
 
     sql = text(
         "INSERT IGNORE INTO dws_interaction_detail_temp "
@@ -2325,6 +2566,71 @@ def _incremental_load_linkflow(batch_id: int, last_sync_time: datetime | None = 
         inserted = result.rowcount
 
     logger.info("  Linkflow: %d new interactions (incremental)", inserted)
+    return inserted
+
+
+def _incremental_load_crm_lead(batch_id: int) -> int:
+    """增量同步：整表重跑 CRM 线索（全量模式），靠 (source_table, source_id) 唯一键去重。"""
+    engine = get_etl_engine()
+    sql = text(
+        "INSERT IGNORE INTO dws_interaction_detail_temp "
+        "  (customer_name, contact_name, mobile, source_table, "
+        "   channel, behavior_type, content, event_time, source_id, etl_time, sync_batch_id) "
+        "SELECT "
+        "  NULLIF(TRIM(l.`客户单位`), ''), "
+        "  NULLIF(TRIM(l.`客户姓名`), ''), "
+        "  NULLIF(TRIM(l.`联系电话`), ''), "
+        "  'crm_lead', "
+        "  COALESCE(NULLIF(TRIM(l.`线索来源大类`), ''), 'crm'), "
+        "  '线索', "
+        "  COALESCE(NULLIF(TRIM(l.`活动名称`), ''), NULLIF(TRIM(l.`线索来源类型`), ''), ''), "
+        "  l.`线索获得日期`, "
+        "  CAST(CONV(SUBSTRING(MD5(CONCAT_WS('|', l.`线索编号`, l.`客户单位`, "
+        "        l.`客户姓名`, l.`联系电话`, l.`线索获得日期`, l.`活动名称`)), 1, 15), 16, 10) "
+        "       AS UNSIGNED), "
+        "  NOW(), :batch_id "
+        "FROM ods_crm_lead_data_day l "
+        "WHERE NULLIF(TRIM(l.`客户单位`), '') IS NOT NULL "
+        "  AND l.`线索获得日期` IS NOT NULL"
+    )
+    with engine.begin() as conn:
+        result = conn.execute(sql, {"batch_id": batch_id})
+        inserted = result.rowcount
+    logger.info("  CRM leads → interaction_detail_temp: %d rows (incremental)", inserted)
+    return inserted
+
+
+def _incremental_load_crm_opportunity(batch_id: int) -> int:
+    """增量同步：整表重跑 CRM 商机（全量模式），靠 (source_table, source_id) 唯一键去重。
+
+    contact_name ← 业务机会所有人名称（商机联系人/负责人）；mobile 商机表无对应字段置空。
+    """
+    engine = get_etl_engine()
+    sql = text(
+        "INSERT IGNORE INTO dws_interaction_detail_temp "
+        "  (customer_name, contact_name, mobile, source_table, "
+        "   channel, behavior_type, content, event_time, source_id, etl_time, sync_batch_id) "
+        "SELECT "
+        "  NULLIF(TRIM(o.`客户名`), ''), "
+        "  NULLIF(TRIM(o.`业务机会所有人名称`), ''), "
+        "  NULL, "
+        "  'crm_opportunity', "
+        "  COALESCE(NULLIF(TRIM(o.`商机来源`), ''), 'crm'), "
+        "  '商机', "
+        "  COALESCE(NULLIF(TRIM(o.`业务机会名称`), ''), ''), "
+        "  o.`创建日期-转化`, "
+        "  CAST(CONV(SUBSTRING(MD5(CONCAT_WS('|', o.`业务机会编码`, o.`客户名`, "
+        "        o.`业务机会名称`, o.`创建日期-转化`, o.`商机来源`)), 1, 15), 16, 10) "
+        "       AS UNSIGNED), "
+        "  NOW(), :batch_id "
+        "FROM ods_crm_opportunity_data_day o "
+        "WHERE NULLIF(TRIM(o.`客户名`), '') IS NOT NULL "
+        "  AND o.`创建日期-转化` IS NOT NULL"
+    )
+    with engine.begin() as conn:
+        result = conn.execute(sql, {"batch_id": batch_id})
+        inserted = result.rowcount
+    logger.info("  CRM opportunities → interaction_detail_temp: %d rows (incremental)", inserted)
     return inserted
 
 
@@ -2637,109 +2943,19 @@ def _incremental_build_customer_360(batch_id: int) -> int:
 
 
 def _incremental_build_contact_360(batch_id: int) -> int:
-    """Incrementally update dws_contact_360 for affected customers only.
-    
-    Complete update including:
-    - Contact attributes (purchase_role, role_category, source_tables, etc.)
-    - Interaction aggregates (interaction_count, interaction_count_30d, etc.)
-    - Derived fields (activity_level)
+    """增量同步时完整重建 dws_contact_360_temp（与全量同步逻辑完全一致）。
+
+    不再“仅重建受影响客户”，改用与全量同步完全相同的构建逻辑（仅基表换成
+    *_temp），从根上消除 DELETE/INSERT 键不一致导致的行数偏差，保证增量结果
+    与全量结果一致。
     """
-    affected_customers = _get_affected_customers(batch_id)
-    
-    if not affected_customers:
-        logger.info("  No affected customers, skipping contact_360 update")
-        return 0
-    
-    logger.info("  Updating contact_360 for %d affected customers...", len(affected_customers))
-    
-    engine = get_etl_engine()
-    updated_count = 0
-    
-    # Process in batches
-    batch_size = 100
-    for i in range(0, len(affected_customers), batch_size):
-        batch = affected_customers[i:i + batch_size]
-        logger.info("    Processing batch %d-%d...", i, min(i + batch_size, len(affected_customers)))
-        
-        # ── Delete existing records for affected customers ─────────────
-        with engine.begin() as conn:
-            conn.execute(
-                text(
-                    "DELETE FROM dws_contact_360_temp "
-                    "WHERE customer_id IN ("
-                    "  SELECT id FROM dws_customer_360_temp "
-                    "  WHERE customer_name IN :customers"
-                    ")"
-                ),
-                {"customers": tuple(batch)}
-            )
-        
-        # ── Rebuild contact 360 for affected customers ─────────────
-        with engine.begin() as conn:
-            result = conn.execute(
-                text(
-                    "INSERT IGNORE INTO dws_contact_360_temp ( "
-                    "  customer_id, contact_name, mobile, email, department, position, "
-                    "  purchase_role, role_category, interaction_count, interaction_count_30d, "
-                    "  last_interaction_time, source_tables, linkflow_contact_id, updated_at "
-                    ") "
-                    "SELECT "
-                    "  c360.id AS customer_id, "
-                    "  cm.contact_name, cm.mobile, cm.email, cm.department, cm.position, "
-                    "  cm.purchase_role, cm.role_category, "
-                    "  COALESCE(agg.interaction_count, 0), "
-                    "  COALESCE(agg.interaction_count_30d, 0), "
-                    "  agg.last_interaction_time, "
-                    "  CAST(CONCAT('[\"', cm.source_table, '\"]') AS JSON), "
-                    "  cm.linkflow_contact_id, "
-                    "  NOW() "
-                    "FROM dws_contact_mapping_temp cm "
-                    "LEFT JOIN dws_customer_360_temp c360 ON c360.customer_name = cm.customer_name "
-                    "LEFT JOIN ( "
-                    "  SELECT contact_name, mobile, "
-                    "    COUNT(*) AS interaction_count, "
-                    "    SUM(CASE WHEN event_time >= DATE_SUB(NOW(), INTERVAL 30 DAY) "
-                    "        THEN 1 ELSE 0 END) AS interaction_count_30d, "
-                    "    MAX(event_time) AS last_interaction_time "
-                    "  FROM dws_interaction_detail_temp "
-                    "  WHERE contact_name IS NOT NULL "
-                    "  GROUP BY contact_name, mobile "
-                    ") agg ON (agg.contact_name = cm.contact_name "
-                    "          AND agg.mobile <=> cm.mobile) "
-                    "WHERE cm.customer_name IN :customers "
-                    "ON DUPLICATE KEY UPDATE "
-                    "  purchase_role         = VALUES(purchase_role), "
-                    "  role_category         = VALUES(role_category), "
-                    "  source_tables         = VALUES(source_tables), "
-                    "  linkflow_contact_id   = VALUES(linkflow_contact_id), "
-                    "  interaction_count     = VALUES(interaction_count), "
-                    "  interaction_count_30d = VALUES(interaction_count_30d), "
-                    "  last_interaction_time = VALUES(last_interaction_time), "
-                    "  updated_at            = NOW()"
-                ),
-                {"customers": tuple(batch)}
-            )
-            updated_count += result.rowcount
-    
-    # ── Update activity_level for all affected contacts ─────────────
-    with engine.begin() as conn:
-        conn.execute(
-            text(
-                "UPDATE dws_contact_360_temp c360 "
-                "INNER JOIN dws_customer_360_temp c360_customer ON c360_customer.id = c360.customer_id "
-                "SET c360.activity_level = CASE "
-                "  WHEN c360.interaction_count_30d >= 10 THEN 'high' "
-                "  WHEN c360.interaction_count_30d >= 3 THEN 'medium' "
-                "  WHEN c360.interaction_count > 0 THEN 'low' "
-                "  ELSE 'none' "
-                "END "
-                "WHERE c360_customer.customer_name IN :customers"
-            ),
-            {"customers": tuple(affected_customers)}
-        )
-    
-    logger.info("  contact_360 updated: %d contacts (complete with activity_level)", updated_count)
-    return updated_count
+    logger.info("Incremental sync: full rebuild of contact_360 (temp) ...")
+    return _build_contact_360(
+        target="dws_contact_360_temp",
+        mapping_tbl="dws_contact_mapping_temp",
+        interaction_tbl="dws_interaction_detail_temp",
+        customer_tbl="dws_customer_360_temp",
+    )
 
 
 def _incremental_rebuild_aggregates(batch_id: int) -> Dict[str, int]:

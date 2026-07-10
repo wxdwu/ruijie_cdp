@@ -39,14 +39,26 @@ class MonitoredTable:
     count_sql: Optional[str] = None
 
 
-# 监控注册表：当前默认监控的 5 张聚合表。
+# 监控注册表：当前监控 dws 层聚合表 + ods 层源表。
 # 后续新增表：直接在列表里追加 MonitoredTable("新表名")，或运行时调用 register_table()。
 _MONITOR_REGISTRY: List[MonitoredTable] = [
+    # dws 层聚合/结果表
     MonitoredTable("dws_contact_360"),
     MonitoredTable("dws_contact_mapping"),
     MonitoredTable("dws_customer_360"),
     MonitoredTable("dws_interaction_detail"),
     MonitoredTable("review_candidate"),
+    # ods 层源表
+    MonitoredTable("ods_zhique_behavior_list_day"),
+    MonitoredTable("ods_linkflow_contacts_day"),
+    MonitoredTable("ods_linkflow_events_day"),
+    MonitoredTable("ods_tianrun_customer_profile_day"),
+    MonitoredTable("ods_tianrun_session_day"),
+    MonitoredTable("ods_tianrun_session_detail_day"),
+    MonitoredTable("ods_ruijie_website_user_day"),
+    MonitoredTable("ods_crm_opportunity_data_day"),
+    MonitoredTable("ods_crm_lead_data_day"),
+    MonitoredTable("ods_crm_key_account_output_list_day"),
 ]
 
 
