@@ -119,22 +119,22 @@ function activeOppAmountWan() {
   <div class="prototype-tab">
     <div class="prototype-grid-2">
       <section class="prototype-panel">
-        <header><div><h2>经营健康度对位<FieldHelpTooltip :help="help.health" /></h2><p>五维拉通本客户与同行业基准</p></div><span>Peer Radar</span></header>
+        <header><div><h2 class="demo-missing-field demo-missing-field--compact demo-missing-field--inline" data-demo-missing="缺有效拜访聚合；需聚合同行基准">经营健康度对位<FieldHelpTooltip :help="help.health" /></h2><p>五维拉通本客户与同行业基准</p></div><span>Peer Radar</span></header>
         <div class="prototype-body"><PrototypeChart type="radar" :labels="healthAxes" :height="310" /></div>
       </section>
       <section class="prototype-panel">
-        <header><div><h2>漏斗金额 · 同行对位<FieldHelpTooltip :help="help.funnelAmount" align="end" /></h2><p>在/外漏斗金额对比同行均值</p></div><span>Funnel</span></header>
+        <header><div><h2 class="demo-missing-field demo-missing-field--compact demo-missing-field--inline" data-demo-missing="缺漏斗外金额；需聚合同行均值">漏斗金额 · 同行对位<FieldHelpTooltip :help="help.funnelAmount" align="end" /></h2><p>在/外漏斗金额对比同行均值</p></div><span>Funnel</span></header>
         <div class="prototype-body"><PrototypeChart type="bar" :labels="funnelRows" unit="万" :height="310" /></div>
       </section>
     </div>
 
     <section class="prototype-panel">
-      <header><div><h2>商机阶段堆积<FieldHelpTooltip :help="help.stageStack" /></h2><p>各阶段金额（万）累计，越厚=漏斗越健康</p></div><span>Pipeline</span></header>
+      <header><div><h2 class="demo-missing-field demo-missing-field--compact demo-missing-field--inline" data-demo-missing="需按商机阶段聚合金额">商机阶段堆积<FieldHelpTooltip :help="help.stageStack" /></h2><p>各阶段金额（万）累计，越厚=漏斗越健康</p></div><span>Pipeline</span></header>
       <div class="prototype-body"><PrototypeChart type="stack" :labels="stages" unit="万" :height="245" /></div>
     </section>
 
     <section class="prototype-panel">
-      <header><div><h2>AI 业务洞察<FieldHelpTooltip :help="help.businessInsight" align="end" /></h2><p>基于本客户与同行字段的差距分析</p></div><span>Insight</span></header>
+      <header><div><h2 class="demo-missing-field demo-missing-field--compact demo-missing-field--inline" data-demo-missing="口径待校准：成交与在途金额">AI 业务洞察<FieldHelpTooltip :help="help.businessInsight" align="end" /></h2><p>基于本客户与同行字段的差距分析</p></div><span>Insight</span></header>
       <div class="prototype-body prototype-insight-lines">
         <p>漏斗内/在途金额 <b>{{ activeOppAmountWan() }}</b>，<span>同行均值字段暂缺</span>。</p>
         <p>总拜访 <b>{{ pick('visitTotalCount', 'visit_total_count') || 0 }}</b> 次（有效 {{ pick('effectiverecord__c', 'effective_record_count') || 0 }}），无拜访天数 {{ pick('noVisitDays__c', 'no_visit_days') || 0 }} 天。</p>

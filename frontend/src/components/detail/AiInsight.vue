@@ -214,7 +214,10 @@ const help = {
       </section>
 
       <section>
-        <div class="focus-grid">
+        <div
+          class="focus-grid demo-missing-field"
+          data-demo-missing="缺原始字段：主题、竞品、关键人缺口、主商机"
+        >
           <div v-for="item in focusFacts" :key="item.label">
             <span>{{ item.label }}</span>
             <strong>{{ item.value }}</strong>

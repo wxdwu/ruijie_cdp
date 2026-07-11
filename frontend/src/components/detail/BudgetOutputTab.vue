@@ -184,7 +184,7 @@ function realizeRate() {
   <div class="prototype-tab">
     <div class="prototype-grid-2">
       <section class="prototype-panel">
-        <header><div><h2>预算结构对位<FieldHelpTooltip :help="help.budgetMix" /></h2><p>五大场景预算 vs 同行</p></div><span>Budget Mix</span></header>
+        <header><div><h2 class="demo-missing-field demo-missing-field--compact demo-missing-field--inline" data-demo-missing="缺五类预算字段；需聚合同行均值">预算结构对位<FieldHelpTooltip :help="help.budgetMix" /></h2><p>五大场景预算 vs 同行</p></div><span>Budget Mix</span></header>
         <div class="prototype-body"><PrototypeChart type="radar" :labels="budgetAxes" unit="万" :height="310" /></div>
       </section>
       <section class="prototype-panel">
@@ -193,26 +193,26 @@ function realizeRate() {
           <div class="rate-display"><b>{{ realizeRate() }}%</b><span class="prototype-badge">暂无对比</span><span>同行均值 0%</span></div>
           <p class="prototype-note">预算总盘 {{ formatWan(totalBudget()) }} ｜ 已实现 {{ formatWan(realizedAmount()) }} ｜ 当年漏斗 {{ formatWan(pick('sumMoneyInFunnel__c', 'active_opp_amount')) }}</p>
           <div class="budget-kv">
-            <div><span>产品线预算<FieldHelpTooltip :help="help.productBudget" /></span><b>{{ formatWan(pick('ProductBudget__c', 'product_budget')) }}</b></div>
-            <div><span>历史成交<FieldHelpTooltip :help="help.historyWin" align="end" /></span><b>{{ formatWan(pick('historyWin__c', 'history_win')) }}</b></div>
-            <div><span>LAN预算<FieldHelpTooltip :help="help.lanBudget" /></span><b>{{ formatWan(pick('LANBudget__c', 'lan_budget')) }}</b></div>
-            <div><span>WAN预算<FieldHelpTooltip :help="help.wanBudget" align="end" /></span><b>{{ formatWan(pick('WANBudget__c', 'wan_budget')) }}</b></div>
-            <div><span>数据中心预算<FieldHelpTooltip :help="help.dataCenterBudget" /></span><b>{{ formatWan(pick('DataCenterBudget__c', 'data_center_budget')) }}</b></div>
-            <div><span>云桌面预算<FieldHelpTooltip :help="help.cloudDesktopBudget" align="end" /></span><b>{{ formatWan(pick('CloudDesktopBudget__c', 'cloud_desktop_budget')) }}</b></div>
-            <div><span>智慧教室预算<FieldHelpTooltip :help="help.smartClassroomBudget" /></span><b>{{ formatWan(pick('SmartClassroomBudget__c', 'smart_classroom_budget')) }}</b></div>
-            <div><span>近2年成交<FieldHelpTooltip :help="help.recentWon" align="end" /></span><b>{{ formatWan(pick('totalWonOpportunityAmount', 'won_amount')) }}</b></div>
+            <div><span class="demo-missing-field demo-missing-field--compact demo-missing-field--inline" data-demo-missing="缺原始字段：产品线预算">产品线预算<FieldHelpTooltip :help="help.productBudget" /></span><b>{{ formatWan(pick('ProductBudget__c', 'product_budget')) }}</b></div>
+            <div><span class="demo-missing-field demo-missing-field--compact demo-missing-field--inline" data-demo-missing="需按成交明细聚合">历史成交<FieldHelpTooltip :help="help.historyWin" align="end" /></span><b>{{ formatWan(pick('historyWin__c', 'history_win')) }}</b></div>
+            <div><span class="demo-missing-field demo-missing-field--compact demo-missing-field--inline" data-demo-missing="缺原始字段：LAN预算">LAN预算<FieldHelpTooltip :help="help.lanBudget" /></span><b>{{ formatWan(pick('LANBudget__c', 'lan_budget')) }}</b></div>
+            <div><span class="demo-missing-field demo-missing-field--compact demo-missing-field--inline" data-demo-missing="缺原始字段：WAN预算">WAN预算<FieldHelpTooltip :help="help.wanBudget" align="end" /></span><b>{{ formatWan(pick('WANBudget__c', 'wan_budget')) }}</b></div>
+            <div><span class="demo-missing-field demo-missing-field--compact demo-missing-field--inline" data-demo-missing="缺原始字段：数据中心预算">数据中心预算<FieldHelpTooltip :help="help.dataCenterBudget" /></span><b>{{ formatWan(pick('DataCenterBudget__c', 'data_center_budget')) }}</b></div>
+            <div><span class="demo-missing-field demo-missing-field--compact demo-missing-field--inline" data-demo-missing="缺原始字段：云桌面预算">云桌面预算<FieldHelpTooltip :help="help.cloudDesktopBudget" align="end" /></span><b>{{ formatWan(pick('CloudDesktopBudget__c', 'cloud_desktop_budget')) }}</b></div>
+            <div><span class="demo-missing-field demo-missing-field--compact demo-missing-field--inline" data-demo-missing="缺原始字段：智慧教室预算">智慧教室预算<FieldHelpTooltip :help="help.smartClassroomBudget" /></span><b>{{ formatWan(pick('SmartClassroomBudget__c', 'smart_classroom_budget')) }}</b></div>
+            <div><span class="demo-missing-field demo-missing-field--compact demo-missing-field--inline" data-demo-missing="需按日期聚合近2年成交">近2年成交<FieldHelpTooltip :help="help.recentWon" align="end" /></span><b>{{ formatWan(pick('totalWonOpportunityAmount', 'won_amount')) }}</b></div>
           </div>
         </div>
       </section>
     </div>
 
     <section class="prototype-panel">
-      <header><div><h2>当年产出 · 找空间<FieldHelpTooltip :help="help.outputGap" /></h2><p>无线 / 路由 / 安全 当年产出 vs 同行均值</p></div><span>Output vs Peers</span></header>
+      <header><div><h2 class="demo-missing-field demo-missing-field--compact demo-missing-field--inline" data-demo-missing="需按订单产品线聚合当年产出">当年产出 · 找空间<FieldHelpTooltip :help="help.outputGap" /></h2><p>无线 / 路由 / 安全 当年产出 vs 同行均值</p></div><span>Output vs Peers</span></header>
       <div class="prototype-body"><PrototypeChart type="bar" :labels="outputRows" unit="万" :height="270" /></div>
     </section>
 
     <section class="prototype-panel">
-      <header><div><h2>AI 预算洞察<FieldHelpTooltip :help="help.budgetInsight" align="end" /></h2><p>差距/重点/兑现率综合判定</p></div><span>Insight</span></header>
+      <header><div><h2 class="demo-missing-field demo-missing-field--compact demo-missing-field--inline" data-demo-missing="缺预算字段；需聚合产出">AI 预算洞察<FieldHelpTooltip :help="help.budgetInsight" align="end" /></h2><p>差距/重点/兑现率综合判定</p></div><span>Insight</span></header>
       <div class="prototype-body prototype-insight-lines">
         <p>当前暂无可识别的产出差距，等待无线、路由与安全产出字段接入或从订单产品线聚合。</p>
         <p>本客户产品线预算字段：<b>未在当前 DWS/已查 ODS 中发现</b>。</p>

@@ -90,6 +90,10 @@ const kpiCards = computed(() => [
   },
 ])
 
+const kpiMissingLabels = {
+  deal_customers: '缺原始数据：成交归因',
+}
+
 const filterHint = computed(() => {
   const campaign = filters.campaign_tag || '全部专项'
   const start = filters.start_date || '-'
@@ -287,7 +291,13 @@ onMounted(async () => {
       </div>
 
       <div class="kpi-grid">
-        <article v-for="card in kpiCards" :key="card.key" class="kpi-card" :class="`tone-${card.tone}`">
+        <article
+          v-for="card in kpiCards"
+          :key="card.key"
+          class="kpi-card"
+          :class="[`tone-${card.tone}`, { 'demo-missing-field': kpiMissingLabels[card.key] }]"
+          :data-demo-missing="kpiMissingLabels[card.key]"
+        >
           <div class="kpi-topline">
             <span class="kpi-id">{{ card.id }}</span>
             <span class="kpi-tag">{{ card.tag }}</span>
@@ -394,7 +404,12 @@ onMounted(async () => {
       <section class="panel signal-panel">
         <div class="panel-header">
           <div class="panel-meta">
-            <b>标签与痛点信号 <FieldHelpTooltip :help="getCampaignHelp('tag_signals')" /></b>
+            <b
+              class="demo-missing-field demo-missing-field--compact demo-missing-field--inline"
+              data-demo-missing="缺原始字段：需求类型、业务场景、痛点"
+            >
+              标签与痛点信号 <FieldHelpTooltip :help="getCampaignHelp('tag_signals')" />
+            </b>
             <span class="panel-sub">按客户主表行业标签统计</span>
           </div>
           <span class="panel-tag">Tags</span>
@@ -424,14 +439,14 @@ onMounted(async () => {
             <tr>
               <th>内容</th>
               <th>类型</th>
-              <th>适配角色</th>
-              <th>内容兴趣 <FieldHelpTooltip :help="getCampaignHelp('content_interest')" /></th>
-              <th>产品兴趣 <FieldHelpTooltip :help="getCampaignHelp('product_interest')" /></th>
+              <th class="demo-missing-field demo-missing-field--compact" data-demo-missing="缺角色映射">适配角色</th>
+              <th class="demo-missing-field demo-missing-field--compact" data-demo-missing="需标签标准化">内容兴趣 <FieldHelpTooltip :help="getCampaignHelp('content_interest')" /></th>
+              <th class="demo-missing-field demo-missing-field--compact" data-demo-missing="缺产品字段">产品兴趣 <FieldHelpTooltip :help="getCampaignHelp('product_interest')" /></th>
               <th>打开率 <FieldHelpTooltip :help="getCampaignHelp('content_open_rate')" /></th>
               <th>点击率 <FieldHelpTooltip :help="getCampaignHelp('content_click_rate')" /></th>
-              <th>MQL <FieldHelpTooltip :help="getCampaignHelp('content_mql')" /></th>
-              <th>SQL <FieldHelpTooltip :help="getCampaignHelp('content_sql')" /></th>
-              <th>成交 <FieldHelpTooltip :help="getCampaignHelp('content_deal')" align="end" /></th>
+              <th class="demo-missing-field demo-missing-field--compact" data-demo-missing="高价值行为近似">MQL <FieldHelpTooltip :help="getCampaignHelp('content_mql')" /></th>
+              <th class="demo-missing-field demo-missing-field--compact" data-demo-missing="缺归因关系">SQL <FieldHelpTooltip :help="getCampaignHelp('content_sql')" /></th>
+              <th class="demo-missing-field demo-missing-field--compact" data-demo-missing="缺归因关系">成交 <FieldHelpTooltip :help="getCampaignHelp('content_deal')" align="end" /></th>
             </tr>
           </thead>
           <tbody>

@@ -236,10 +236,10 @@ function topStage() {
           <div><b :class="lostTotal() ? 'risk-bad' : 'risk-ok'">{{ lostTotal() }}</b><span>本客户丢单</span></div>
           <div><b>{{ formatWan(opportunities.reduce((sum, item) => sum + (lostReason(item) ? Number(amountWan(item) || 0) : 0), 0)) }}</b><span>金额暴露</span></div>
           <div><b>{{ lossReasons.find(reason => lossCount(reason) > 0) || '无' }}</b><span>本客户 Top 丢单维度</span></div>
-          <div><b>无</b><span>同行 Top 丢单维度</span></div>
+          <div class="demo-missing-field demo-missing-field--compact" data-demo-missing="需按同行客户聚合丢单基准"><b>无</b><span>同行 Top 丢单维度</span></div>
         </div>
         <div class="loss-table">
-          <div class="loss-head"><span>丢单维度</span><span>本客户</span><span>同行均值</span><span>金额暴露</span><span>标记</span></div>
+          <div class="loss-head"><span>丢单维度</span><span>本客户</span><span class="demo-missing-field demo-missing-field--compact" data-demo-missing="需按同行客户聚合">同行均值</span><span>金额暴露</span><span>标记</span></div>
           <div v-for="(reason, index) in lossReasons" :key="reason">
             <span class="loss-name"><i :class="`loss-dot tone-${index}`"></i>{{ reason }}</span>
             <span><i></i>{{ lossCount(reason) }}单</span>
@@ -253,11 +253,11 @@ function topStage() {
 
     <div class="prototype-grid-2">
       <section class="prototype-panel">
-        <header><div><h2>商机阶段分布<FieldHelpTooltip :help="help.stageDistribution" /></h2><p>阶段商机条数 vs 同行</p></div><span>Pipeline</span></header>
+        <header><div><h2 class="demo-missing-field demo-missing-field--compact demo-missing-field--inline" data-demo-missing="需统一阶段并聚合同行基准">商机阶段分布<FieldHelpTooltip :help="help.stageDistribution" /></h2><p>阶段商机条数 vs 同行</p></div><span>Pipeline</span></header>
         <div class="prototype-body"><PrototypeChart type="stack" :labels="stages" :height="250" /></div>
       </section>
       <section class="prototype-panel">
-        <header><div><h2>竞品对位<FieldHelpTooltip :help="help.competitors" align="end" /></h2><p>主要竞品出现频次 vs 同行业基准</p></div><span>Competitors</span></header>
+        <header><div><h2 class="demo-missing-field demo-missing-field--compact demo-missing-field--inline" data-demo-missing="缺原始字段：竞品">竞品对位<FieldHelpTooltip :help="help.competitors" align="end" /></h2><p>主要竞品出现频次 vs 同行业基准</p></div><span>Competitors</span></header>
         <div class="prototype-body empty-chart-state"><b>0</b><span>暂无竞品数据</span></div>
       </section>
     </div>
@@ -267,7 +267,7 @@ function topStage() {
       <div class="prototype-body prototype-insight-lines">
         <p>本客户丢单记录 <b>{{ lostTotal() }}</b> 条。同行业最常出现的丢单维度尚未聚合。</p>
         <p>商机最聚集于 <b>{{ topStage() }}</b> 阶段（{{ opportunities.length }} 个）。</p>
-        <p>主要竞品：<b>{{ opportunities.map(item => pick(item, 'competitor', 'competitors')).filter(Boolean)[0] || '暂无数据' }}</b>。</p>
+        <p><span class="demo-missing-field demo-missing-field--compact demo-missing-field--inline" data-demo-missing="缺原始字段：竞品与阻塞点">主要竞品：<b>{{ opportunities.map(item => pick(item, 'competitor', 'competitors')).filter(Boolean)[0] || '暂无数据' }}</b></span>。</p>
       </div>
     </section>
 
@@ -278,15 +278,15 @@ function topStage() {
           <thead>
             <tr>
               <th>商机<FieldHelpTooltip :help="help.oppName" /></th>
-              <th>阶段<FieldHelpTooltip :help="help.stage" /></th>
+              <th class="demo-missing-field demo-missing-field--compact" data-demo-missing="口径待统一">阶段<FieldHelpTooltip :help="help.stage" /></th>
               <th>金额<FieldHelpTooltip :help="help.amount" /></th>
-              <th>概率<FieldHelpTooltip :help="help.probability" /></th>
-              <th>预计成交<FieldHelpTooltip :help="help.expectedClose" /></th>
-              <th>取消/丢单<FieldHelpTooltip :help="help.cancelLost" /></th>
+              <th class="demo-missing-field demo-missing-field--compact" data-demo-missing="赢率口径待校准">概率<FieldHelpTooltip :help="help.probability" /></th>
+              <th class="demo-missing-field demo-missing-field--compact" data-demo-missing="日期口径待统一">预计成交<FieldHelpTooltip :help="help.expectedClose" /></th>
+              <th class="demo-missing-field demo-missing-field--compact" data-demo-missing="缺状态字段">取消/丢单<FieldHelpTooltip :help="help.cancelLost" /></th>
               <th>丢单维度<FieldHelpTooltip :help="help.lossCategory" align="end" /></th>
               <th>原始原因<FieldHelpTooltip :help="help.rawReason" align="end" /></th>
-              <th>阻塞点<FieldHelpTooltip :help="help.blocker" align="end" /></th>
-              <th>竞品<FieldHelpTooltip :help="help.competitor" align="end" /></th>
+              <th class="demo-missing-field demo-missing-field--compact" data-demo-missing="缺原始字段">阻塞点<FieldHelpTooltip :help="help.blocker" align="end" /></th>
+              <th class="demo-missing-field demo-missing-field--compact" data-demo-missing="缺原始字段">竞品<FieldHelpTooltip :help="help.competitor" align="end" /></th>
             </tr>
           </thead>
           <tbody>

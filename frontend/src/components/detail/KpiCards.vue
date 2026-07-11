@@ -198,7 +198,10 @@ const help = {
     </div>
 
     <!-- 在途商机 -->
-    <div class="rounded-xl border border-[var(--line)] bg-[var(--panel)] p-4">
+    <div
+      class="demo-missing-field rounded-xl border border-[var(--line)] bg-[var(--panel)] p-4"
+      data-demo-missing="缺原始字段：任务截止时间/完成状态"
+    >
       <div class="text-xs text-[var(--muted)] mb-2">在途商机<FieldHelpTooltip :help="help.activeOpportunity" align="end" /></div>
       <div class="flex items-baseline gap-6 text-[var(--text)]">
         <span class="text-2xl font-bold">{{ opportunityCount }}个</span>

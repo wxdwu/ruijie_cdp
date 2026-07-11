@@ -311,18 +311,18 @@ const help = {
             <span>负责人</span>
             <strong>{{ customer.owner_name || '—' }}</strong>
           </div>
-          <div class="profile-field">
+          <div class="profile-field demo-missing-field" data-demo-missing="缺原始字段：统一社会信用代码">
             <span>统一社会信用代码</span>
             <strong>{{ display('UniformSocialCreditCode__c', 'uniform_social_credit_code', 'social_credit_code') }}</strong>
           </div>
-          <div class="profile-field">
+          <div class="profile-field demo-missing-field" data-demo-missing="需规则计算：必跟标签">
             <span>必跟 / 老客户</span>
             <strong>
               {{ formatBool(pick('MustFollow__c', 'must_follow')) }} /
               {{ formatBool(pick('IsOldAccount__c', 'is_old_account', 'is_existing_customer')) }}
             </strong>
           </div>
-          <div class="profile-field">
+          <div class="profile-field demo-missing-field" data-demo-missing="缺原始字段：企业通讯地址">
             <span>通讯地址</span>
             <strong>{{ addressText() }}</strong>
           </div>
@@ -333,7 +333,7 @@ const help = {
         </div>
       </section>
 
-      <section>
+      <section class="demo-missing-field" data-demo-missing="缺需求/场景/痛点字段；需聚合历史产品">
         <div class="section-title mb-3">业务标签<FieldHelpTooltip :help="help.businessTags" /></div>
         <div class="flex flex-wrap gap-2">
           <span
@@ -354,7 +354,7 @@ const help = {
           <div class="compact-list">
             <div><span>最近互动</span><strong>{{ formatTime(pick('recentActivityRecordTime', 'last_interaction_time')) }}</strong></div>
             <div><span>最近拜访</span><strong>{{ formatTime(pick('lastVisitTime__c', 'last_visit_time')) }}</strong></div>
-            <div>
+            <div class="demo-missing-field" data-demo-missing="缺计划字段；需规则计算有效跟进">
               <span>累计 / 计划 / 有效</span>
               <strong>
                 {{ interactionTotal() }} / 0 / {{ interactionTotal() }}
@@ -378,8 +378,8 @@ const help = {
               </strong>
             </div>
             <div><span>最高阶段商机</span><strong>{{ display('highest_stage_opp', 'forecast_type') }}</strong></div>
-            <div><span>产品预算</span><strong><span class="missing-field-tag">字段待填充</span></strong></div>
-            <div>
+            <div class="demo-missing-field" data-demo-missing="缺原始字段：产品预算"><span>产品预算</span><strong><span class="missing-field-tag">字段待填充</span></strong></div>
+            <div class="demo-missing-field" data-demo-missing="需按成交明细聚合历史金额">
               <span>近2年成交 / 历史</span>
               <strong>
                 {{ formatYuan(pick('won_amount')) }} /

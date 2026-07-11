@@ -159,10 +159,88 @@ html[data-theme="light"] .chart-legend {
 .c360-tabs button { padding-bottom:15px; font-size:21px; line-height:1.25; font-weight:650; color:#9da9c1; }
 .c360-tabs button.border-\[var\(--brand\)\] { color:var(--brand); }
 
+/* Temporary data-warehouse meeting markers. Revert the demo commit after use. */
+.demo-missing-field {
+  position: relative !important;
+  z-index: 100 !important;
+  overflow: visible !important;
+  border-color: #ff3b30 !important;
+  background-image: linear-gradient(rgba(255, 59, 48, .045), rgba(255, 59, 48, .045)) !important;
+  box-shadow:
+    inset 0 0 0 3px #ff3b30,
+    0 0 0 1px rgba(255, 59, 48, .18) !important;
+}
+
+.demo-missing-field::before {
+  content: attr(data-demo-missing);
+  position: absolute;
+  top: -30px;
+  left: 0;
+  z-index: 80;
+  max-width: calc(100% - 8px);
+  overflow: hidden;
+  border-radius: 6px 6px 0 0;
+  padding: 5px 10px;
+  background: #ff3b30;
+  box-shadow: 0 3px 9px rgba(92, 12, 8, .25);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 20px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.demo-missing-field--compact {
+  border-radius: 5px;
+}
+
+.demo-missing-field--compact::before {
+  top: -22px;
+  max-width: none;
+  padding: 2px 5px;
+  border-radius: 4px 4px 0 0;
+  font-size: 9px;
+  line-height: 16px;
+}
+
+.demo-missing-field--inline {
+  display: inline-flex !important;
+  align-items: center;
+  padding: 2px 5px;
+}
+
+/* Reserve clipping space above scrollable tables, then cancel it with a
+   negative margin. The table keeps its original position and row height while
+   marker labels can float above the header without being cut off. */
+.table-scroll:has(th.demo-missing-field--compact),
+.campaign-board .table-shell:has(th.demo-missing-field--compact) {
+  margin-top: -24px;
+  padding-top: 24px;
+}
+
+@media (max-width: 640px) {
+  .demo-missing-field::before {
+    top: -28px;
+    max-width: calc(100% - 4px);
+    padding: 4px 7px;
+    font-size: 10px;
+  }
+
+  .demo-missing-field--compact::before {
+    top: -20px;
+    padding: 2px 4px;
+    font-size: 8px;
+  }
+
+}
+
 .prototype-tab { display:flex; flex-direction:column; gap:16px; }
 .prototype-grid-2 { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:16px; }
-.prototype-panel { overflow:hidden; border:1px solid var(--line); border-radius:8px; background:var(--panel); }
-.prototype-panel > header { min-height:66px; display:flex; align-items:center; justify-content:space-between; gap:16px; padding:13px 18px; border-bottom:1px solid var(--line); }
+.prototype-panel { overflow:visible; border:1px solid var(--line); border-radius:8px; background:var(--panel); }
+.prototype-panel:has(.demo-missing-field) { position:relative; z-index:20; }
+.prototype-panel > header { overflow:visible; min-height:66px; display:flex; align-items:center; justify-content:space-between; gap:16px; padding:13px 18px; border-bottom:1px solid var(--line); }
 .prototype-panel > header h2 { margin:0; font-size:14px; line-height:1.4; font-weight:700; color:var(--text); letter-spacing:0; }
 .prototype-panel > header p { margin-top:3px; font-size:11px; color:var(--muted); }
 .prototype-panel > header > span { font-size:10px; color:var(--brand); text-transform:uppercase; }
@@ -264,7 +342,7 @@ html[data-theme="light"] .chart-legend {
 .loss-summary > div { min-height:82px; padding:13px; border:1px solid rgba(43,56,84,.72); background:rgba(255,255,255,.02); }
 .loss-summary b { display:block; font-size:19px; color:var(--text); }
 .loss-summary span { display:block; margin-top:7px; font-size:10px; color:var(--muted); }
-.loss-table { overflow:hidden; border:1px solid rgba(43,56,84,.72); }
+.loss-table { overflow:visible; border:1px solid rgba(43,56,84,.72); }
 .loss-table > div { display:grid; grid-template-columns:130px 1fr 1fr 90px 60px; align-items:center; gap:12px; min-height:42px; padding:6px 12px; border-top:1px solid rgba(43,56,84,.45); font-size:10px; color:var(--muted); }
 .loss-table .loss-head { min-height:38px; border-top:0; background:rgba(255,255,255,.035); color:#aeb9ce; font-weight:700; }
 .loss-table i { width:54px; height:7px; display:inline-block; margin-right:7px; background:rgba(101,179,255,.15); }

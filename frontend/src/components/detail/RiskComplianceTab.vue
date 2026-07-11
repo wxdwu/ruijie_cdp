@@ -165,7 +165,7 @@ const highRiskCount = computed(() => riskItems.value.filter(item => item.level =
   <div class="prototype-tab">
     <div class="prototype-grid-2">
       <section class="prototype-panel">
-        <header><div><h2>风险评分<FieldHelpTooltip :help="help.riskScore" /></h2><p>基于多个 CRM 风险字段加权识别</p></div><span>Risk Score</span></header>
+        <header><div><h2 class="demo-missing-field demo-missing-field--compact demo-missing-field--inline" data-demo-missing="缺原始字段：风险评分输入">风险评分<FieldHelpTooltip :help="help.riskScore" /></h2><p>基于多个 CRM 风险字段加权识别</p></div><span>Risk Score</span></header>
         <div class="prototype-body risk-score-layout">
           <div><b :class="riskItems.length ? 'risk-bad' : 'risk-ok'">{{ riskItems.length }}</b><span>风险点数</span></div>
           <div><b class="risk-bad">{{ highRiskCount }}</b><span>高风险</span></div>
@@ -179,7 +179,7 @@ const highRiskCount = computed(() => riskItems.value.filter(item => item.level =
         <header><div><h2>状态总览<FieldHelpTooltip :help="help.statusOverview" align="end" /></h2><p>审批 / 公海 / 锁定 / 免打扰</p></div><span>Status</span></header>
         <div class="prototype-body status-list">
           <div v-for="row in statusRows" :key="row.label">
-            <span>{{ row.label }}<FieldHelpTooltip :help="row.help" /></span>
+            <span class="demo-missing-field demo-missing-field--compact demo-missing-field--inline" :data-demo-missing="`缺原始字段：${row.label}`">{{ row.label }}<FieldHelpTooltip :help="row.help" /></span>
             <b>{{ row.value }}</b>
           </div>
         </div>
@@ -191,7 +191,7 @@ const highRiskCount = computed(() => riskItems.value.filter(item => item.level =
       <div class="prototype-body">
         <div v-if="!riskItems.length" class="risk-clear-state">
           <span class="risk-check">✓</span>
-          <div><b>当前未接入显著风险字段</b><p>审批、锁定、免打扰、部门风险、制裁风险、公海与重复客户字段目前未在 DWS/已查 ODS 中发现，后续聚合后自动生成处置建议。</p></div>
+          <div><b class="demo-missing-field demo-missing-field--compact demo-missing-field--inline" data-demo-missing="缺原始字段：部门/制裁/重复标识">当前未接入显著风险字段</b><p>审批、锁定、免打扰、部门风险、制裁风险、公海与重复客户字段目前未在 DWS/已查 ODS 中发现，后续聚合后自动生成处置建议。</p></div>
         </div>
         <div v-else class="space-y-3">
           <div v-for="item in riskItems" :key="`${item.title}-${item.detail}`" class="rounded-lg border border-[var(--line)] bg-white/5 p-4">

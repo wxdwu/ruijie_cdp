@@ -457,7 +457,10 @@ const help = {
           </div>
         </div>
 
-        <div class="contact-detail-grid">
+        <div
+          class="contact-detail-grid demo-missing-field"
+          data-demo-missing="缺电话/关系/状态/兴趣；需映射阶段/意向"
+        >
           <div><span>手机<FieldHelpTooltip :help="help.phone" /></span><strong>{{ display(selectedContact, 'mobile') }}</strong></div>
           <div><span>邮箱<FieldHelpTooltip :help="help.email" /></span><strong>{{ display(selectedContact, 'email') }}</strong></div>
           <div><span>办公电话<FieldHelpTooltip :help="help.phone" /></span><strong>{{ display(selectedContact, 'office_phone', 'officePhone') }}</strong></div>
@@ -483,7 +486,7 @@ const help = {
           </div>
         </div>
 
-        <div class="contact-behavior">
+        <div class="contact-behavior demo-missing-field" data-demo-missing="需按互动明细聚合高价值行为">
           <div class="contact-behavior-title">
             <span>该人的互动行为<FieldHelpTooltip :help="help.behavior" align="end" /></span>
             <small>近14天/全量历史行为</small>
