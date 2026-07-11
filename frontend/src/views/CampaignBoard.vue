@@ -425,13 +425,13 @@ onMounted(async () => {
               <th>内容</th>
               <th>类型</th>
               <th>适配角色</th>
-              <th>内容兴趣 <FieldHelpTooltip :help="getCampaignHelp('content_effect')" /></th>
-              <th>产品兴趣 <FieldHelpTooltip :help="getCampaignHelp('tag_signals')" /></th>
-              <th>打开率 <FieldHelpTooltip :help="getCampaignHelp('content_effect')" /></th>
-              <th>点击率 <FieldHelpTooltip :help="getCampaignHelp('content_effect')" /></th>
-              <th>MQL <FieldHelpTooltip :help="getCampaignHelp('content_effect')" /></th>
-              <th>SQL <FieldHelpTooltip :help="getCampaignHelp('content_effect')" /></th>
-              <th>成交 <FieldHelpTooltip :help="getCampaignHelp('content_effect')" align="end" /></th>
+              <th>内容兴趣 <FieldHelpTooltip :help="getCampaignHelp('content_interest')" /></th>
+              <th>产品兴趣 <FieldHelpTooltip :help="getCampaignHelp('product_interest')" /></th>
+              <th>打开率 <FieldHelpTooltip :help="getCampaignHelp('content_open_rate')" /></th>
+              <th>点击率 <FieldHelpTooltip :help="getCampaignHelp('content_click_rate')" /></th>
+              <th>MQL <FieldHelpTooltip :help="getCampaignHelp('content_mql')" /></th>
+              <th>SQL <FieldHelpTooltip :help="getCampaignHelp('content_sql')" /></th>
+              <th>成交 <FieldHelpTooltip :help="getCampaignHelp('content_deal')" align="end" /></th>
             </tr>
           </thead>
           <tbody>

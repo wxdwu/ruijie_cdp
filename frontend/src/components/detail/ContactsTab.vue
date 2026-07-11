@@ -277,6 +277,32 @@ const help = {
     calculation: '当前 DWS 未落稳定联系人状态字段；页面暂按 activity_level 派生活跃/暂无互动状态。',
     emptyState: '无状态时显示 -。',
   },
+  activityIntent: {
+    title: '活跃度 / 合作意向',
+    type: 'calc',
+    fields: [
+      {
+        type: 'calc',
+        variable: 'activity_level',
+        meaning: '当前联系人的互动活跃度。',
+        sourceTable: 'dws_contact_360',
+        sourceFieldDisplay: 'activity_level(联系人活跃度)',
+        calculation: '按联系人互动次数分级：近30天互动不少于10次为高，不少于3次为中；近30天不足3次但存在历史互动为低；没有互动为无互动。',
+        timeRule: '近30天以 ETL 执行时间为基准动态统计。',
+        emptyState: '没有联系人活跃度时显示 -。',
+      },
+      {
+        type: 'calc',
+        variable: 'display_intent_level',
+        meaning: '合作意向优先取联系人级意向；联系人级意向为空时回退为所属客户的合作意向。',
+        sourceTable: 'dws_contact_360, dws_customer_360',
+        sourceFieldDisplay: 'dws_contact_360.intent_level / dws_customer_360.intent_level',
+        calculation: '接口使用 COALESCE(dws_contact_360.intent_level, dws_customer_360.intent_level)。客户级意向规则为：近30天互动不少于10次且有在途商机为高；不少于3次为中；只有历史互动为低；无互动为无。',
+        timeRule: '客户近30天互动以当前时间向前30天统计。',
+        emptyState: '联系人级和客户级意向均缺失时显示 -。',
+      },
+    ],
+  },
   contentInterest: {
     title: '内容类型兴趣',
     type: 'src',
@@ -440,7 +466,7 @@ const help = {
           <div><span>联系人状态<FieldHelpTooltip :help="help.status" /></span><strong>{{ contactStatus(selectedContact) }}</strong></div>
           <div><span>内容类型兴趣<FieldHelpTooltip :help="help.contentInterest" /></span><strong>{{ display(selectedContact, 'top_content_types', 'contentInterest') }}</strong></div>
           <div><span>产品兴趣<FieldHelpTooltip :help="help.productInterest" /></span><strong>{{ display(selectedContact, 'product_interests', 'productInterest') }}</strong></div>
-          <div><span>活跃度 / 合作意向</span><strong>{{ activityLabel(selectedContact) }} / {{ display(selectedContact, 'display_intent_level', 'intent_level', 'cooperationIntent') }}</strong></div>
+          <div><span>活跃度 / 合作意向<FieldHelpTooltip :help="help.activityIntent" /></span><strong>{{ activityLabel(selectedContact) }} / {{ display(selectedContact, 'display_intent_level', 'intent_level', 'cooperationIntent') }}</strong></div>
           <div><span>数据来源</span><strong>{{ sourceText(selectedContact) }}</strong></div>
           <div><span>偏好触达<FieldHelpTooltip :help="help.preferredChannel" /></span><strong>{{ display(selectedContact, 'preferred_channel', 'preferredChannel') }}</strong></div>
           <div><span>linkflow ID</span><strong>{{ display(selectedContact, 'linkflow_contact_id') }}</strong></div>
