@@ -378,7 +378,6 @@ def _build_icp_customers_table() -> int:
 
 # Names of helper tables created and dropped within each sync run.
 _ETL_TEMP_TABLES = [
-    "tmp_icp_companies",
     "tmp_icp_mobiles",
     "tmp_crm_mobiles",
     "tmp_valid_linkflow_contacts",
@@ -406,12 +405,6 @@ def _create_etl_temp_tables() -> None:
     through existing indexes instead of scanning by unfiltered id ranges.
     """
     _drop_etl_temp_tables()
-
-    _exec("""
-        CREATE TABLE tmp_icp_companies (
-            customer_name VARCHAR(255) NOT NULL PRIMARY KEY
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
-    """)
 
     _exec("""
         CREATE TABLE tmp_icp_mobiles (
@@ -474,12 +467,23 @@ def _create_etl_temp_tables() -> None:
 
 
 def _build_tmp_icp_filters() -> None:
-    """Populate ICP company/mobile filters from the anchor table."""
-    _exec("TRUNCATE TABLE tmp_icp_companies")
+    """Populate ICP company/mobile filters from the anchor table.
+
+    统一使用持久锚点表 tmp_icp_customers（与 _build_icp_customers_table 同源），
+    不再维护冗余的 tmp_icp_companies 表。
+    """
+    # 确保锚点表存在（增量同步路径不会调用 _build_icp_customers_table，需自建）
+    _exec("""
+        CREATE TABLE IF NOT EXISTS tmp_icp_customers (
+            customer_name VARCHAR(255) NOT NULL PRIMARY KEY,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+    """)
+    _exec("TRUNCATE TABLE tmp_icp_customers")
     _exec("TRUNCATE TABLE tmp_icp_mobiles")
 
     _exec("""
-        INSERT IGNORE INTO tmp_icp_companies (customer_name)
+        INSERT IGNORE INTO tmp_icp_customers (customer_name)
         SELECT DISTINCT related_company
         FROM ods_zhique_contact_day
         WHERE related_company IS NOT NULL AND related_company != ''
@@ -494,7 +498,7 @@ def _build_tmp_icp_filters() -> None:
 
     logger.info(
         "ICP filters ready: %d companies, %d mobiles",
-        _table_count("tmp_icp_companies"),
+        _table_count("tmp_icp_customers"),
         _table_count("tmp_icp_mobiles"),
     )
 
@@ -600,7 +604,7 @@ def _load_contact_mapping() -> Dict[str, int]:
     """Populate dws_contact_mapping from all ODS contact sources.
 
     Uses DELETE + INSERT per source to avoid duplicates (no unique constraint
-    beyond auto-increment PK).  Relies on tmp_icp_companies / tmp_icp_mobiles
+    beyond auto-increment PK).  Relies on tmp_icp_customers / tmp_icp_mobiles
     and tmp_valid_linkflow_contacts being pre-populated.
     """
     stats: Dict[str, int] = {}
@@ -642,7 +646,7 @@ def _load_contact_mapping() -> Dict[str, int]:
         "FROM ods_crm_contact_day c "
         "WHERE c.customer_name IS NOT NULL AND c.customer_name != '' "
         "  AND ( "
-        "    c.customer_name IN (SELECT customer_name FROM tmp_icp_companies) "
+        "    c.customer_name IN (SELECT customer_name FROM tmp_icp_customers) "
         "    OR c.mobile IN (SELECT mobile FROM tmp_icp_mobiles) "
         "  )"
     )
@@ -2300,7 +2304,7 @@ def _incremental_upsert_contact_mapping(batch_id: int) -> Dict[str, int]:
         "FROM ods_crm_contact_day c "
         "WHERE c.customer_name IS NOT NULL AND c.customer_name != '' "
         "  AND ( "
-        "    c.customer_name IN (SELECT customer_name FROM tmp_icp_companies) "
+        "    c.customer_name IN (SELECT customer_name FROM tmp_icp_customers) "
         "    OR c.mobile IN (SELECT mobile FROM tmp_icp_mobiles) "
         "  ) "
         f" {crm_filter} "

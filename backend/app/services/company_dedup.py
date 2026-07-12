@@ -1074,20 +1074,23 @@ def batch_calculate_evidence_scores(
             progress_callback(0, total_pairs,
                              f"正在查询 {table_name} 的联系数据 ({table_idx + 1}/{num_tables})...")
 
-        # 为每个表单独构建 LIKE 查询条件，使用该表实际的列名
-        like_parts = []
-        params: Dict[str, str] = {}
-        for idx, name in enumerate(all_companies):
-            like_parts.append(f"{company_field} LIKE :name_{idx}")
-            params[f"name_{idx}"] = f"%{name}%"
-        like_clause = " OR ".join(like_parts) if like_parts else "1=0"
+        # 使用精确 IN 匹配（按公司名精确匹配），避免对每个公司名生成一条
+        # "字段 LIKE :name_N" 条件并用 OR 串联，导致公司数上千时产生巨型 SQL
+        # (如 related_company LIKE %(name_1366)s OR ...)，既臃肿又会造成匹配漂移
+        # 与严重性能问题。模糊匹配（子串/归一化）仍由下方 Python 逻辑处理。
+        name_list = list(all_companies)
+        placeholders = ", ".join([f":name_{idx}" for idx in range(len(name_list))])
+        params: Dict[str, str] = {
+            f"name_{idx}": name for idx, name in enumerate(name_list)
+        }
+        in_clause = f"{company_field} IN ({placeholders})" if placeholders else "1=0"
 
         # 批量查询：公司 → 电话集合，同时记录电话→姓名
         try:
             phone_sql = text(f"""
                 SELECT {company_field}, {phone_field}, {name_field}
                 FROM {table_name}
-                WHERE ({like_clause})
+                WHERE ({in_clause})
                   AND {phone_field} IS NOT NULL AND {phone_field} != ''
             """)
             phone_rows = db.execute(phone_sql, params).fetchall()
@@ -1125,7 +1128,7 @@ def batch_calculate_evidence_scores(
             email_sql = text(f"""
                 SELECT {company_field}, {email_field}, {name_field}
                 FROM {table_name}
-                WHERE ({like_clause})
+                WHERE ({in_clause})
                   AND {email_field} IS NOT NULL AND {email_field} != ''
             """)
             email_rows = db.execute(email_sql, params).fetchall()
