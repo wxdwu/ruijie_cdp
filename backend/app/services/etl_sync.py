@@ -1178,10 +1178,16 @@ def _build_contact_360(
         "  cm.linkflow_contact_id, "
         "  NOW() "
         f"FROM {mapping_tbl} cm "
+        # 只保留公司名存在于 ICP 白名单(tmp_icp_customers)的联系人：
+        # 能进入 dws_contact_360 的联系人，其公司必须是 tmp_icp_customers 中
+        # 存在的公司，从而有合法的非零 customer_id；过滤掉无对应客户
+        # （customer_id = 0 / NULL）的孤儿联系人。
+        f"INNER JOIN tmp_icp_customers icp ON icp.customer_name = cm.customer_name "
         f"LEFT JOIN {customer_tbl} c360 ON c360.customer_name = cm.customer_name "
         "LEFT JOIN tmp_contact_interactions agg "
         "  ON agg.contact_name = cm.contact_name "
         " AND agg.mobile <=> cm.mobile "
+        "WHERE c360.id IS NOT NULL AND c360.id != 0 "
         "ON DUPLICATE KEY UPDATE "
         "  interaction_count     = VALUES(interaction_count), "
         "  interaction_count_30d = VALUES(interaction_count_30d), "
