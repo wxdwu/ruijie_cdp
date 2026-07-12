@@ -760,16 +760,23 @@ def _load_interactions_tianrun() -> int:
     """Load Tianrun sessions → dws_interaction_detail.
 
     Tianrun sessions are online customer-service chats.  The visitor_mobile_phone
-    is NULL for all rows.  We use visitor_id as the contact identifier and
-    the contact_type_name as the channel source.  Customer names are channel
-    labels rather than real company names, so we keep them for traceability.
+    is NULL for all rows.  We use visitor_name as the contact identifier and the
+    contact_type_name as the channel source.
 
-    customer_name is not indexed on ods_tianrun_session_day; we do a single
-    full pass over the ~777K-row table and keep rows with non-null names.
+    重要：天润会话的 customer_name 是「地域/访客标签」(例如 “江苏徐州3e9a6c”、
+    “网页1a6353”)，并非真实公司名。若直接写入 dws_interaction_detail，会污染
+    customer_name 维度（下游 dws_customer_360 / dws_contact_360 都以
+    customer_name 为聚合键）。因此这里与增量模式保持一致，只保留
+    customer_name 命中 ICP 客户白名单 (tmp_icp_customers) 的会话，避免把
+    地名/访客标签当公司名入库。
+
+    customer_name 在 ods_tianrun_session_day 上没有索引，故仍做一次整表扫描，
+    仅靠 tmp_icp_customers 的小表 JOIN 过滤。
     """
     total_rows = _table_count("ods_tianrun_session_day")
     logger.info(
-        "  Loading Tianrun sessions (single pass over %d rows)...",
+        "  Loading Tianrun sessions (single pass over %d rows, "
+        "filtered by tmp_icp_customers)...",
         total_rows,
     )
 
@@ -793,6 +800,7 @@ def _load_interactions_tianrun() -> int:
         "  CASE WHEN s.total_duration > 60 THEN 1 ELSE 0 END, "
         "  s.id, NOW() "
         "FROM ods_tianrun_session_day s "
+        "INNER JOIN tmp_icp_customers icp ON icp.customer_name = s.customer_name "
         "WHERE s.customer_name IS NOT NULL AND s.customer_name != '' "
         "  AND s.visitor_name IS NOT NULL AND s.visitor_name != ''"
     )
