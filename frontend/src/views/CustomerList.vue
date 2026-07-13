@@ -1,5 +1,5 @@
 <script setup>
-import { onMounted, watch, ref } from 'vue'
+import { onBeforeUnmount, onMounted, watch, ref } from 'vue'
 import { useCustomerStore } from '../stores/customer'
 import FilterBar from '../components/customer/FilterBar.vue'
 import CustomerTable from '../components/customer/CustomerTable.vue'
@@ -51,6 +51,10 @@ watch(() => store.filters.page, () => {
 
 onMounted(() => {
   store.fetchList()
+})
+
+onBeforeUnmount(() => {
+  store.cancelListRequest()
 })
 </script>
 

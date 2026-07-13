@@ -138,6 +138,24 @@ def test_owner_keyword_uses_like(mock_db):
     assert params["owner_keyword"] == "%张%"
 
 
+def test_canonical_channel_filter_accepts_code_and_chinese_label(mock_db):
+    _call(mock_db, channel="email")
+    sql, params = mock_db.calls[0]
+    assert "last_interaction_channel IN" in sql
+    assert set(params.values()) == {"email", "邮件"}
+
+
+def test_other_channel_filter_excludes_known_and_empty_values(mock_db):
+    _call(mock_db, channel="other")
+    sql, params = mock_db.calls[0]
+    assert "last_interaction_channel IS NOT NULL" in sql
+    assert "TRIM(last_interaction_channel) != ''" in sql
+    assert "last_interaction_channel NOT IN" in sql
+    assert set(params.values()) == {
+        "email", "邮件", "web", "官网", "event", "直播/活动", "wechat", "微信",
+    }
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # 重客专项：切换数据源并保持客户列表响应结构
 # ─────────────────────────────────────────────────────────────────────────────

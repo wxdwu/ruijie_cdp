@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from app.services.channel_classification import add_channel_filter
 from app.services.region_filter import REGION_OPTIONS
 
 logger = logging.getLogger(__name__)
@@ -124,9 +125,12 @@ def export_customers_excel(
     elif attribute == "non_heavy":
         where_parts.append("(attribute IS NULL OR attribute != :heavy_attribute)")
         params["heavy_attribute"] = "H"
-    if channel:
-        where_parts.append("last_interaction_channel = :channel")
-        params["channel"] = channel
+    add_channel_filter(
+        where_parts,
+        params,
+        column="last_interaction_channel",
+        channel=channel,
+    )
 
     where_sql = " AND ".join(where_parts)
     allowed = {"customer_name","industry","intent_score","interaction_count_30d",

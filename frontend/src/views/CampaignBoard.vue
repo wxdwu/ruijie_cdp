@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import FieldHelpTooltip from '../components/customer/FieldHelpTooltip.vue'
 import { getCampaignHelp } from '../components/campaign/campaignHelpConfig'
@@ -22,6 +22,11 @@ const customerFilters = reactive({
 })
 
 const loading = ref(false)
+const customerLoading = ref(false)
+const contentLoading = ref(false)
+const dashboardError = ref('')
+const customerError = ref('')
+const contentError = ref('')
 const filterOptions = ref({ campaigns: [], industries: [], channels: [], min_date: '', max_date: '' })
 const kpiData = ref({})
 const opportunityData = ref({ categories: [], total: 0 })
@@ -31,14 +36,26 @@ const roleData = ref({ roles: [], total_customers: 0 })
 const tagData = ref({ signals: [] })
 const contentData = ref({ data: [] })
 const customerData = ref({ flat: [], total: 0, page: 1, page_size: 10, total_pages: 1, filter_options: { stages: [], owners: [] } })
+const customerFilterOptions = ref({ stages: [], owners: [] })
 const customerPage = ref(1)
 const CUSTOMER_PAGE_SIZE = 10
+const AUTO_APPLY_DELAY = 400
+let customerFilterTimer = null
+let dashboardRequestId = 0
+let customerRequestId = 0
+let contentRequestId = 0
+let dashboardAbortController = null
+let customerAbortController = null
+let contentAbortController = null
+let filterOptionsAbortController = null
+let isUnmounted = false
 
 const channelLabels = {
   web: '官网',
   email: '邮件',
   event: '直播/活动',
   wechat: '微信',
+  other: '其他',
   '无渠道/未触达': '无渠道/未触达',
 }
 
@@ -98,6 +115,7 @@ const filterHint = computed(() => {
   return `${campaign} ｜窗口 ${start} 至 ${end} ｜${industry} ｜样例客户 ${formatNumber(kpiData.value.total_customers)} 家`
 })
 const customerTotalPages = computed(() => Math.max(1, Number(customerData.value.total_pages || 1)))
+const hasDashboardData = computed(() => Object.keys(kpiData.value).length > 0)
 
 function formatNumber(value, digits = 0) {
   const number = Number(value || 0)
@@ -133,76 +151,196 @@ function queryParams(extra = {}) {
   return params
 }
 
-async function fetchJson(path, extra) {
+async function fetchJson(path, extra, signal) {
   const params = queryParams(extra)
-  const response = await fetch(`${API_BASE}${path}?${params}`)
+  const response = await fetch(`${API_BASE}${path}?${params}`, { signal })
   if (!response.ok) throw new Error(`${path} failed`)
   return response.json()
 }
 
-async function fetchFilterOptions() {
-  const response = await fetch(`${API_BASE}/filter-options`)
-  if (!response.ok) return
-  const options = await response.json()
-  filterOptions.value = options
-  if (!filters.campaign_tag && options.campaigns?.length) filters.campaign_tag = options.campaigns[0]
-  if (!filters.start_date && options.min_date) filters.start_date = options.min_date
-  if (!filters.end_date && options.max_date) filters.end_date = options.max_date
+function applyOverviewData(overview) {
+  kpiData.value = overview.kpis || {}
+  opportunityData.value = overview.opportunity_distribution || { categories: [], total: 0 }
+  channelData.value = overview.channel_distribution || { channels: [], total: 0 }
+  stageData.value = overview.stage_distribution || { stages: [], total: 0 }
+  roleData.value = overview.role_coverage || { roles: [], total_customers: 0 }
+  tagData.value = overview.tag_signals || { signals: [] }
+  contentData.value = overview.content_effect || { data: [] }
+  customerFilterOptions.value = overview.customer_filter_options || { stages: [], owners: [] }
+}
+
+async function fetchContentData() {
+  const requestId = ++contentRequestId
+  contentAbortController?.abort()
+  const abortController = new AbortController()
+  contentAbortController = abortController
+  contentLoading.value = true
+  contentError.value = ''
+  try {
+    const data = await fetchJson('/content-effect', undefined, abortController.signal)
+    if (requestId !== contentRequestId || abortController.signal.aborted) return
+    contentData.value = data
+  } catch (error) {
+    if (requestId === contentRequestId && !abortController.signal.aborted) {
+      console.error('fetchContentData', error)
+      contentError.value = '内容效果加载失败，请稍后重试。'
+    }
+  } finally {
+    if (requestId === contentRequestId) {
+      contentAbortController = null
+      contentLoading.value = false
+    }
+  }
+}
+
+async function fetchBootstrap() {
+  const dashboardId = ++dashboardRequestId
+  const customerId = ++customerRequestId
+  filterOptionsAbortController?.abort()
+  dashboardAbortController?.abort()
+  customerAbortController?.abort()
+  contentRequestId += 1
+  contentAbortController?.abort()
+  contentAbortController = null
+  contentLoading.value = false
+  const abortController = new AbortController()
+  filterOptionsAbortController = abortController
+  dashboardAbortController = abortController
+  customerAbortController = abortController
+  loading.value = true
+  customerLoading.value = true
+  dashboardError.value = ''
+  customerError.value = ''
+  try {
+    const data = await fetchJson('/bootstrap', {
+      page: 1,
+      page_size: CUSTOMER_PAGE_SIZE,
+    }, abortController.signal)
+    if (
+      abortController.signal.aborted
+      || isUnmounted
+      || dashboardId !== dashboardRequestId
+      || customerId !== customerRequestId
+    ) return
+
+    filterOptions.value = data.filter_options || filterOptions.value
+    const applied = data.applied_filters || {}
+    Object.assign(filters, {
+      campaign_tag: applied.campaign_tag || '',
+      start_date: applied.start_date || '',
+      end_date: applied.end_date || '',
+      channel: applied.channel || '',
+      industry: applied.industry || '',
+    })
+    applyOverviewData(data.overview || {})
+    customerData.value = data.customers || customerData.value
+    customerPage.value = data.customers?.page || 1
+    void fetchContentData()
+  } catch (error) {
+    if (!abortController.signal.aborted) {
+      console.error('fetchBootstrap', error)
+      dashboardError.value = '看板数据加载失败，请稍后重试。'
+      customerError.value = '客户列表加载失败，请稍后重试。'
+    }
+  } finally {
+    if (filterOptionsAbortController === abortController) filterOptionsAbortController = null
+    if (dashboardAbortController === abortController) dashboardAbortController = null
+    if (customerAbortController === abortController) customerAbortController = null
+    if (dashboardId === dashboardRequestId) loading.value = false
+    if (customerId === customerRequestId) customerLoading.value = false
+  }
 }
 
 async function fetchCustomerData() {
-  customerData.value = await fetchJson('/customers-by-stage', {
-    ...customerFilters,
-    page: customerPage.value,
-    page_size: CUSTOMER_PAGE_SIZE,
-  })
-  customerPage.value = customerData.value.page || customerPage.value
+  const requestId = ++customerRequestId
+  customerAbortController?.abort()
+  const abortController = new AbortController()
+  customerAbortController = abortController
+  customerLoading.value = true
+  customerError.value = ''
+  try {
+    const data = await fetchJson('/customers-by-stage', {
+      ...customerFilters,
+      page: customerPage.value,
+      page_size: CUSTOMER_PAGE_SIZE,
+      include_filter_options: false,
+    }, abortController.signal)
+    if (requestId !== customerRequestId || abortController.signal.aborted) return
+    customerData.value = data
+    customerPage.value = data.page || customerPage.value
+  } catch (error) {
+    if (requestId === customerRequestId && !abortController.signal.aborted) {
+      console.error('fetchCustomerData', error)
+      customerError.value = '客户列表加载失败，请稍后重试。'
+    }
+  } finally {
+    if (requestId === customerRequestId) {
+      customerAbortController = null
+      customerLoading.value = false
+    }
+  }
 }
 
 async function fetchData() {
+  const requestId = ++dashboardRequestId
+  dashboardAbortController?.abort()
+  contentRequestId += 1
+  contentAbortController?.abort()
+  contentAbortController = null
+  contentLoading.value = false
+  const abortController = new AbortController()
+  dashboardAbortController = abortController
   loading.value = true
+  dashboardError.value = ''
   try {
-    const [
-      kpis,
-      opportunities,
-      channels,
-      stages,
-      roles,
-      signals,
-      content,
-    ] = await Promise.all([
-      fetchJson('/kpis'),
-      fetchJson('/funnel-distribution'),
-      fetchJson('/channel-distribution'),
-      fetchJson('/stage-distribution'),
-      fetchJson('/role-coverage'),
-      fetchJson('/tag-signals'),
-      fetchJson('/content-effect'),
-    ])
-    kpiData.value = kpis
-    opportunityData.value = opportunities
-    channelData.value = channels
-    stageData.value = stages
-    roleData.value = roles
-    tagData.value = signals
-    contentData.value = content
-    await fetchCustomerData()
+    const overview = await fetchJson('/overview', { include_content: false }, abortController.signal)
+    if (requestId !== dashboardRequestId || abortController.signal.aborted) return
+    applyOverviewData(overview)
+    void fetchContentData()
+  } catch (error) {
+    if (requestId === dashboardRequestId && !abortController.signal.aborted) {
+      console.error('fetchData', error)
+      dashboardError.value = '看板数据加载失败，请稍后重试。'
+    }
   } finally {
-    loading.value = false
+    if (requestId === dashboardRequestId) {
+      dashboardAbortController = null
+      loading.value = false
+    }
   }
 }
 
 async function applyFilters() {
+  cancelScheduledCustomerFilters()
   customerFilters.stage = ''
   customerFilters.owner = ''
   customerFilters.keyword = ''
   customerPage.value = 1
-  await fetchData()
+  await Promise.allSettled([fetchData(), fetchCustomerData()])
 }
 
 async function applyCustomerFilters() {
   customerPage.value = 1
   await fetchCustomerData()
+}
+
+function cancelScheduledCustomerFilters() {
+  if (customerFilterTimer === null) return
+  window.clearTimeout(customerFilterTimer)
+  customerFilterTimer = null
+}
+
+function applyCustomerFiltersNow() {
+  cancelScheduledCustomerFilters()
+  return applyCustomerFilters()
+}
+
+function scheduleCustomerFilters() {
+  cancelScheduledCustomerFilters()
+  customerFilterTimer = window.setTimeout(() => {
+    customerFilterTimer = null
+    applyCustomerFilters()
+  }, AUTO_APPLY_DELAY)
 }
 
 async function changeCustomerPage(page) {
@@ -229,26 +367,39 @@ function openCustomer(customer) {
 }
 
 onMounted(async () => {
-  await fetchFilterOptions()
-  await fetchData()
+  await fetchBootstrap()
+})
+
+onBeforeUnmount(() => {
+  isUnmounted = true
+  cancelScheduledCustomerFilters()
+  dashboardRequestId += 1
+  customerRequestId += 1
+  contentRequestId += 1
+  filterOptionsAbortController?.abort()
+  dashboardAbortController?.abort()
+  customerAbortController?.abort()
+  contentAbortController?.abort()
 })
 </script>
 
 <template>
   <div class="campaign-board">
-    <section class="panel filter-panel">
+    <section class="panel filter-panel" :aria-busy="loading">
       <div class="panel-header">
         <div class="panel-meta">
           <b>筛选与观测窗口</b>
           <span class="panel-sub">专项、时间、渠道、行业口径联动</span>
         </div>
-        <span class="panel-hint">{{ filterHint }}</span>
+        <span class="panel-hint" aria-live="polite">
+          {{ loading ? '更新中… ｜ ' : '' }}{{ filterHint }}
+        </span>
       </div>
 
       <div class="filter-grid">
         <label class="filter-field">
           <span>专项</span>
-          <select v-model="filters.campaign_tag">
+          <select v-model="filters.campaign_tag" @change="applyFilters">
             <option value="">全部专项</option>
             <option v-for="campaign in filterOptions.campaigns" :key="campaign" :value="campaign">
               {{ campaign }}
@@ -258,14 +409,14 @@ onMounted(async () => {
         <label class="filter-field range-field">
           <span>时间段</span>
           <div class="date-range">
-            <input v-model="filters.start_date" type="date" />
+            <input v-model="filters.start_date" type="date" @change="applyFilters" />
             <em>至</em>
-            <input v-model="filters.end_date" type="date" />
+            <input v-model="filters.end_date" type="date" @change="applyFilters" />
           </div>
         </label>
         <label class="filter-field">
           <span>渠道</span>
-          <select v-model="filters.channel">
+          <select v-model="filters.channel" @change="applyFilters">
             <option value="">全部</option>
             <option v-for="channel in filterOptions.channels" :key="channel" :value="channel">
               {{ channelLabel(channel) }}
@@ -274,19 +425,22 @@ onMounted(async () => {
         </label>
         <label class="filter-field">
           <span>行业</span>
-          <select v-model="filters.industry">
+          <select v-model="filters.industry" @change="applyFilters">
             <option value="">全部</option>
             <option v-for="industry in filterOptions.industries" :key="industry" :value="industry">
               {{ industry }}
             </option>
           </select>
         </label>
-        <button class="primary-btn" type="button" :disabled="loading" @click="applyFilters">
-          {{ loading ? '加载中' : '应用' }}
-        </button>
       </div>
 
-      <div class="kpi-grid">
+      <div v-if="dashboardError" class="error-state" role="alert">{{ dashboardError }}</div>
+      <div v-if="loading && !hasDashboardData" class="kpi-grid skeleton-grid" aria-hidden="true">
+        <div v-for="index in 5" :key="index" class="kpi-card skeleton-card">
+          <i></i><i></i><i></i>
+        </div>
+      </div>
+      <div v-else class="kpi-grid">
         <article v-for="card in kpiCards" :key="card.key" class="kpi-card" :class="`tone-${card.tone}`">
           <div class="kpi-topline">
             <span class="kpi-id">{{ card.id }}</span>
@@ -410,15 +564,22 @@ onMounted(async () => {
       </section>
     </div>
 
-    <section class="panel">
+    <section class="panel" :aria-busy="contentLoading">
       <div class="panel-header">
         <div class="panel-meta">
           <b>内容效果 <FieldHelpTooltip :help="getCampaignHelp('content_effect')" /></b>
           <span class="panel-sub">打开、点击与漏斗贡献表现</span>
         </div>
-        <span class="panel-tag">Content</span>
+        <div class="panel-status">
+          <span v-if="contentLoading" class="update-status" aria-live="polite">更新中…</span>
+          <span class="panel-tag">Content</span>
+        </div>
       </div>
-      <div class="table-shell">
+      <div v-if="contentError" class="error-state" role="alert">{{ contentError }}</div>
+      <div v-if="contentLoading && !contentData.data.length" class="table-skeleton" aria-hidden="true">
+        <i v-for="index in 4" :key="index"></i>
+      </div>
+      <div v-else class="table-shell">
         <table>
           <thead>
             <tr>
@@ -455,40 +616,52 @@ onMounted(async () => {
       </div>
     </section>
 
-    <section class="panel">
+    <section class="panel" :aria-busy="customerLoading">
       <div class="panel-header">
         <div class="panel-meta">
           <b>客户跟进 <FieldHelpTooltip :help="getCampaignHelp('customer_followup')" /></b>
           <span class="panel-sub">按阶段与负责人筛选推进动作</span>
         </div>
-        <span class="panel-tag">Accounts</span>
+        <div class="panel-status">
+          <span v-if="customerLoading" class="update-status" aria-live="polite">更新中…</span>
+          <span class="panel-tag">Accounts</span>
+        </div>
       </div>
       <div class="follow-filter-grid">
         <label class="filter-field">
           <span>阶段</span>
-          <select v-model="customerFilters.stage">
+          <select v-model="customerFilters.stage" @change="applyCustomerFiltersNow">
             <option value="">全部</option>
-            <option v-for="stage in customerData.filter_options?.stages" :key="stage" :value="stage">
+            <option v-for="stage in customerFilterOptions.stages" :key="stage" :value="stage">
               {{ stage }}
             </option>
           </select>
         </label>
         <label class="filter-field">
           <span>负责人</span>
-          <select v-model="customerFilters.owner">
+          <select v-model="customerFilters.owner" @change="applyCustomerFiltersNow">
             <option value="">全部</option>
-            <option v-for="owner in customerData.filter_options?.owners" :key="owner" :value="owner">
+            <option v-for="owner in customerFilterOptions.owners" :key="owner" :value="owner">
               {{ owner }}
             </option>
           </select>
         </label>
         <label class="filter-field">
           <span>搜索客户</span>
-          <input v-model.trim="customerFilters.keyword" type="search" placeholder="输入客户名称" />
+          <input
+            v-model.trim="customerFilters.keyword"
+            type="search"
+            placeholder="输入客户名称"
+            @input="scheduleCustomerFilters"
+            @keyup.enter="applyCustomerFiltersNow"
+          />
         </label>
-        <button class="secondary-btn" type="button" @click="applyCustomerFilters">应用筛选</button>
       </div>
-      <div class="table-shell">
+      <div v-if="customerError" class="error-state" role="alert">{{ customerError }}</div>
+      <div v-if="customerLoading && !customerData.flat.length" class="table-skeleton" aria-hidden="true">
+        <i v-for="index in 5" :key="index"></i>
+      </div>
+      <div v-else class="table-shell">
         <table>
           <thead>
             <tr>
@@ -565,11 +738,13 @@ onMounted(async () => {
 <style scoped>
 .campaign-board {
   display: grid;
+  min-width: 0;
   gap: 16px;
   color: var(--text);
 }
 
 .panel {
+  min-width: 0;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: color-mix(in srgb, var(--panel) 92%, transparent);
@@ -613,6 +788,19 @@ onMounted(async () => {
   text-align: right;
 }
 
+.panel-status {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.update-status {
+  color: var(--brand);
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
 .panel-tag,
 .kpi-tag {
   display: inline-flex;
@@ -633,13 +821,13 @@ onMounted(async () => {
 .filter-grid,
 .follow-filter-grid {
   display: grid;
-  grid-template-columns: minmax(160px, 1fr) minmax(280px, 1.8fr) minmax(140px, .8fr) minmax(140px, .8fr) auto;
+  grid-template-columns: minmax(160px, 1fr) minmax(280px, 1.8fr) minmax(140px, .8fr) minmax(140px, .8fr);
   gap: 12px;
   align-items: end;
 }
 
 .follow-filter-grid {
-  grid-template-columns: minmax(160px, 1fr) minmax(160px, 1fr) minmax(260px, 2fr) auto;
+  grid-template-columns: minmax(160px, 1fr) minmax(160px, 1fr) minmax(260px, 2fr);
   margin-bottom: 12px;
 }
 
@@ -680,22 +868,16 @@ onMounted(async () => {
   font-style: normal;
 }
 
-.primary-btn,
 .secondary-btn {
   height: 38px;
   border: 1px solid var(--brand);
   border-radius: 8px;
   padding: 0 18px;
-  background: var(--brand);
-  color: white;
+  background: rgba(90, 167, 255, .12);
+  color: var(--brand);
   font-size: 13px;
   font-weight: 800;
   cursor: pointer;
-}
-
-.secondary-btn {
-  background: rgba(90, 167, 255, .12);
-  color: var(--brand);
 }
 
 .secondary-btn:disabled {
@@ -1024,6 +1206,62 @@ td small {
   padding: 18px;
   color: var(--muted);
   text-align: center;
+}
+
+.error-state {
+  margin: 12px 0;
+  border: 1px solid rgba(239, 68, 68, .28);
+  border-radius: 8px;
+  background: rgba(239, 68, 68, .08);
+  padding: 12px 14px;
+  color: #ef4444;
+  font-size: 13px;
+}
+
+.skeleton-card,
+.table-skeleton i {
+  position: relative;
+  overflow: hidden;
+  background: var(--surface);
+}
+
+.skeleton-card::after,
+.table-skeleton i::after {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(90, 167, 255, .13), transparent);
+  content: '';
+  transform: translateX(-100%);
+  animation: campaign-shimmer 1.1s infinite;
+}
+
+.skeleton-card i {
+  display: block;
+  width: 72%;
+  height: 12px;
+  margin: 10px 0;
+  border-radius: 999px;
+  background: rgba(90, 167, 255, .12);
+}
+
+.skeleton-card i:nth-child(2) {
+  width: 48%;
+  height: 26px;
+}
+
+.table-skeleton {
+  display: grid;
+  gap: 10px;
+}
+
+.table-skeleton i {
+  display: block;
+  height: 44px;
+  border-radius: 8px;
+}
+
+@keyframes campaign-shimmer {
+  to { transform: translateX(100%); }
 }
 
 @media (max-width: 1280px) {

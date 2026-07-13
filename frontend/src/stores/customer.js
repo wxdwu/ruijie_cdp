@@ -7,6 +7,8 @@ export const useCustomerStore = defineStore('customer', () => {
   const total = ref(0)
   const loading = ref(false)
   const current = ref(null)
+  let listRequestId = 0
+  let listAbortController = null
 
   const filters = ref({
     keyword: '',
@@ -31,6 +33,10 @@ export const useCustomerStore = defineStore('customer', () => {
   const isKeyAccountMode = computed(() => filters.value.special_project === '重客')
 
   async function fetchList() {
+    const requestId = ++listRequestId
+    listAbortController?.abort()
+    const abortController = new AbortController()
+    listAbortController = abortController
     loading.value = true
     try {
       // Build params - remove null/empty values
@@ -43,17 +49,29 @@ export const useCustomerStore = defineStore('customer', () => {
       // Map frontend params to backend param names
       if (params.size) params.size = params.size
 
-      const res = await customerApi.list(params)
+      const res = await customerApi.list(params, { signal: abortController.signal })
+      if (requestId !== listRequestId) return
       // Backend returns {items: [], total: N} or {items: [], total: N, ...}
       list.value = res.items ?? []
       total.value = res.total ?? list.value.length
     } catch (e) {
+      if (requestId !== listRequestId || abortController.signal.aborted) return
       console.error('fetchList', e)
       list.value = []
       total.value = 0
     } finally {
-      loading.value = false
+      if (requestId === listRequestId) {
+        listAbortController = null
+        loading.value = false
+      }
     }
+  }
+
+  function cancelListRequest() {
+    listRequestId += 1
+    listAbortController?.abort()
+    listAbortController = null
+    loading.value = false
   }
 
   async function fetchDetail(id) {
@@ -121,6 +139,6 @@ export const useCustomerStore = defineStore('customer', () => {
 
   return {
     list, total, loading, current, filters, totalPages, isKeyAccountMode,
-    fetchList, fetchDetail, setFilter, setFilters, setPage, reset,
+    fetchList, cancelListRequest, fetchDetail, setFilter, setFilters, setPage, reset,
   }
 })

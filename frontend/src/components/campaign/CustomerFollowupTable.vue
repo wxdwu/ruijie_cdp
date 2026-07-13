@@ -5,7 +5,7 @@
       <div class="filter-grid">
         <label class="filter-field">
           <span class="filter-label">阶段</span>
-          <select v-model="currentStage" class="filter-control">
+          <select v-model="currentStage" class="filter-control" @change="emitFiltersNow">
             <option v-for="stage in stages" :key="stage" :value="stage">
               {{ stage }}
             </option>
@@ -14,7 +14,7 @@
 
         <label class="filter-field">
           <span class="filter-label">负责人</span>
-          <select v-model="currentOwner" class="filter-control">
+          <select v-model="currentOwner" class="filter-control" @change="emitFiltersNow">
             <option v-for="owner in owners" :key="owner" :value="owner">
               {{ owner }}
             </option>
@@ -28,12 +28,10 @@
             class="filter-control"
             type="search"
             placeholder="输入客户名称"
+            @input="scheduleFilters"
+            @keyup.enter="emitFiltersNow"
           />
         </label>
-
-        <button class="apply-filter-btn" type="button" @click="emitFilters">
-          应用筛选
-        </button>
       </div>
     </div>
     <div class="table-container">
@@ -116,7 +114,7 @@
 </template>
 
 <script setup>
-import { ref, computed } from 'vue'
+import { computed, onBeforeUnmount, ref } from 'vue'
 import { useRouter } from 'vue-router'
 
 const router = useRouter()
@@ -132,6 +130,8 @@ const emit = defineEmits(['filters-change'])
 const currentStage = ref('全部')
 const currentOwner = ref('全部')
 const searchKeyword = ref('')
+const AUTO_APPLY_DELAY = 400
+let filterTimer = null
 
 const stages = computed(() => {
   const sourceStages = props.data.filter_options?.stages || props.data.flat.map(c => c.stage)
@@ -167,6 +167,27 @@ const emitFilters = () => {
     keyword: searchKeyword.value,
   })
 }
+
+const cancelScheduledFilters = () => {
+  if (filterTimer === null) return
+  window.clearTimeout(filterTimer)
+  filterTimer = null
+}
+
+const emitFiltersNow = () => {
+  cancelScheduledFilters()
+  emitFilters()
+}
+
+const scheduleFilters = () => {
+  cancelScheduledFilters()
+  filterTimer = window.setTimeout(() => {
+    filterTimer = null
+    emitFilters()
+  }, AUTO_APPLY_DELAY)
+}
+
+onBeforeUnmount(cancelScheduledFilters)
 
 const openCustomer = (customer) => {
   if (customer.id == null) return
@@ -252,7 +273,7 @@ const getFollowupBasis = (customer) => (
 
 .filter-grid {
   display: grid;
-  grid-template-columns: minmax(160px, 1fr) minmax(160px, 1fr) minmax(220px, 1.3fr) auto;
+  grid-template-columns: minmax(160px, 1fr) minmax(160px, 1fr) minmax(220px, 1.3fr);
   align-items: end;
   gap: 14px;
 }
@@ -298,28 +319,6 @@ select.filter-control {
 
 .filter-control::placeholder {
   color: var(--text-muted);
-}
-
-.apply-filter-btn {
-  height: 38px;
-  padding: 0 20px;
-  border: 1px solid var(--accent);
-  border-radius: 10px;
-  background: var(--accent);
-  color: white;
-  font-size: 13px;
-  font-weight: 600;
-  white-space: nowrap;
-  cursor: pointer;
-  transition: filter 0.2s ease, transform 0.2s ease;
-}
-
-.apply-filter-btn:hover {
-  filter: brightness(1.08);
-}
-
-.apply-filter-btn:active {
-  transform: translateY(1px);
 }
 
 .table-container {
@@ -545,8 +544,5 @@ tr:hover {
     grid-template-columns: 1fr;
   }
 
-  .apply-filter-btn {
-    width: 100%;
-  }
 }
 </style>

@@ -10,13 +10,13 @@ const http = axios.create({
 http.interceptors.response.use(
   (res) => res.data,
   (err) => {
-    console.error('[API]', err)
+    if (!axios.isCancel(err)) console.error('[API]', err)
     return Promise.reject(err)
   },
 )
 
 export const customerApi = {
-  list: (params) => http.get('/api/customers', { params }),
+  list: (params, config = {}) => http.get('/api/customers', { ...config, params }),
   get: (id) => http.get(`/api/customers/${id}`),
   contacts: (id) => http.get(`/api/customers/${id}/contacts`),
   interactions: (id, params) => http.get(`/api/customers/${id}/interactions`, { params }),
@@ -30,6 +30,9 @@ export const customerApi = {
 }
 
 export const campaignApi = {
+  filterOptions: () => http.get('/api/campaign/filter-options'),
+  bootstrap: (params, config = {}) => http.get('/api/campaign/bootstrap', { ...config, params }),
+  overview: (params, config = {}) => http.get('/api/campaign/overview', { ...config, params }),
   kpis: () => http.get('/api/campaign/kpis'),
   funnelDistribution: () => http.get('/api/campaign/funnel-distribution'),
   channelDistribution: (period = 'all') => http.get('/api/campaign/channel-distribution', {

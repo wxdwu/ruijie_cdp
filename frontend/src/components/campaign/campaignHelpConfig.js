@@ -71,7 +71,7 @@ export const campaignHelp = {
     title: '渠道归因',
     type: 'calc',
     path: 'campaign.channel_attribution',
-    meaning: '按全量客户最近互动渠道归因统计客户数。',
+    meaning: '按全量客户最近互动渠道归因统计客户数；非邮件、官网、直播/活动、微信的非空渠道临时合并为其他。',
     sourceTables: 'dws_customer_360',
     sourceFields: 'dws_customer_360.customer_name, dws_customer_360.last_interaction_channel',
     calculation: '按 last_interaction_channel 分组统计去重客户数；空值归为无渠道/未触达；占比以专项/行业全量客户为分母。',
