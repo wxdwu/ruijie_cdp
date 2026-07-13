@@ -12,10 +12,6 @@ const props = defineProps({
     type: Boolean,
     default: false,
   },
-  keyAccountMode: {
-    type: Boolean,
-    default: false,
-  },
 })
 
 const router = useRouter()
@@ -58,7 +54,7 @@ function formatInteractionChannel(value) {
 }
 
 function handleRowClick(customer) {
-  if (props.keyAccountMode) return
+  if (!customer.id) return
   router.push(`/customers/${customer.id}`)
 }
 </script>
@@ -113,10 +109,10 @@ function handleRowClick(customer) {
           <tr
             v-else
             v-for="customer in customers"
-            :key="customer.id"
+            :key="customer.id || customer.key_account_code"
             @click="handleRowClick(customer)"
             class="border-b border-[var(--line)] transition-colors"
-            :class="keyAccountMode ? 'cursor-default' : 'cursor-pointer hover:bg-white/5'"
+            :class="customer.id ? 'cursor-pointer hover:bg-white/5' : 'cursor-default'"
           >
             <td class="px-4 py-3">
               <div class="font-medium text-[var(--text)]">{{ customer.customer_name }}</div>
@@ -127,7 +123,7 @@ function handleRowClick(customer) {
             </td>
             <td class="px-4 py-3">
               <span
-                v-if="!keyAccountMode && customer.purchase_stage"
+                v-if="customer.purchase_stage"
                 class="inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-medium"
                 :class="getStageClass(customer.purchase_stage)"
               >
@@ -147,7 +143,7 @@ function handleRowClick(customer) {
                 {{ customer.intent_score }}
               </span>
               <span v-else class="text-[var(--muted)]">-</span>
-              <div v-if="!keyAccountMode" class="mt-1 text-xs text-[var(--muted)]">
+              <div class="mt-1 text-xs text-[var(--muted)]">
                 {{ customer.intent_level || '-' }}合作意向 · 互动{{ customer.interaction_count_total || 0 }}次
               </div>
             </td>
@@ -158,7 +154,7 @@ function handleRowClick(customer) {
               </div>
             </td>
             <td class="px-4 py-3">
-              <span v-if="keyAccountMode" class="text-sm text-[var(--muted)]">-</span>
+              <span v-if="!customer.id" class="text-sm text-[var(--muted)]">-</span>
               <button
                 v-else
                 @click.stop="handleRowClick(customer)"

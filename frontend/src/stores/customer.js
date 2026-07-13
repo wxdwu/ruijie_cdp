@@ -92,22 +92,6 @@ export const useCustomerStore = defineStore('customer', () => {
   }
 
   function setFilters(newFilters) {
-    if (newFilters.special_project === '重客') {
-      Object.assign(filters.value, {
-        industry: '',
-        region: '',
-        region_keyword: '',
-        owner: '',
-        owner_keyword: '',
-        stage: '',
-        intent_level: '',
-        interaction_min: null,
-        interaction_period: null,
-        attribute: '',
-        channel: '',
-        sort: '',
-      })
-    }
     Object.assign(filters.value, newFilters)
     filters.value.page = 1
   }

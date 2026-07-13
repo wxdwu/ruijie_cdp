@@ -6,7 +6,7 @@ normalized by grouping every non-empty, non-canonical value into ``other``.
 """
 from __future__ import annotations
 
-from typing import Any, Dict, List, MutableMapping, Sequence
+from typing import Any, Dict, Iterable, List, MutableMapping, Sequence
 
 
 CHANNEL_ALIASES: Dict[str, Sequence[str]] = {
@@ -31,6 +31,16 @@ def normalize_channel(value: Any) -> str:
         if normalized in aliases:
             return canonical
     return OTHER_CHANNEL
+
+
+def available_channel_options(values: Iterable[Any]) -> List[str]:
+    """Return canonical UI channels that occur in the supplied interaction rows."""
+    present = {
+        normalized
+        for value in values
+        if (normalized := normalize_channel(value)) != UNREACHED_CHANNEL
+    }
+    return [channel for channel in CHANNEL_FILTER_ORDER if channel in present]
 
 
 def _bind_values(
@@ -75,6 +85,34 @@ def add_channel_filter(
     aliases = CHANNEL_ALIASES.get(channel, (channel,))
     placeholders = _bind_values(params, aliases, prefix=prefix)
     where_parts.append(f"{column} IN ({placeholders})")
+
+
+def add_customer_interaction_channel_filter(
+    where_parts: List[str],
+    params: MutableMapping[str, Any],
+    *,
+    customer_name_column: str,
+    channel: str | None,
+    prefix: str = "interaction_channel",
+) -> None:
+    """Filter customers by any matching interaction-detail channel."""
+    if not channel:
+        return
+    channel_parts: List[str] = []
+    add_channel_filter(
+        channel_parts,
+        params,
+        column="interaction_channel.channel",
+        channel=channel,
+        prefix=prefix,
+    )
+    where_parts.append(
+        "EXISTS ("
+        "SELECT 1 FROM dws_interaction_detail interaction_channel "
+        f"WHERE interaction_channel.customer_name = {customer_name_column} "
+        f"AND {' AND '.join(channel_parts)}"
+        ")"
+    )
 
 
 def channel_group_case(

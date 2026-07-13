@@ -25,7 +25,7 @@ export const customerApi = {
   statisticsByName: (customerName) => http.get('/api/customers/statistics/by-name', {
     params: { customer_name: customerName },
   }),
-  filterOptions: () => http.get('/api/customers/filter-options'),
+  filterOptions: (params = {}) => http.get('/api/customers/filter-options', { params }),
   export: (params) => http.get('/api/customers/export', { params, responseType: 'blob' }),
 }
 

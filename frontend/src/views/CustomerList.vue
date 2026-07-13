@@ -75,7 +75,6 @@ onBeforeUnmount(() => {
     <CustomerTable
       :customers="store.list"
       :loading="store.loading"
-      :key-account-mode="store.isKeyAccountMode"
     />
 
     <!-- Pagination -->

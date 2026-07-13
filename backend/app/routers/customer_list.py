@@ -16,82 +16,82 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.services.channel_classification import add_channel_filter
+from app.services.channel_classification import (
+    add_customer_interaction_channel_filter,
+    available_channel_options,
+)
 from app.services.export_service import export_customers_excel
-from app.services.region_filter import REGION_OPTIONS, get_region_options
+from app.services.key_account_query import (
+    KEY_ACCOUNT_SOURCE_PROJECT,
+    KEY_ACCOUNT_TABLE,
+    count_key_accounts,
+    fetch_key_accounts,
+)
+from app.services.region_filter import add_region_filter, available_region_options
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/customers", tags=["customers"])
 
-KEY_ACCOUNT_TABLE = "ods_crm_key_account_output_list_day"
-
-
 def _list_key_accounts(
     db: Session,
     *,
     keyword: Optional[str],
+    industry: Optional[str],
+    region: Optional[str],
+    region_keyword: Optional[str],
+    owner: Optional[str],
+    owner_keyword: Optional[str],
+    stage: Optional[str],
+    intent_level: Optional[str],
+    interaction_min: Optional[int],
+    interaction_period: int,
+    channel: Optional[str],
+    sort: Optional[str],
     page: int,
     size: int,
 ) -> Dict[str, Any]:
-    """Return the latest key-account snapshot in the customer-list envelope."""
-    where_parts = [
-        f"`time` = (SELECT MAX(`time`) FROM {KEY_ACCOUNT_TABLE})",
-    ]
-    params: Dict[str, Any] = {}
-
-    if keyword:
-        where_parts.append("`重客名称` LIKE :keyword")
-        params["keyword"] = f"%{keyword}%"
-
-    where_sql = " AND ".join(where_parts)
-    count_sql = text(
-        f"SELECT COUNT(*) FROM {KEY_ACCOUNT_TABLE} WHERE {where_sql}"
+    """Return the latest key-account snapshot enriched from customer 360."""
+    query_filters = {
+        "keyword": keyword,
+        "industry": industry,
+        "region": region,
+        "region_keyword": region_keyword,
+        "owner": owner,
+        "owner_keyword": owner_keyword,
+        "stage": stage,
+        "intent_level": intent_level,
+        "interaction_min": interaction_min,
+        "interaction_period": interaction_period,
+        "channel": channel,
+    }
+    total = count_key_accounts(db, **query_filters)
+    items = fetch_key_accounts(
+        db,
+        page=page,
+        size=size,
+        sort=sort,
+        **query_filters,
     )
-    total: int = db.execute(count_sql, params).scalar() or 0
-
-    offset = (page - 1) * size
-    data_sql = text(
-        f"""
-        SELECT
-            `重客编码` AS id,
-            `重客名称` AS customer_name,
-            '重客' AS campaign_tag,
-            NULL AS industry,
-            NULL AS purchase_stage,
-            NULL AS role_coverage,
-            NULL AS intent_score,
-            NULL AS intent_level,
-            NULL AS interaction_count_total,
-            NULL AS last_interaction_time,
-            NULL AS last_interaction_channel
-        FROM {KEY_ACCOUNT_TABLE}
-        WHERE {where_sql}
-        ORDER BY `重客名称` ASC, `重客编码` ASC
-        LIMIT :limit OFFSET :offset
-        """
-    )
-    data_params = {**params, "limit": size, "offset": offset}
-    rows = db.execute(data_sql, data_params).mappings().all()
 
     return {
         "total": total,
-        "items": [dict(row) for row in rows],
+        "items": items,
         "filters_applied": {
             "keyword": keyword,
             "special_project": "重客",
-            "industry": None,
-            "region": None,
-            "region_keyword": None,
-            "owner": None,
-            "owner_keyword": None,
-            "stage": None,
-            "intent_level": None,
-            "interaction_min": None,
-            "interaction_period": None,
-            "attribute": None,
-            "channel": None,
-            "sort": None,
+            "industry": industry,
+            "region": region,
+            "region_keyword": region_keyword,
+            "owner": owner,
+            "owner_keyword": owner_keyword,
+            "stage": stage,
+            "intent_level": intent_level,
+            "interaction_min": interaction_min,
+            "interaction_period": interaction_period,
+            "attribute": "heavy",
+            "channel": channel,
+            "sort": sort,
         },
     }
 
@@ -125,6 +125,17 @@ def list_customers(
         return _list_key_accounts(
             db,
             keyword=keyword,
+            industry=industry,
+            region=region,
+            region_keyword=region_keyword,
+            owner=owner,
+            owner_keyword=owner_keyword,
+            stage=stage,
+            intent_level=intent_level,
+            interaction_min=interaction_min,
+            interaction_period=interaction_period,
+            channel=channel,
+            sort=sort,
             page=page,
             size=size,
         )
@@ -141,34 +152,13 @@ def list_customers(
     if industry:
         where_parts.append("industry = :industry")
         params["industry"] = industry
-    if region:
-        if region == "其他":
-            placeholders = []
-            for index, value in enumerate(item for item in REGION_OPTIONS if item != "其他"):
-                key = f"standard_region_{index}"
-                placeholders.append(f":{key}")
-                params[key] = value
-            where_parts.append(
-                "(region IS NULL OR region = '' "
-                f"OR region NOT IN ({', '.join(placeholders)}))"
-            )
-        else:
-            where_parts.append("region = :region")
-            params["region"] = region
-    elif region_keyword:
-        if region_keyword.strip() == "其他":
-            placeholders = []
-            for index, value in enumerate(item for item in REGION_OPTIONS if item != "其他"):
-                key = f"standard_region_{index}"
-                placeholders.append(f":{key}")
-                params[key] = value
-            where_parts.append(
-                "(region IS NULL OR region = '' "
-                f"OR region NOT IN ({', '.join(placeholders)}))"
-            )
-        else:
-            where_parts.append("region LIKE :region_keyword")
-            params["region_keyword"] = f"%{region_keyword}%"
+    add_region_filter(
+        where_parts,
+        params,
+        column="region",
+        region=region,
+        region_keyword=region_keyword,
+    )
     if owner:
         where_parts.append("owner_name = :owner")
         params["owner"] = owner
@@ -200,10 +190,10 @@ def list_customers(
     elif attribute == "non_heavy":
         where_parts.append("(attribute IS NULL OR attribute != :heavy_attribute)")
         params["heavy_attribute"] = "H"
-    add_channel_filter(
+    add_customer_interaction_channel_filter(
         where_parts,
         params,
-        column="last_interaction_channel",
+        customer_name_column="dws_customer_360.customer_name",
         channel=channel,
     )
 
@@ -270,27 +260,93 @@ def list_customers(
 # Filter options endpoint
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _distinct_values(db: Session, column: str) -> List[str]:
-    """Return sorted distinct non-null values for a column."""
-    sql = text(
-        f"SELECT DISTINCT {column} FROM dws_customer_360 "
-        f"WHERE {column} IS NOT NULL AND {column} != '' "
-        f"ORDER BY {column}"
-    )
-    rows = db.execute(sql).fetchall()
-    return [r[0] for r in rows]
+_FILTER_OPTION_COLUMNS = (
+    "industry",
+    "region",
+    "owner_name",
+    "purchase_stage",
+    "intent_level",
+)
+
+
+def _filter_option_rows(db: Session, special_project: Optional[str]) -> List[Any]:
+    columns = ", ".join(f"c.{column}" for column in _FILTER_OPTION_COLUMNS)
+    params: Dict[str, Any] = {}
+    if special_project == "重客":
+        sql = text(
+            f"""
+            SELECT {columns}
+            FROM {KEY_ACCOUNT_TABLE} ka
+            LEFT JOIN dws_customer_360 c
+              ON c.customer_name = ka.`重客名称`
+             AND c.campaign_tag = :filter_source_project
+            WHERE ka.`time` = (SELECT MAX(`time`) FROM {KEY_ACCOUNT_TABLE})
+            """
+        )
+        params["filter_source_project"] = KEY_ACCOUNT_SOURCE_PROJECT
+    else:
+        where_sql = ""
+        if special_project:
+            where_sql = "WHERE c.campaign_tag = :filter_special_project"
+            params["filter_special_project"] = special_project
+        sql = text(f"SELECT {columns} FROM dws_customer_360 c {where_sql}")
+    return db.execute(sql, params).mappings().all()
+
+
+def _facet_values(rows: List[Any], column: str) -> List[str]:
+    return sorted({str(row.get(column)).strip() for row in rows if row.get(column) not in (None, "")})
+
+
+def _channel_option_rows(db: Session, special_project: Optional[str]) -> List[Any]:
+    params: Dict[str, Any] = {}
+    if special_project == "重客":
+        sql = text(
+            f"""
+            SELECT DISTINCT interaction.channel
+            FROM dws_interaction_detail interaction
+            INNER JOIN {KEY_ACCOUNT_TABLE} ka
+              ON ka.`重客名称` = interaction.customer_name
+             AND ka.`time` = (SELECT MAX(`time`) FROM {KEY_ACCOUNT_TABLE})
+            WHERE interaction.channel IS NOT NULL AND TRIM(interaction.channel) != ''
+            """
+        )
+    elif special_project:
+        sql = text(
+            """
+            SELECT DISTINCT interaction.channel
+            FROM dws_interaction_detail interaction
+            INNER JOIN dws_customer_360 c ON c.customer_name = interaction.customer_name
+            WHERE c.campaign_tag = :channel_special_project
+              AND interaction.channel IS NOT NULL AND TRIM(interaction.channel) != ''
+            """
+        )
+        params["channel_special_project"] = special_project
+    else:
+        sql = text(
+            """
+            SELECT DISTINCT interaction.channel
+            FROM dws_interaction_detail interaction
+            WHERE interaction.channel IS NOT NULL AND TRIM(interaction.channel) != ''
+            """
+        )
+    return db.execute(sql, params).mappings().all()
 
 
 @router.get("/filter-options")
-def get_filter_options(db: Session = Depends(get_db)) -> Dict[str, List[str]]:
-    """Return distinct values for all filterable facets from dws_customer_360."""
+def get_filter_options(
+    db: Session = Depends(get_db),
+    special_project: Optional[str] = Query(None, description="Scope options to a project"),
+) -> Dict[str, List[str]]:
+    """Return facets scoped to the same customer population as the list."""
+    rows = _filter_option_rows(db, special_project)
+    channel_rows = _channel_option_rows(db, special_project)
     return {
-        "industries": _distinct_values(db, "industry"),
-        "regions": get_region_options(),
-        "owners": _distinct_values(db, "owner_name"),
-        "stages": _distinct_values(db, "purchase_stage"),
-        "intent_levels": _distinct_values(db, "intent_level"),
-        "channels": _distinct_values(db, "last_interaction_channel"),
+        "industries": _facet_values(rows, "industry"),
+        "regions": available_region_options(row.get("region") for row in rows),
+        "owners": _facet_values(rows, "owner_name"),
+        "stages": _facet_values(rows, "purchase_stage"),
+        "intent_levels": _facet_values(rows, "intent_level"),
+        "channels": available_channel_options(row.get("channel") for row in channel_rows),
     }
 
 
@@ -423,6 +479,7 @@ def get_customer_statistics_by_name(
 def export_customers(
     db: Session = Depends(get_db),
     keyword: Optional[str] = Query(None, description="Search by customer_name"),
+    special_project: Optional[str] = Query(None, description="Filter by campaign_tag"),
     industry: Optional[str] = Query(None, description="Filter by industry"),
     region: Optional[str] = Query(None, description="Filter by region"),
     region_keyword: Optional[str] = Query(None, description="Fuzzy search by region"),
@@ -455,6 +512,7 @@ def export_customers(
     excel_bytes = export_customers_excel(
         db,
         keyword=keyword,
+        special_project=special_project,
         industry=industry,
         region=region,
         region_keyword=region_keyword,

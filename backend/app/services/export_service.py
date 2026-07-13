@@ -11,8 +11,9 @@ from typing import Any, Dict, List, Optional
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from app.services.channel_classification import add_channel_filter
-from app.services.region_filter import REGION_OPTIONS
+from app.services.channel_classification import add_customer_interaction_channel_filter
+from app.services.key_account_query import fetch_key_accounts
+from app.services.region_filter import add_region_filter
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +43,7 @@ def export_customers_excel(
     db: Session,
     *,
     keyword: Optional[str] = None,
+    special_project: Optional[str] = None,
     industry: Optional[str] = None,
     region: Optional[str] = None,
     region_keyword: Optional[str] = None,
@@ -56,94 +58,94 @@ def export_customers_excel(
     sort_by: str = "intent_score",
     sort_order: str = "DESC",
 ) -> bytes:
-    """Query dws_customer_360 and return .xlsx bytes."""
-    where_parts = ["1=1"]
-    params: Dict[str, Any] = {}
+    """Query the selected customer source and return .xlsx bytes."""
+    if special_project == "重客":
+        rows = fetch_key_accounts(
+            db,
+            keyword=keyword,
+            industry=industry,
+            region=region,
+            region_keyword=region_keyword,
+            owner=owner,
+            owner_keyword=owner_keyword,
+            stage=stage,
+            intent_level=intent_level,
+            interaction_min=interaction_min,
+            interaction_period=interaction_period,
+            channel=channel,
+            sort=f"{sort_by} {sort_order}",
+            limit=20000,
+        )
+    else:
+        where_parts = ["1=1"]
+        params: Dict[str, Any] = {}
 
-    if keyword:
-        where_parts.append("customer_name LIKE :keyword")
-        params["keyword"] = f"%{keyword}%"
-    if industry:
-        where_parts.append("industry = :industry")
-        params["industry"] = industry
-    if region:
-        if region == "其他":
-            placeholders = []
-            for index, value in enumerate(item for item in REGION_OPTIONS if item != "其他"):
-                key = f"standard_region_{index}"
-                placeholders.append(f":{key}")
-                params[key] = value
-            where_parts.append(
-                "(region IS NULL OR region = '' "
-                f"OR region NOT IN ({', '.join(placeholders)}))"
-            )
-        else:
-            where_parts.append("region = :region")
-            params["region"] = region
-    elif region_keyword:
-        if region_keyword.strip() == "其他":
-            placeholders = []
-            for index, value in enumerate(item for item in REGION_OPTIONS if item != "其他"):
-                key = f"standard_region_{index}"
-                placeholders.append(f":{key}")
-                params[key] = value
-            where_parts.append(
-                "(region IS NULL OR region = '' "
-                f"OR region NOT IN ({', '.join(placeholders)}))"
-            )
-        else:
-            where_parts.append("region LIKE :region_keyword")
-            params["region_keyword"] = f"%{region_keyword}%"
-    if owner:
-        where_parts.append("owner_name = :owner")
-        params["owner"] = owner
-    elif owner_keyword:
-        where_parts.append("owner_name LIKE :owner_keyword")
-        params["owner_keyword"] = f"%{owner_keyword}%"
-    if stage:
-        where_parts.append("purchase_stage = :stage")
-        params["stage"] = stage
-    if intent_level:
-        where_parts.append("intent_level = :intent_level")
-        params["intent_level"] = intent_level
-    if interaction_min is not None and interaction_min > 0:
-        # 使用子查询动态计算指定时间范围内的互动次数
-        where_parts.append("""
-            customer_name IN (
-                SELECT customer_name
-                FROM dws_interaction_detail
-                WHERE event_time >= DATE_SUB(NOW(), INTERVAL :period DAY)
-                GROUP BY customer_name
-                HAVING COUNT(*) >= :interaction_min
-            )
-        """)
-        params["interaction_min"] = interaction_min
-        params["period"] = interaction_period
-    if attribute == "heavy":
-        where_parts.append("attribute = :heavy_attribute")
-        params["heavy_attribute"] = "H"
-    elif attribute == "non_heavy":
-        where_parts.append("(attribute IS NULL OR attribute != :heavy_attribute)")
-        params["heavy_attribute"] = "H"
-    add_channel_filter(
-        where_parts,
-        params,
-        column="last_interaction_channel",
-        channel=channel,
-    )
+        if keyword:
+            where_parts.append("customer_name LIKE :keyword")
+            params["keyword"] = f"%{keyword}%"
+        if special_project:
+            where_parts.append("campaign_tag = :special_project")
+            params["special_project"] = special_project
+        if industry:
+            where_parts.append("industry = :industry")
+            params["industry"] = industry
+        add_region_filter(
+            where_parts,
+            params,
+            column="region",
+            region=region,
+            region_keyword=region_keyword,
+        )
+        if owner:
+            where_parts.append("owner_name = :owner")
+            params["owner"] = owner
+        elif owner_keyword:
+            where_parts.append("owner_name LIKE :owner_keyword")
+            params["owner_keyword"] = f"%{owner_keyword}%"
+        if stage:
+            where_parts.append("purchase_stage = :stage")
+            params["stage"] = stage
+        if intent_level:
+            where_parts.append("intent_level = :intent_level")
+            params["intent_level"] = intent_level
+        if interaction_min is not None and interaction_min > 0:
+            # 使用子查询动态计算指定时间范围内的互动次数
+            where_parts.append("""
+                customer_name IN (
+                    SELECT customer_name
+                    FROM dws_interaction_detail
+                    WHERE event_time >= DATE_SUB(NOW(), INTERVAL :period DAY)
+                    GROUP BY customer_name
+                    HAVING COUNT(*) >= :interaction_min
+                )
+            """)
+            params["interaction_min"] = interaction_min
+            params["period"] = interaction_period
+        if attribute == "heavy":
+            where_parts.append("attribute = :heavy_attribute")
+            params["heavy_attribute"] = "H"
+        elif attribute == "non_heavy":
+            where_parts.append("(attribute IS NULL OR attribute != :heavy_attribute)")
+            params["heavy_attribute"] = "H"
+        add_customer_interaction_channel_filter(
+            where_parts,
+            params,
+            customer_name_column="dws_customer_360.customer_name",
+            channel=channel,
+        )
 
-    where_sql = " AND ".join(where_parts)
-    allowed = {"customer_name","industry","intent_score","interaction_count_30d",
-               "interaction_count_total","last_interaction_time","active_opp_amount","won_amount"}
-    if sort_by not in allowed:
-        sort_by = "intent_score"
-    order_dir = "ASC" if sort_order.upper() == "ASC" else "DESC"
+        where_sql = " AND ".join(where_parts)
+        allowed = {"customer_name","industry","intent_score","interaction_count_30d",
+                   "interaction_count_total","last_interaction_time","active_opp_amount","won_amount"}
+        if sort_by not in allowed:
+            sort_by = "intent_score"
+        order_dir = "ASC" if sort_order.upper() == "ASC" else "DESC"
 
-    sql = text(
-        f"SELECT * FROM dws_customer_360 WHERE {where_sql} "
-        f"ORDER BY {sort_by} {order_dir} LIMIT 20000"
-    )
-    rows = db.execute(sql, params).mappings().all()
+        sql = text(
+            f"SELECT * FROM dws_customer_360 WHERE {where_sql} "
+            f"ORDER BY {sort_by} {order_dir} LIMIT 20000"
+        )
+        rows = db.execute(sql, params).mappings().all()
 
     import openpyxl
     from openpyxl.styles import Font, PatternFill, Alignment

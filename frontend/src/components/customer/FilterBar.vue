@@ -17,18 +17,23 @@ const interaction_period = ref(30) // 默认30天
 const industries = ref([])
 const regions = ref([])
 const owners = ref([])
+const availableChannels = ref([])
 const isKeyAccountSelection = computed(() => specialProject.value === '重客')
 const AUTO_APPLY_DELAY = 400
 let applyTimer = null
+let filterOptionsRequestId = 0
 
-const channels = [
+const channelLabels = {
+  email: '邮件',
+  web: '官网',
+  event: '直播/活动',
+  wechat: '微信',
+  other: '其他',
+}
+const channels = computed(() => [
   { value: '', label: '全部' },
-  { value: 'email', label: '邮件' },
-  { value: 'web', label: '官网' },
-  { value: 'event', label: '直播/活动' },
-  { value: 'wechat', label: '微信' },
-  { value: 'other', label: '其他' },
-]
+  ...availableChannels.value.map(value => ({ value, label: channelLabels[value] || value })),
+])
 
 const periodOptions = [
   { value: 30, label: '近30天' },
@@ -39,31 +44,37 @@ const periodOptions = [
   { value: 1095, label: '近3年' },
 ]
 
-async function fetchFilterOptions() {
+async function fetchFilterOptions(project = specialProject.value) {
+  const requestId = ++filterOptionsRequestId
   try {
-    const res = await customerApi.filterOptions()
+    const res = await customerApi.filterOptions({ special_project: project || undefined })
+    if (requestId !== filterOptionsRequestId) return
     industries.value = res.industries || []
     regions.value = res.regions || []
     owners.value = res.owners || []
+    availableChannels.value = res.channels || []
+    if (industry.value && !industries.value.includes(industry.value)) industry.value = ''
+    if (selectedRegion.value && !regions.value.includes(selectedRegion.value)) selectedRegion.value = ''
+    if (selectedOwner.value && !owners.value.includes(selectedOwner.value)) selectedOwner.value = ''
+    if (channel.value && !availableChannels.value.includes(channel.value)) channel.value = ''
   } catch (e) {
     console.error('Failed to fetch filter options:', e)
   }
 }
 
 function handleApply() {
-  const keyAccountMode = isKeyAccountSelection.value
   emit('apply', {
-    keyword: keyword.value,
+    keyword: keyword.value.trim(),
     special_project: specialProject.value,
-    industry: keyAccountMode ? '' : industry.value,
-    region: keyAccountMode ? '' : selectedRegion.value,
+    industry: industry.value,
+    region: selectedRegion.value,
     region_keyword: '',
-    owner: keyAccountMode ? '' : selectedOwner.value,
+    owner: selectedOwner.value,
     owner_keyword: '',
-    interaction_min: keyAccountMode ? null : interaction_min.value,
-    interaction_period: keyAccountMode ? null : interaction_period.value,
-    attribute: keyAccountMode ? '' : attribute.value,
-    channel: keyAccountMode ? '' : channel.value,
+    interaction_min: interaction_min.value,
+    interaction_period: interaction_period.value,
+    attribute: attribute.value,
+    channel: channel.value,
   })
 }
 
@@ -86,7 +97,16 @@ function scheduleApply() {
   }, AUTO_APPLY_DELAY)
 }
 
-watch(specialProject, applyNow)
+watch(specialProject, async (value, previousValue) => {
+  if (value === '重客') {
+    attribute.value = 'heavy'
+  } else if (previousValue === '重客') {
+    attribute.value = ''
+  }
+  await fetchFilterOptions(value)
+  if (value !== specialProject.value) return
+  applyNow()
+})
 
 onMounted(() => {
   fetchFilterOptions()
@@ -127,17 +147,12 @@ onBeforeUnmount(() => {
       </div>
 
       <!-- 行业 -->
-      <div
-        class="flex min-w-0 flex-col gap-1.5 transition-opacity"
-        :class="{ 'opacity-50': isKeyAccountSelection }"
-        :title="isKeyAccountSelection ? '重客列表暂不支持行业筛选' : ''"
-      >
+      <div class="flex min-w-0 flex-col gap-1.5">
         <label class="text-xs font-medium text-[var(--muted)]">行业</label>
         <select
           v-model="industry"
-          :disabled="isKeyAccountSelection"
           @change="applyNow"
-          class="customer-filter-select rounded-lg border border-[var(--line)] bg-[var(--bg1)] px-3 py-2 text-sm text-[var(--text)] focus:border-[var(--brand)] focus:outline-none disabled:cursor-not-allowed"
+          class="customer-filter-select rounded-lg border border-[var(--line)] bg-[var(--bg1)] px-3 py-2 text-sm text-[var(--text)] focus:border-[var(--brand)] focus:outline-none"
         >
           <option value="">全部行业</option>
           <option v-for="item in industries" :key="item" :value="item">{{ item }}</option>
@@ -145,17 +160,12 @@ onBeforeUnmount(() => {
       </div>
 
       <!-- 省份 -->
-      <div
-        class="flex min-w-0 flex-col gap-1.5 transition-opacity"
-        :class="{ 'opacity-50': isKeyAccountSelection }"
-        :title="isKeyAccountSelection ? '重客列表暂不支持省份筛选' : ''"
-      >
+      <div class="flex min-w-0 flex-col gap-1.5">
         <label class="text-xs font-medium text-[var(--muted)]">省份</label>
         <select
           v-model="selectedRegion"
-          :disabled="isKeyAccountSelection"
           @change="applyNow"
-          class="customer-filter-select rounded-lg border border-[var(--line)] bg-[var(--bg1)] px-3 py-2 text-sm text-[var(--text)] focus:border-[var(--brand)] focus:outline-none disabled:cursor-not-allowed"
+          class="customer-filter-select rounded-lg border border-[var(--line)] bg-[var(--bg1)] px-3 py-2 text-sm text-[var(--text)] focus:border-[var(--brand)] focus:outline-none"
         >
           <option value="">全部省份</option>
           <option v-for="item in regions" :key="item" :value="item">{{ item }}</option>
@@ -163,17 +173,12 @@ onBeforeUnmount(() => {
       </div>
 
       <!-- 负责人 -->
-      <div
-        class="flex min-w-0 flex-col gap-1.5 transition-opacity"
-        :class="{ 'opacity-50': isKeyAccountSelection }"
-        :title="isKeyAccountSelection ? '重客列表暂不支持负责人筛选' : ''"
-      >
+      <div class="flex min-w-0 flex-col gap-1.5">
         <label class="text-xs font-medium text-[var(--muted)]">负责人</label>
         <select
           v-model="selectedOwner"
-          :disabled="isKeyAccountSelection"
           @change="applyNow"
-          class="customer-filter-select rounded-lg border border-[var(--line)] bg-[var(--bg1)] px-3 py-2 text-sm text-[var(--text)] focus:border-[var(--brand)] focus:outline-none disabled:cursor-not-allowed"
+          class="customer-filter-select rounded-lg border border-[var(--line)] bg-[var(--bg1)] px-3 py-2 text-sm text-[var(--text)] focus:border-[var(--brand)] focus:outline-none"
         >
           <option value="">全部负责人</option>
           <option v-for="item in owners" :key="item" :value="item">{{ item }}</option>
@@ -181,16 +186,11 @@ onBeforeUnmount(() => {
       </div>
 
       <!-- 互动次数筛选 -->
-      <div
-        class="flex min-w-0 flex-col gap-1.5 transition-opacity"
-        :class="{ 'opacity-50': isKeyAccountSelection }"
-        :title="isKeyAccountSelection ? '重客列表暂不支持互动次数筛选' : ''"
-      >
+      <div class="flex min-w-0 flex-col gap-1.5">
         <label class="text-xs font-medium text-[var(--muted)]">互动次数 ≥</label>
         <div class="grid grid-cols-[minmax(0,1fr)_3.5rem] gap-1">
           <select
             v-model.number="interaction_period"
-            :disabled="isKeyAccountSelection"
             @change="applyNow"
             class="customer-filter-select min-w-0 rounded-lg border border-[var(--line)] bg-[var(--bg1)] px-2 py-2 text-xs text-[var(--text)] focus:border-[var(--brand)] focus:outline-none"
           >
@@ -198,7 +198,6 @@ onBeforeUnmount(() => {
           </select>
           <input
             v-model.number="interaction_min"
-            :disabled="isKeyAccountSelection"
             type="number"
             min="0"
             placeholder="0"
@@ -213,7 +212,7 @@ onBeforeUnmount(() => {
       <div
         class="flex min-w-0 flex-col gap-1.5 transition-opacity"
         :class="{ 'opacity-50': isKeyAccountSelection }"
-        :title="isKeyAccountSelection ? '重客列表暂不支持该筛选' : ''"
+        :title="isKeyAccountSelection ? '重客专项固定为是重客' : ''"
       >
         <label class="text-xs font-medium text-[var(--muted)]">是否为重客</label>
         <select
@@ -229,15 +228,10 @@ onBeforeUnmount(() => {
       </div>
 
       <!-- 互动方式 -->
-      <div
-        class="flex min-w-0 flex-col gap-1.5 transition-opacity"
-        :class="{ 'opacity-50': isKeyAccountSelection }"
-        :title="isKeyAccountSelection ? '重客列表暂不支持互动方式筛选' : ''"
-      >
+      <div class="flex min-w-0 flex-col gap-1.5">
         <label class="text-xs font-medium text-[var(--muted)]">互动方式</label>
         <select
           v-model="channel"
-          :disabled="isKeyAccountSelection"
           @change="applyNow"
           class="customer-filter-select rounded-lg border border-[var(--line)] bg-[var(--bg1)] px-3 py-2 text-sm text-[var(--text)] focus:border-[var(--brand)] focus:outline-none"
         >

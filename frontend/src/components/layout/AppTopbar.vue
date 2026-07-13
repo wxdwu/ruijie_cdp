@@ -52,8 +52,6 @@ const showCustomerExport = computed(() => route.path === '/customers')
       <ExportButton
         v-if="showCustomerExport"
         :filters="customerStore.filters"
-        :disabled="customerStore.isKeyAccountMode"
-        disabled-reason="重客列表暂不支持导出"
       />
     </div>
   </header>
