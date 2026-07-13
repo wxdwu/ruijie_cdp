@@ -49,7 +49,12 @@ const showCustomerExport = computed(() => route.path === '/customers')
       >
         {{ theme === 'dark' ? '切换浅色主题' : '切换深色主题' }}
       </button>
-      <ExportButton v-if="showCustomerExport" :filters="customerStore.filters" />
+      <ExportButton
+        v-if="showCustomerExport"
+        :filters="customerStore.filters"
+        :disabled="customerStore.isKeyAccountMode"
+        disabled-reason="重客列表暂不支持导出"
+      />
     </div>
   </header>
 </template>

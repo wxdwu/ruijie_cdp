@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { customerApi } from '../../api'
 
 const emit = defineEmits(['apply'])
@@ -26,6 +26,7 @@ const industries = ref([])
 const regions = ref([])
 const owners = ref([])
 const loading = ref(false)
+const isKeyAccountSelection = computed(() => specialProject.value === '重客')
 
 const channels = [
   { value: '', label: '全部' },
@@ -68,15 +69,18 @@ async function fetchFilterOptions() {
 }
 
 function openRegionCombobox() {
+  if (isKeyAccountSelection.value) return
   regionComboboxOpen.value = true
 }
 
 function openRegionComboboxFromArrow() {
+  if (isKeyAccountSelection.value) return
   regionComboboxOpen.value = true
   regionInputRef.value?.focus()
 }
 
 function handleRegionInput() {
+  if (isKeyAccountSelection.value) return
   if (regionInput.value !== selectedRegion.value) {
     selectedRegion.value = ''
   }
@@ -96,15 +100,18 @@ function clearRegion() {
 }
 
 function openOwnerCombobox() {
+  if (isKeyAccountSelection.value) return
   ownerComboboxOpen.value = true
 }
 
 function openOwnerComboboxFromArrow() {
+  if (isKeyAccountSelection.value) return
   ownerComboboxOpen.value = true
   ownerInputRef.value?.focus()
 }
 
 function handleOwnerInput() {
+  if (isKeyAccountSelection.value) return
   if (ownerInput.value !== selectedOwner.value) {
     selectedOwner.value = ''
   }
@@ -133,22 +140,29 @@ function handleDocumentMouseDown(event) {
 }
 
 function handleApply() {
+  const keyAccountMode = isKeyAccountSelection.value
   const ownerKeyword = ownerInput.value.trim()
   const regionKeyword = regionInput.value.trim()
   emit('apply', {
     keyword: keyword.value,
     special_project: specialProject.value,
-    industry: industry.value,
-    region: selectedRegion.value,
-    region_keyword: selectedRegion.value ? '' : regionKeyword,
-    owner: selectedOwner.value,
-    owner_keyword: selectedOwner.value ? '' : ownerKeyword,
-    interaction_min: interaction_min.value,
-    interaction_period: interaction_period.value, // 新增：时间范围
-    attribute: attribute.value,
-    channel: channel.value,
+    industry: keyAccountMode ? '' : industry.value,
+    region: keyAccountMode ? '' : selectedRegion.value,
+    region_keyword: keyAccountMode ? '' : (selectedRegion.value ? '' : regionKeyword),
+    owner: keyAccountMode ? '' : selectedOwner.value,
+    owner_keyword: keyAccountMode ? '' : (selectedOwner.value ? '' : ownerKeyword),
+    interaction_min: keyAccountMode ? null : interaction_min.value,
+    interaction_period: keyAccountMode ? null : interaction_period.value,
+    attribute: keyAccountMode ? '' : attribute.value,
+    channel: keyAccountMode ? '' : channel.value,
   })
 }
+
+watch(specialProject, (value) => {
+  if (value !== '重客') return
+  regionComboboxOpen.value = false
+  ownerComboboxOpen.value = false
+})
 
 onMounted(() => {
   fetchFilterOptions()
@@ -172,6 +186,7 @@ onBeforeUnmount(() => {
         >
           <option value="">全部</option>
           <option value="企业彩光ICT">企业彩光ICT</option>
+          <option value="重客">重客</option>
         </select>
       </div>
 
@@ -187,11 +202,16 @@ onBeforeUnmount(() => {
       </div>
 
       <!-- 行业 -->
-      <div class="flex min-w-0 flex-col gap-1.5">
+      <div
+        class="flex min-w-0 flex-col gap-1.5 transition-opacity"
+        :class="{ 'opacity-50': isKeyAccountSelection }"
+        :title="isKeyAccountSelection ? '重客列表暂不支持行业筛选' : ''"
+      >
         <label class="text-xs font-medium text-[var(--muted)]">行业</label>
         <select
           v-model="industry"
-          class="rounded-lg border border-[var(--line)] bg-[var(--bg1)] px-3 py-2 text-sm text-[var(--text)] focus:border-[var(--brand)] focus:outline-none"
+          :disabled="isKeyAccountSelection"
+          class="rounded-lg border border-[var(--line)] bg-[var(--bg1)] px-3 py-2 text-sm text-[var(--text)] focus:border-[var(--brand)] focus:outline-none disabled:cursor-not-allowed"
         >
           <option value="">全部行业</option>
           <option v-for="item in industries" :key="item" :value="item">{{ item }}</option>
@@ -199,12 +219,17 @@ onBeforeUnmount(() => {
       </div>
 
       <!-- 省份 -->
-      <div class="flex min-w-0 flex-col gap-1.5">
+      <div
+        class="flex min-w-0 flex-col gap-1.5 transition-opacity"
+        :class="{ 'opacity-50': isKeyAccountSelection }"
+        :title="isKeyAccountSelection ? '重客列表暂不支持省份筛选' : ''"
+      >
         <label class="text-xs font-medium text-[var(--muted)]">省份</label>
         <div ref="regionComboboxRef" class="relative">
           <input
             ref="regionInputRef"
             v-model="regionInput"
+            :disabled="isKeyAccountSelection"
             type="text"
             placeholder="输入省份..."
             class="w-full rounded-lg border border-[var(--line)] bg-[var(--bg1)] px-3 py-2 pr-10 text-sm text-[var(--text)] placeholder:text-[var(--muted)] focus:border-[var(--brand)] focus:outline-none"
@@ -221,13 +246,14 @@ onBeforeUnmount(() => {
             class="absolute right-0 top-0 flex h-full w-9 items-center justify-center rounded-r-lg text-[var(--muted)] hover:text-[var(--text)]"
             aria-label="展开省份列表"
             tabindex="-1"
+            :disabled="isKeyAccountSelection"
             @mousedown.prevent
             @click="openRegionComboboxFromArrow"
           >
             <span class="h-2 w-2 rotate-45 border-b border-r border-current"></span>
           </button>
           <div
-            v-if="regionComboboxOpen"
+            v-if="regionComboboxOpen && !isKeyAccountSelection"
             class="absolute left-0 right-0 top-[calc(100%+0.25rem)] z-[100] max-h-60 overflow-y-auto rounded-lg border border-[var(--line)] bg-[var(--panel)] py-1 shadow-xl"
           >
             <button
@@ -257,12 +283,17 @@ onBeforeUnmount(() => {
       </div>
 
       <!-- 负责人 -->
-      <div class="flex min-w-0 flex-col gap-1.5">
+      <div
+        class="flex min-w-0 flex-col gap-1.5 transition-opacity"
+        :class="{ 'opacity-50': isKeyAccountSelection }"
+        :title="isKeyAccountSelection ? '重客列表暂不支持负责人筛选' : ''"
+      >
         <label class="text-xs font-medium text-[var(--muted)]">负责人</label>
         <div ref="ownerComboboxRef" class="relative">
           <input
             ref="ownerInputRef"
             v-model="ownerInput"
+            :disabled="isKeyAccountSelection"
             type="text"
             placeholder="输入负责人名称..."
             class="w-full rounded-lg border border-[var(--line)] bg-[var(--bg1)] px-3 py-2 pr-10 text-sm text-[var(--text)] placeholder:text-[var(--muted)] focus:border-[var(--brand)] focus:outline-none"
@@ -279,13 +310,14 @@ onBeforeUnmount(() => {
             class="absolute right-0 top-0 flex h-full w-9 items-center justify-center rounded-r-lg text-[var(--muted)] hover:text-[var(--text)]"
             aria-label="展开负责人列表"
             tabindex="-1"
+            :disabled="isKeyAccountSelection"
             @mousedown.prevent
             @click="openOwnerComboboxFromArrow"
           >
             <span class="h-2 w-2 rotate-45 border-b border-r border-current"></span>
           </button>
           <div
-            v-if="ownerComboboxOpen"
+            v-if="ownerComboboxOpen && !isKeyAccountSelection"
             class="absolute left-0 right-0 top-[calc(100%+0.25rem)] z-[100] max-h-60 overflow-y-auto rounded-lg border border-[var(--line)] bg-[var(--panel)] py-1 shadow-xl"
           >
             <button
@@ -315,17 +347,23 @@ onBeforeUnmount(() => {
       </div>
 
       <!-- 互动次数筛选 -->
-      <div class="flex min-w-0 flex-col gap-1.5">
+      <div
+        class="flex min-w-0 flex-col gap-1.5 transition-opacity"
+        :class="{ 'opacity-50': isKeyAccountSelection }"
+        :title="isKeyAccountSelection ? '重客列表暂不支持互动次数筛选' : ''"
+      >
         <label class="text-xs font-medium text-[var(--muted)]">互动次数 ≥</label>
         <div class="grid grid-cols-[minmax(0,1fr)_3.5rem] gap-1">
           <select
             v-model.number="interaction_period"
+            :disabled="isKeyAccountSelection"
             class="min-w-0 rounded-lg border border-[var(--line)] bg-[var(--bg1)] px-2 py-2 text-xs text-[var(--text)] focus:border-[var(--brand)] focus:outline-none"
           >
             <option v-for="p in periodOptions" :key="p.value" :value="p.value">{{ p.label }}</option>
           </select>
           <input
             v-model.number="interaction_min"
+            :disabled="isKeyAccountSelection"
             type="number"
             min="0"
             placeholder="0"
@@ -335,10 +373,15 @@ onBeforeUnmount(() => {
       </div>
 
       <!-- 是否为重客 -->
-      <div class="flex min-w-0 flex-col gap-1.5">
+      <div
+        class="flex min-w-0 flex-col gap-1.5 transition-opacity"
+        :class="{ 'opacity-50': isKeyAccountSelection }"
+        :title="isKeyAccountSelection ? '重客列表暂不支持该筛选' : ''"
+      >
         <label class="text-xs font-medium text-[var(--muted)]">是否为重客</label>
         <select
           v-model="attribute"
+          :disabled="isKeyAccountSelection"
           class="rounded-lg border border-[var(--line)] bg-[var(--bg1)] px-3 py-2 text-sm text-[var(--text)] focus:border-[var(--brand)] focus:outline-none"
         >
           <option value="">全部</option>
@@ -348,10 +391,15 @@ onBeforeUnmount(() => {
       </div>
 
       <!-- 互动方式 -->
-      <div class="flex min-w-0 flex-col gap-1.5">
+      <div
+        class="flex min-w-0 flex-col gap-1.5 transition-opacity"
+        :class="{ 'opacity-50': isKeyAccountSelection }"
+        :title="isKeyAccountSelection ? '重客列表暂不支持互动方式筛选' : ''"
+      >
         <label class="text-xs font-medium text-[var(--muted)]">互动方式</label>
         <select
           v-model="channel"
+          :disabled="isKeyAccountSelection"
           class="rounded-lg border border-[var(--line)] bg-[var(--bg1)] px-3 py-2 text-sm text-[var(--text)] focus:border-[var(--brand)] focus:outline-none"
         >
           <option v-for="item in channels" :key="item.value" :value="item.value">{{ item.label }}</option>

@@ -72,6 +72,14 @@ def test_keyword_filter_generates_like(mock_db):
     assert params["keyword"] == "%华为%"
 
 
+def test_standard_special_project_keeps_customer_360_source(mock_db):
+    _call(mock_db, special_project="企业彩光ICT")
+    sql, params = mock_db.calls[0]
+    assert "dws_customer_360" in sql
+    assert "campaign_tag = :special_project" in sql
+    assert params["special_project"] == "企业彩光ICT"
+
+
 def test_std_region_filter_uses_equal_condition(mock_db):
     _call(mock_db, region="广东")
     sql, params = mock_db.calls[0]
@@ -128,3 +136,83 @@ def test_owner_keyword_uses_like(mock_db):
     sql, params = mock_db.calls[0]
     assert "owner_name LIKE :owner_keyword" in sql
     assert params["owner_keyword"] == "%张%"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 重客专项：切换数据源并保持客户列表响应结构
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_key_account_filter_uses_latest_snapshot_and_maps_fields(mock_db):
+    mock_db.add_result(
+        "SELECT COUNT(*) FROM ods_crm_key_account_output_list_day",
+        scalar=257,
+    )
+    mock_db.add_result(
+        "`重客编码` AS id",
+        rows=[{
+            "id": "KH-001",
+            "customer_name": "测试重客集团",
+            "campaign_tag": "重客",
+            "industry": None,
+            "purchase_stage": None,
+            "role_coverage": None,
+            "intent_score": None,
+            "intent_level": None,
+            "interaction_count_total": None,
+            "last_interaction_time": None,
+            "last_interaction_channel": None,
+        }],
+    )
+
+    result = _call(mock_db, special_project="重客")
+
+    assert result["total"] == 257
+    assert result["items"][0]["id"] == "KH-001"
+    assert result["items"][0]["customer_name"] == "测试重客集团"
+    assert result["items"][0]["campaign_tag"] == "重客"
+    assert result["items"][0]["purchase_stage"] is None
+    count_sql, _ = mock_db.calls[0]
+    data_sql, _ = mock_db.calls[1]
+    assert "ods_crm_key_account_output_list_day" in count_sql
+    assert "MAX(`time`)" in count_sql
+    assert "ORDER BY `重客名称` ASC, `重客编码` ASC" in data_sql
+
+
+def test_key_account_filter_supports_keyword_and_pagination(mock_db):
+    _call(
+        mock_db,
+        special_project="重客",
+        keyword="中煤",
+        page=2,
+        size=20,
+    )
+
+    count_sql, count_params = mock_db.calls[0]
+    _, data_params = mock_db.calls[1]
+    assert "`重客名称` LIKE :keyword" in count_sql
+    assert count_params == {"keyword": "%中煤%"}
+    assert data_params["keyword"] == "%中煤%"
+    assert data_params["limit"] == 20
+    assert data_params["offset"] == 20
+
+
+def test_key_account_filter_ignores_inapplicable_filters(mock_db):
+    result = _call(
+        mock_db,
+        special_project="重客",
+        industry="软件",
+        region="广东",
+        owner="张三",
+        interaction_min=3,
+        attribute="heavy",
+        channel="email",
+    )
+
+    count_sql, count_params = mock_db.calls[0]
+    _, data_params = mock_db.calls[1]
+    assert "dws_customer_360" not in count_sql
+    assert "dws_interaction_detail" not in count_sql
+    assert count_params == {}
+    assert data_params == {"limit": 20, "offset": 0}
+    assert result["filters_applied"]["industry"] is None
+    assert result["filters_applied"]["attribute"] is None

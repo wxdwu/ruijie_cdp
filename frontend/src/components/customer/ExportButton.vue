@@ -7,12 +7,20 @@ const props = defineProps({
     type: Object,
     default: () => ({}),
   },
+  disabled: {
+    type: Boolean,
+    default: false,
+  },
+  disabledReason: {
+    type: String,
+    default: '',
+  },
 })
 
 const exporting = ref(false)
 
 async function handleExport() {
-  if (exporting.value) return
+  if (exporting.value || props.disabled) return
 
   exporting.value = true
   try {
@@ -38,10 +46,11 @@ async function handleExport() {
 <template>
   <button
     @click="handleExport"
-    :disabled="exporting"
+    :disabled="exporting || disabled"
+    :title="disabled ? disabledReason : ''"
     class="flex items-center gap-2 rounded-lg border border-[var(--line)] bg-white/5 px-4 py-2 text-sm font-medium text-[var(--text)] transition-colors hover:bg-white/10 disabled:opacity-50"
   >
     <span>{{ exporting ? '⏳' : '📥' }}</span>
-    {{ exporting ? '导出中...' : '导出数据' }}
+    {{ exporting ? '导出中...' : (disabled ? '暂不支持导出' : '导出数据') }}
   </button>
 </template>

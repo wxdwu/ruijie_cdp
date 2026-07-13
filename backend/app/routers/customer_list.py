@@ -23,6 +23,77 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/customers", tags=["customers"])
 
+KEY_ACCOUNT_TABLE = "ods_crm_key_account_output_list_day"
+
+
+def _list_key_accounts(
+    db: Session,
+    *,
+    keyword: Optional[str],
+    page: int,
+    size: int,
+) -> Dict[str, Any]:
+    """Return the latest key-account snapshot in the customer-list envelope."""
+    where_parts = [
+        f"`time` = (SELECT MAX(`time`) FROM {KEY_ACCOUNT_TABLE})",
+    ]
+    params: Dict[str, Any] = {}
+
+    if keyword:
+        where_parts.append("`重客名称` LIKE :keyword")
+        params["keyword"] = f"%{keyword}%"
+
+    where_sql = " AND ".join(where_parts)
+    count_sql = text(
+        f"SELECT COUNT(*) FROM {KEY_ACCOUNT_TABLE} WHERE {where_sql}"
+    )
+    total: int = db.execute(count_sql, params).scalar() or 0
+
+    offset = (page - 1) * size
+    data_sql = text(
+        f"""
+        SELECT
+            `重客编码` AS id,
+            `重客名称` AS customer_name,
+            '重客' AS campaign_tag,
+            NULL AS industry,
+            NULL AS purchase_stage,
+            NULL AS role_coverage,
+            NULL AS intent_score,
+            NULL AS intent_level,
+            NULL AS interaction_count_total,
+            NULL AS last_interaction_time,
+            NULL AS last_interaction_channel
+        FROM {KEY_ACCOUNT_TABLE}
+        WHERE {where_sql}
+        ORDER BY `重客名称` ASC, `重客编码` ASC
+        LIMIT :limit OFFSET :offset
+        """
+    )
+    data_params = {**params, "limit": size, "offset": offset}
+    rows = db.execute(data_sql, data_params).mappings().all()
+
+    return {
+        "total": total,
+        "items": [dict(row) for row in rows],
+        "filters_applied": {
+            "keyword": keyword,
+            "special_project": "重客",
+            "industry": None,
+            "region": None,
+            "region_keyword": None,
+            "owner": None,
+            "owner_keyword": None,
+            "stage": None,
+            "intent_level": None,
+            "interaction_min": None,
+            "interaction_period": None,
+            "attribute": None,
+            "channel": None,
+            "sort": None,
+        },
+    }
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Customer list endpoint
@@ -49,6 +120,14 @@ def list_customers(
     size: int = Query(20, ge=1, le=100, description="Page size (max 100)"),
 ) -> Dict[str, Any]:
     """List customers with filters and pagination."""
+    if special_project == "重客":
+        return _list_key_accounts(
+            db,
+            keyword=keyword,
+            page=page,
+            size=size,
+        )
+
     where_parts: List[str] = ["1=1"]
     params: Dict[str, Any] = {}
 

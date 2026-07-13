@@ -28,6 +28,7 @@ export const useCustomerStore = defineStore('customer', () => {
   })
 
   const totalPages = computed(() => Math.ceil(total.value / filters.value.size) || 1)
+  const isKeyAccountMode = computed(() => filters.value.special_project === '重客')
 
   async function fetchList() {
     loading.value = true
@@ -73,6 +74,22 @@ export const useCustomerStore = defineStore('customer', () => {
   }
 
   function setFilters(newFilters) {
+    if (newFilters.special_project === '重客') {
+      Object.assign(filters.value, {
+        industry: '',
+        region: '',
+        region_keyword: '',
+        owner: '',
+        owner_keyword: '',
+        stage: '',
+        intent_level: '',
+        interaction_min: null,
+        interaction_period: null,
+        attribute: '',
+        channel: '',
+        sort: '',
+      })
+    }
     Object.assign(filters.value, newFilters)
     filters.value.page = 1
   }
@@ -103,7 +120,7 @@ export const useCustomerStore = defineStore('customer', () => {
   }
 
   return {
-    list, total, loading, current, filters, totalPages,
+    list, total, loading, current, filters, totalPages, isKeyAccountMode,
     fetchList, fetchDetail, setFilter, setFilters, setPage, reset,
   }
 })

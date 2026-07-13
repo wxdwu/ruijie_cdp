@@ -68,7 +68,11 @@ onMounted(() => {
     <FilterBar @apply="handleApplyFilters" />
 
     <!-- Customer Table -->
-    <CustomerTable :customers="store.list" :loading="store.loading" />
+    <CustomerTable
+      :customers="store.list"
+      :loading="store.loading"
+      :key-account-mode="store.isKeyAccountMode"
+    />
 
     <!-- Pagination -->
     <div v-if="store.totalPages > 1" class="flex items-center justify-center gap-3">
