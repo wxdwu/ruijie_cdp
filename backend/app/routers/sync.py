@@ -16,7 +16,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
-from app.services.etl_sync import run_full_sync, run_incremental_sync, get_etl_engine
+from app.services.etl.etl_sync import run_full_sync, run_incremental_sync, get_etl_engine
 from sqlalchemy import text
 
 logger = logging.getLogger(__name__)

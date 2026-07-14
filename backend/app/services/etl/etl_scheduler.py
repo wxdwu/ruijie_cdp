@@ -23,7 +23,7 @@ def start_scheduler() -> AsyncIOScheduler:
         logger.warning("Scheduler already running; skipping start.")
         return _scheduler
 
-    from app.services.etl_sync import run_etl
+    from app.services.etl.etl_sync import run_etl
 
     _scheduler = AsyncIOScheduler(
         job_defaults={

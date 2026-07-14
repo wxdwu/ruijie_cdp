@@ -15,7 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 
 from app.routers import customer_list, customer_detail, ai_chat, campaign, review, sync, pool, es_sync, es_crud, monitor
-from app.services.etl_scheduler import start_scheduler, stop_scheduler
+from app.services.etl.etl_scheduler import start_scheduler, stop_scheduler
 from app.database.engine import dispose_engine
 
 logger = logging.getLogger(__name__)
@@ -113,7 +113,7 @@ async def trigger_etl():
         )
 
     async with _etl_lock:
-        from app.services.etl_sync import run_etl
+        from app.services.etl.etl_sync import run_etl
 
         try:
             # Run the synchronous ETL in a thread so we don't block the event loop

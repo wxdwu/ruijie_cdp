@@ -247,7 +247,7 @@ def _row_to_doc(table: str, row: Dict[str, Any]) -> Dict[str, Any]:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _ensure_watermark_table() -> None:
-    from app.services.etl_sync import get_etl_engine
+    from app.services.etl.etl_sync import get_etl_engine
     engine = get_etl_engine()
     with engine.begin() as conn:
         conn.execute(text(
@@ -264,7 +264,7 @@ def _ensure_watermark_table() -> None:
 
 
 def get_watermark() -> datetime:
-    from app.services.etl_sync import get_etl_engine
+    from app.services.etl.etl_sync import get_etl_engine
     _ensure_watermark_table()
     engine = get_etl_engine()
     with engine.connect() as conn:
@@ -275,7 +275,7 @@ def get_watermark() -> datetime:
 
 
 def set_watermark(ts: datetime) -> None:
-    from app.services.etl_sync import get_etl_engine
+    from app.services.etl.etl_sync import get_etl_engine
     _ensure_watermark_table()
     engine = get_etl_engine()
     with engine.begin() as conn:
@@ -312,7 +312,7 @@ def _switch_alias(es: Elasticsearch, alias: str, new_index: str) -> None:
 def run_es_full_sync() -> Dict[str, Any]:
     """全量重建所有 DWS 索引（alias 轮换，检索不中断）。"""
     from app.services.elasticSearch.es_crud import _bulk
-    from app.services.etl_sync import get_etl_engine
+    from app.services.etl.etl_sync import get_etl_engine
 
     es = get_es_client()
     ts = datetime.now().strftime("%Y%m%d%H%M%S")
@@ -355,7 +355,7 @@ def run_es_full_sync() -> Dict[str, Any]:
 def run_es_incremental_sync() -> Dict[str, Any]:
     """基于水位做增量 upsert，并对小表做孤儿删除检测。"""
     from app.services.elasticSearch.es_crud import _bulk
-    from app.services.etl_sync import get_etl_engine
+    from app.services.etl.etl_sync import get_etl_engine
 
     es = get_es_client()
     last = get_watermark()
@@ -407,7 +407,7 @@ def run_es_incremental_sync() -> Dict[str, Any]:
 def _prune_deleted(es: Elasticsearch, alias: str, table: str) -> int:
     """删除 ES 中存在但 MySQL 已不存在的文档（基于 id 集合 diff）。"""
     from app.services.elasticSearch.es_crud import _bulk
-    from app.services.etl_sync import get_etl_engine
+    from app.services.etl.etl_sync import get_etl_engine
 
     engine = get_etl_engine()
     with engine.connect() as conn:

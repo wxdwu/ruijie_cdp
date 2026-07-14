@@ -7,7 +7,7 @@
 """
 import inspect
 
-from app.services import etl_sync
+from app.services.etl import etl_sync
 
 
 def test_contact_mapping_uses_tmp_icp_customers():
