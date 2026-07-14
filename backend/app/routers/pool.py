@@ -16,7 +16,7 @@ from typing import Any, Dict
 
 from fastapi import APIRouter, HTTPException
 
-from app.connection_pool import (
+from app.database.engine import (
     get_pool_status,
     get_pool_config,
     reset_pool,

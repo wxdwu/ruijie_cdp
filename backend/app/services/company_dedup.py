@@ -32,6 +32,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.database import get_db
+from app.services.llm_client import LLMClient
 
 logger = logging.getLogger(__name__)
 
@@ -272,7 +273,7 @@ EVIDENCE_TABLES = [
 # 大模型名称（用于调用 LLM judge 判断两条公司名是否代表同一家公司）
 # 当前使用 DeepSeek Chat（api.deepseek.com），兼容 OpenAI 协议。
 # 也可替换为 deepseek-reasoner 或其他兼容 OpenAI 协议的模型。
-DEFAULT_LLM_MODEL = "deepseek-chat"
+
 
 # =============================================================================
 # END CONFIGURATION
@@ -1268,26 +1269,14 @@ Examples:
 """
 
     try:
-        resolved_base_url = base_url or "https://api.openai.com/v1"
-        with httpx.Client(timeout=30.0) as client:
-            resp = client.post(
-                f"{resolved_base_url.rstrip('/')}/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "model": DEFAULT_LLM_MODEL,
-                    "messages": [
-                        {"role": "user", "content": prompt}
-                    ],
-                    "temperature": 0.1,
-                    "max_tokens": 100,
-                },
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            content = data["choices"][0]["message"]["content"].strip()
+        client = LLMClient(api_key=api_key, base_url=base_url)
+        content = client.chat_completion(
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.1,
+            max_tokens=100,
+        )
+        if content is None:
+            raise RuntimeError("LLM 返回为空")
     except Exception as e:
         logger.warning(f"LLM judge call failed: {e}")
         # Fallback on error

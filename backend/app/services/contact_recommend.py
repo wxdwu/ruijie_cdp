@@ -17,20 +17,14 @@ import logging
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
-from openai import OpenAI
 from sqlalchemy import text
 from sqlalchemy.orm import Session
-
-from app.config import settings
 
 logger = logging.getLogger(__name__)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 配置常量
 # ─────────────────────────────────────────────────────────────────────────────
-
-# 默认 AI 模型（可在 .env 中通过 LLM_MODEL_NAME 覆盖）
-DEFAULT_MODEL_NAME = "deepseek-chat"
 
 # 角色权重映射（采购决策影响力）
 ROLE_WEIGHTS: Dict[str, int] = {
@@ -77,64 +71,7 @@ MIN_RECOMMENDATIONS = 1
 AI_CANDIDATE_LIMIT = 8
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 模型抽象层 —— 便于未来切换不同 LLM 提供商
-# ─────────────────────────────────────────────────────────────────────────────
 
-class LLMClient:
-    """LLM 调用抽象基类，所有 AI 模型调用通过此类进行。"""
-
-    def __init__(self, model_name: Optional[str] = None):
-        self.model_name = model_name or DEFAULT_MODEL_NAME
-        self._client = OpenAI(
-            api_key=settings.LLM_API_KEY,
-            base_url=settings.LLM_BASE_URL,
-        )
-
-    @property
-    def is_available(self) -> bool:
-        """检查 LLM 是否已配置。"""
-        return bool(settings.LLM_API_KEY and settings.LLM_BASE_URL)
-
-    def chat_completion(
-        self,
-        messages: List[Dict[str, str]],
-        temperature: float = 0.3,
-        max_tokens: int = 800,
-        response_format: Optional[Dict[str, Any]] = None,
-    ) -> Optional[str]:
-        """
-        调用 LLM 完成对话。
-
-        Args:
-            messages: 对话消息列表
-            temperature: 温度参数
-            max_tokens: 最大 token 数
-            response_format: 输出格式（如 {"type": "json_object"}）
-
-        Returns:
-            LLM 返回的文本内容，失败返回 None
-        """
-        if not self.is_available:
-            logger.warning("LLM 未配置，跳过 AI 调用")
-            return None
-
-        try:
-            kwargs: Dict[str, Any] = {
-                "model": self.model_name,
-                "messages": messages,
-                "temperature": temperature,
-                "max_tokens": max_tokens,
-            }
-            if response_format:
-                kwargs["response_format"] = response_format
-
-            response = self._client.chat.completions.create(**kwargs)
-            return response.choices[0].message.content
-
-        except Exception as e:
-            logger.warning("LLM 调用失败: %s", e)
-            return None
 
 
 # ─────────────────────────────────────────────────────────────────────────────

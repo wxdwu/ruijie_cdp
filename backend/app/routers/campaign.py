@@ -17,7 +17,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.connection_pool import get_session_factory
+from app.database.engine import get_session_factory
 from app.services.channel_classification import (
     CHANNEL_FILTER_ORDER,
     add_channel_filter,

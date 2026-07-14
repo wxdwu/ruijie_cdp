@@ -344,6 +344,32 @@ def get_engine() -> Engine:
                     POOL_SIZE, MAX_OVERFLOW, POOL_SIZE + MAX_OVERFLOW,
                     POOL_TIMEOUT, POOL_USE_LIFO, JITTER_STRATEGY,
                 )
+
+                # 【测试用：仅排查】建立一次真实连接，打印期望配置与实际连到的库/用户，
+                # 用于确认切换数据库（如 app_cdp → app_cdp_test）是否真正生效。
+                try:
+                    with _engine.connect() as _test_conn:
+                        _row = _test_conn.execute(
+                            text(
+                                "SELECT CURRENT_USER(), DATABASE(), "
+                                "@@hostname, VERSION();"
+                            )
+                        ).fetchone()
+                        # 注意：不打印 DB_PASSWORD
+                        print(
+                            "[DB_TEST] 连接初始化成功 | "
+                            f"期望配置: user={settings.DB_USER}, "
+                            f"host={settings.DB_HOST}:{settings.DB_PORT}, "
+                            f"db={settings.DB_NAME} | "
+                            f"实际连接: current_user={_row[0]}, "
+                            f"database={_row[1]}, "
+                            f"server_host={_row[2]}, version={_row[3]}"
+                        )
+                except Exception as _e:
+                    print(
+                        f"[DB_TEST] 连接初始化验证失败 | "
+                        f"期望 db={settings.DB_NAME}: {_e}"
+                    )
     return _engine
 
 

@@ -20,7 +20,7 @@ from typing import Any, Dict, List
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from app.services import es_crud
+from app.services.elasticSearch import es_crud
 
 logger = logging.getLogger(__name__)
 

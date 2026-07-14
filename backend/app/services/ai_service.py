@@ -20,7 +20,8 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any, Dict, List, Optional, Tuple
 
-from openai import OpenAI
+from app.services.channel_classification import normalize_channel
+from app.services.llm_client import LLMClient
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
@@ -473,21 +474,16 @@ def recognize_intent(text: str, history: Optional[List[Dict]] = None) -> Dict[st
     
     try:
         # 调用 DeepSeek API
-        client = OpenAI(
-            api_key=settings.LLM_API_KEY,
-            base_url=settings.LLM_BASE_URL,
-        )
-        
-        response = client.chat.completions.create(
-            model="deepseek-chat",
+        client = LLMClient()
+        content = client.chat_completion(
             messages=messages,
             response_format={"type": "json_object"},  # 强制输出 JSON
             temperature=0.1,  # 低温度，提高准确性
             max_tokens=800,
         )
-        
+        if content is None:
+            raise RuntimeError("LLM 返回为空")
         # 解析响应
-        content = response.choices[0].message.content
         result = json.loads(content)
         
         # 验证结果格式
@@ -512,39 +508,7 @@ def recognize_intent(text: str, history: Optional[List[Dict]] = None) -> Dict[st
 # SQL 生成模块
 # ─────────────────────────────────────────────────────────────────────────────
 
-# 渠道名称 → 数据库标准值 映射表（兜底：AI 识别失败时自动转换）
-_CHANNEL_MAP: Dict[str, str] = {
-    # email 同义词
-    "email": "email", "邮件": "email", "邮箱": "email",
-    "e-mail": "email", "e_mail": "email", "E-mail": "email",
-    "Email": "email", "EMAIL": "email", "E-MAIL": "email",
-    # web 同义词
-    "web": "web", "官网": "web", "网站": "web", "网页": "web",
-    "WEB": "web", "Web": "web", "线上官网": "web", "网页端": "web",
-    "互联网": "web", "website": "web",
-    # wechat 同义词
-    "wechat": "wechat", "微信": "wechat", "qq": "wechat", "QQ": "wechat",
-    "钉钉": "wechat", "im": "wechat", "IM": "wechat", "聊天": "wechat",
-    "社交": "wechat", "即时通讯": "wechat", "企微": "wechat",
-    "企业微信": "wechat", "WeChat": "wechat",
-    # event 同义词
-    "event": "event", "活动": "event", "线下": "event",
-    "展会": "event", "沙龙": "event", "研讨会": "event", "会议": "event",
-    "峰会": "event", "路演": "event", "培训会": "event", "线下活动": "event",
-}
 
-
-def _normalize_channel(raw: str) -> str:
-    """将用户/AI 返回的中文/英文渠道名统一映射为数据库标准值。"""
-    raw_lower = raw.strip().lower()
-    if raw_lower in _CHANNEL_MAP:
-        return _CHANNEL_MAP[raw_lower]
-    # 精确匹配未命中，尝试模糊包含
-    for alias, std_val in _CHANNEL_MAP.items():
-        if alias in raw or raw in alias:
-            return std_val
-    # 兜底：原值返回（可能是 AI 已经输出了正确标准值）
-    return raw
 
 
 def generate_sql(structured_query: Dict[str, Any], target_table: str = "dws_customer_360") -> Tuple[str, str, Dict[str, Any]]:
@@ -586,10 +550,10 @@ def generate_sql(structured_query: Dict[str, Any], target_table: str = "dws_cust
             raw_ch = structured_query["channel"]
             if isinstance(raw_ch, list):
                 sub_where_parts.append("channel IN :channel")
-                sub_params["channel"] = [_normalize_channel(c) for c in raw_ch]
+                sub_params["channel"] = [normalize_channel(c) for c in raw_ch]
             else:
                 sub_where_parts.append("channel = :channel")
-                sub_params["channel"] = _normalize_channel(raw_ch)
+                sub_params["channel"] = normalize_channel(raw_ch)
         
         if "behavior_type" in structured_query and structured_query["behavior_type"]:
             sub_where_parts.append("behavior_type LIKE :behavior_type")
@@ -861,7 +825,7 @@ def generate_sql(structured_query: Dict[str, Any], target_table: str = "dws_cust
         
         if "channel" in structured_query and structured_query["channel"]:
             # 将中文/别名映射为数据库标准值 (email/web/wechat/event)
-            params["channel"] = _normalize_channel(structured_query["channel"])
+            params["channel"] = normalize_channel(structured_query["channel"])
             where_parts.append("channel = :channel")
         
         if "behavior_type" in structured_query and structured_query["behavior_type"]:
@@ -1101,22 +1065,15 @@ def analyze_results(query: str, sql_results: Dict[str, Any],
     
     try:
         # 调用 DeepSeek API
-        client = OpenAI(
-            api_key=settings.LLM_API_KEY,
-            base_url=settings.LLM_BASE_URL,
-        )
-        
-        response = client.chat.completions.create(
-            model="deepseek-chat",
+        client = LLMClient()
+        analysis = client.chat_completion(
             messages=[
                 {"role": "system", "content": "你是一个专业的客户数据分析助手，擅长从数据中提取洞察、判断数据充足性，并给出建议。"},
                 {"role": "user", "content": prompt},
             ],
             temperature=0.7,
             max_tokens=600,
-        )
-        
-        analysis = response.choices[0].message.content or ""
+        ) or ""
         
         # 添加导出提示（仅对主表）
         if target_table == "dws_customer_360" and total > 0:
@@ -1232,13 +1189,8 @@ def answer_simple_question(question: str) -> str:
         回答内容
     """
     try:
-        client = OpenAI(
-            api_key=settings.LLM_API_KEY,
-            base_url=settings.LLM_BASE_URL,
-        )
-        
-        response = client.chat.completions.create(
-            model="deepseek-chat",
+        client = LLMClient()
+        content = client.chat_completion(
             messages=[
                 {"role": "system", "content": "你是一个友好的对话助手。回答用户的问题，保持简洁友好。"},
                 {"role": "user", "content": question},
@@ -1246,8 +1198,7 @@ def answer_simple_question(question: str) -> str:
             temperature=0.7,
             max_tokens=300,
         )
-        
-        return response.choices[0].message.content or "抱歉，我暂时无法回答这个问题。"
+        return content or "抱歉，我暂时无法回答这个问题。"
         
     except Exception as e:
         logger.error("简单问题回答失败: %s", e)
@@ -1269,13 +1220,8 @@ def answer_other_question(question: str) -> str:
         回答内容
     """
     try:
-        client = OpenAI(
-            api_key=settings.LLM_API_KEY,
-            base_url=settings.LLM_BASE_URL,
-        )
-        
-        response = client.chat.completions.create(
-            model="deepseek-chat",
+        client = LLMClient()
+        content = client.chat_completion(
             messages=[
                 {"role": "system", "content": """你是一个客户查询系统的助手。
 
@@ -1290,8 +1236,7 @@ def answer_other_question(question: str) -> str:
             temperature=0.7,
             max_tokens=200,
         )
-        
-        return response.choices[0].message.content or "我是您的客户查询助手，请尝试询问客户查询相关的问题。"
+        return content or "我是您的客户查询助手，请尝试询问客户查询相关的问题。"
         
     except Exception as e:
         logger.error("通用回答失败: %s", e)

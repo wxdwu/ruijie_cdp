@@ -29,7 +29,7 @@ from sqlalchemy import text
 from sqlalchemy.engine import Engine
 
 from app.config import settings
-from app.connection_pool import get_engine as _get_shared_engine, execute_with_retry
+from app.database.engine import get_engine as _get_shared_engine, execute_with_retry
 
 logger = logging.getLogger(__name__)
 
@@ -1342,7 +1342,7 @@ def run_etl() -> Dict[str, Any]:
 
         # ── 同步到 ElasticSearch（best-effort，失败不影响 ETL 主流程）──
         try:
-            from app.services import es_sync
+            from app.services.elasticSearch import es_sync
             stats["steps"]["elasticsearch"] = es_sync.sync_after_etl("full")
         except Exception as es_exc:
             logger.error("ES sync after ETL failed (best-effort): %s", es_exc)
@@ -1807,7 +1807,7 @@ def run_full_sync(trigger_by: str = "system") -> Dict[str, Any]:
 
         # ── 同步到 ElasticSearch（best-effort，失败不影响 ETL 主流程）──
         try:
-            from app.services import es_sync
+            from app.services.elasticSearch import es_sync
             stats["steps"]["elasticsearch"] = es_sync.sync_after_etl("full")
         except Exception as es_exc:
             logger.error("ES sync after full ETL failed (best-effort): %s", es_exc)
@@ -2048,7 +2048,7 @@ def run_incremental_sync(trigger_by: str = "system") -> Dict[str, Any]:
 
         # ── 同步到 ElasticSearch（best-effort，失败不影响 ETL 主流程）──
         try:
-            from app.services import es_sync
+            from app.services.elasticSearch import es_sync
             stats["steps"]["elasticsearch"] = es_sync.sync_after_etl("incremental")
         except Exception as es_exc:
             logger.error("ES sync after incremental ETL failed (best-effort): %s", es_exc)

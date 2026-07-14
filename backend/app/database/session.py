@@ -1,6 +1,6 @@
 from sqlalchemy.orm import declarative_base
 
-from app.connection_pool import get_engine, get_session_factory
+from app.database.engine import get_engine, get_session_factory
 
 # Shared connection pool engine
 engine = get_engine()

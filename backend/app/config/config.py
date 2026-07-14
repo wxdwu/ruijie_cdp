@@ -3,10 +3,11 @@ from pathlib import Path
 from pydantic import BaseModel
 from dotenv import load_dotenv
 
-# 显式加载 backend/.env（位于本文件所在目录的上一级），不依赖启动时的 cwd。
-# 这样无论 `cd backend && uvicorn` 还是从其他目录启动，都能稳定读到后端配置。
+# 显式加载 backend/.env。
+# 本文件现位于 app/config/config.py，故 .env 在上两级目录
+# （parents[2] = backend/），不依赖启动时的 cwd。
 # 随后再用 load_dotenv() 兜底加载当前工作目录的 .env（可覆盖同名变量）。
-_BACKEND_ENV = Path(__file__).resolve().parents[1] / ".env"
+_BACKEND_ENV = Path(__file__).resolve().parents[2] / ".env"
 if _BACKEND_ENV.exists():
     load_dotenv(dotenv_path=_BACKEND_ENV, override=False)
 load_dotenv()

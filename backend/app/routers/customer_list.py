@@ -16,10 +16,8 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.services.channel_classification import (
-    add_customer_interaction_channel_filter,
-    available_channel_options,
-)
+from app.services.channel_classification import available_channel_options
+from app.services.customer_service import get_customer_list
 from app.services.export_service import export_customers_excel
 from app.services.key_account_query import (
     KEY_ACCOUNT_SOURCE_PROJECT,
@@ -27,7 +25,7 @@ from app.services.key_account_query import (
     count_key_accounts,
     fetch_key_accounts,
 )
-from app.services.region_filter import add_region_filter, available_region_options
+from app.services.region_filter import available_region_options
 
 logger = logging.getLogger(__name__)
 
@@ -140,120 +138,25 @@ def list_customers(
             size=size,
         )
 
-    where_parts: List[str] = ["1=1"]
-    params: Dict[str, Any] = {}
-
-    if keyword:
-        where_parts.append("customer_name LIKE :keyword")
-        params["keyword"] = f"%{keyword}%"
-    if special_project:
-        where_parts.append("campaign_tag = :special_project")
-        params["special_project"] = special_project
-    if industry:
-        where_parts.append("industry = :industry")
-        params["industry"] = industry
-    add_region_filter(
-        where_parts,
-        params,
-        column="region",
+    return get_customer_list(
+        db,
+        keyword=keyword,
+        special_project=special_project,
+        industry=industry,
         region=region,
         region_keyword=region_keyword,
-    )
-    if owner:
-        where_parts.append("owner_name = :owner")
-        params["owner"] = owner
-    elif owner_keyword:
-        where_parts.append("owner_name LIKE :owner_keyword")
-        params["owner_keyword"] = f"%{owner_keyword}%"
-    if stage:
-        where_parts.append("purchase_stage = :stage")
-        params["stage"] = stage
-    if intent_level:
-        where_parts.append("intent_level = :intent_level")
-        params["intent_level"] = intent_level
-    if interaction_min is not None and interaction_min > 0:
-        # 使用子查询动态计算指定时间范围内的互动次数
-        where_parts.append("""
-            customer_name IN (
-                SELECT customer_name
-                FROM dws_interaction_detail
-                WHERE event_time >= DATE_SUB(NOW(), INTERVAL :period DAY)
-                GROUP BY customer_name
-                HAVING COUNT(*) >= :interaction_min
-            )
-        """)
-        params["interaction_min"] = interaction_min
-        params["period"] = interaction_period
-    if attribute == "heavy":
-        where_parts.append("attribute = :heavy_attribute")
-        params["heavy_attribute"] = "H"
-    elif attribute == "non_heavy":
-        where_parts.append("(attribute IS NULL OR attribute != :heavy_attribute)")
-        params["heavy_attribute"] = "H"
-    add_customer_interaction_channel_filter(
-        where_parts,
-        params,
-        customer_name_column="dws_customer_360.customer_name",
+        owner=owner,
+        owner_keyword=owner_keyword,
+        stage=stage,
+        intent_level=intent_level,
+        interaction_min=interaction_min,
+        interaction_period=interaction_period,
+        attribute=attribute,
         channel=channel,
+        sort=sort,
+        page=page,
+        page_size=size,
     )
-
-    where_sql = " AND ".join(where_parts)
-
-    # Count total
-    count_sql = text(f"SELECT COUNT(*) FROM dws_customer_360 WHERE {where_sql}")
-    total: int = db.execute(count_sql, params).scalar() or 0
-
-    # Sorting
-    sort_by = "intent_score"
-    sort_order = "DESC"
-    if sort:
-        parts = sort.strip().split()
-        allowed_sort = {
-            "customer_name", "industry", "intent_score", "interaction_count_30d",
-            "interaction_count_total", "last_interaction_time", "active_opp_amount",
-            "won_amount", "updated_at",
-        }
-        if parts[0] in allowed_sort:
-            sort_by = parts[0]
-        if len(parts) > 1 and parts[1].upper() == "ASC":
-            sort_order = "ASC"
-
-    # Pagination
-    offset = (page - 1) * size
-    data_sql = text(
-        f"SELECT * FROM dws_customer_360 "
-        f"WHERE {where_sql} "
-        f"ORDER BY {sort_by} {sort_order} "
-        f"LIMIT :limit OFFSET :offset"
-    )
-    params["limit"] = size
-    params["offset"] = offset
-
-    rows = db.execute(data_sql, params).mappings().all()
-    items = [dict(r) for r in rows]
-
-    filters_applied = {
-        "keyword": keyword,
-        "special_project": special_project,
-        "industry": industry,
-        "region": region,
-        "region_keyword": region_keyword,
-        "owner": owner,
-        "owner_keyword": owner_keyword,
-        "stage": stage,
-        "intent_level": intent_level,
-        "interaction_min": interaction_min,
-        "interaction_period": interaction_period,
-        "attribute": attribute,
-        "channel": channel,
-        "sort": sort,
-    }
-
-    return {
-        "total": total,
-        "items": items,
-        "filters_applied": filters_applied,
-    }
 
 
 # ─────────────────────────────────────────────────────────────────────────────

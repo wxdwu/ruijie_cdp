@@ -16,7 +16,7 @@ from fastapi.responses import HTMLResponse
 
 from app.routers import customer_list, customer_detail, ai_chat, campaign, review, sync, pool, es_sync, es_crud, monitor
 from app.services.etl_scheduler import start_scheduler, stop_scheduler
-from app.connection_pool import dispose_engine
+from app.database.engine import dispose_engine
 
 logger = logging.getLogger(__name__)
 

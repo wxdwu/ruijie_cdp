@@ -14,7 +14,7 @@ from typing import Any, Dict, Optional
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
-from app.services import es_sync
+from app.services.elasticSearch import es_sync
 
 logger = logging.getLogger(__name__)
 

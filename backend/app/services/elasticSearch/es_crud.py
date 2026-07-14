@@ -20,7 +20,7 @@ from elasticsearch import Elasticsearch
 from elasticsearch.exceptions import NotFoundError
 from elasticsearch.helpers import bulk
 
-from app.services.es_sync import get_es_client
+from app.services.elasticSearch.es_sync import get_es_client
 
 logger = logging.getLogger(__name__)
 

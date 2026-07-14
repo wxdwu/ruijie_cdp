@@ -6,14 +6,12 @@ from __future__ import annotations
 import io
 import logging
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Optional
 
-from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from app.services.channel_classification import add_customer_interaction_channel_filter
+from app.services.customer_service import get_customer_list
 from app.services.key_account_query import fetch_key_accounts
-from app.services.region_filter import add_region_filter
 
 logger = logging.getLogger(__name__)
 
@@ -77,75 +75,26 @@ def export_customers_excel(
             limit=20000,
         )
     else:
-        where_parts = ["1=1"]
-        params: Dict[str, Any] = {}
-
-        if keyword:
-            where_parts.append("customer_name LIKE :keyword")
-            params["keyword"] = f"%{keyword}%"
-        if special_project:
-            where_parts.append("campaign_tag = :special_project")
-            params["special_project"] = special_project
-        if industry:
-            where_parts.append("industry = :industry")
-            params["industry"] = industry
-        add_region_filter(
-            where_parts,
-            params,
-            column="region",
+        items = get_customer_list(
+            db,
+            keyword=keyword,
+            special_project=special_project,
+            industry=industry,
             region=region,
             region_keyword=region_keyword,
-        )
-        if owner:
-            where_parts.append("owner_name = :owner")
-            params["owner"] = owner
-        elif owner_keyword:
-            where_parts.append("owner_name LIKE :owner_keyword")
-            params["owner_keyword"] = f"%{owner_keyword}%"
-        if stage:
-            where_parts.append("purchase_stage = :stage")
-            params["stage"] = stage
-        if intent_level:
-            where_parts.append("intent_level = :intent_level")
-            params["intent_level"] = intent_level
-        if interaction_min is not None and interaction_min > 0:
-            # 使用子查询动态计算指定时间范围内的互动次数
-            where_parts.append("""
-                customer_name IN (
-                    SELECT customer_name
-                    FROM dws_interaction_detail
-                    WHERE event_time >= DATE_SUB(NOW(), INTERVAL :period DAY)
-                    GROUP BY customer_name
-                    HAVING COUNT(*) >= :interaction_min
-                )
-            """)
-            params["interaction_min"] = interaction_min
-            params["period"] = interaction_period
-        if attribute == "heavy":
-            where_parts.append("attribute = :heavy_attribute")
-            params["heavy_attribute"] = "H"
-        elif attribute == "non_heavy":
-            where_parts.append("(attribute IS NULL OR attribute != :heavy_attribute)")
-            params["heavy_attribute"] = "H"
-        add_customer_interaction_channel_filter(
-            where_parts,
-            params,
-            customer_name_column="dws_customer_360.customer_name",
+            owner=owner,
+            owner_keyword=owner_keyword,
+            stage=stage,
+            intent_level=intent_level,
+            interaction_min=interaction_min,
+            interaction_period=interaction_period,
+            attribute=attribute,
             channel=channel,
-        )
-
-        where_sql = " AND ".join(where_parts)
-        allowed = {"customer_name","industry","intent_score","interaction_count_30d",
-                   "interaction_count_total","last_interaction_time","active_opp_amount","won_amount"}
-        if sort_by not in allowed:
-            sort_by = "intent_score"
-        order_dir = "ASC" if sort_order.upper() == "ASC" else "DESC"
-
-        sql = text(
-            f"SELECT * FROM dws_customer_360 WHERE {where_sql} "
-            f"ORDER BY {sort_by} {order_dir} LIMIT 20000"
-        )
-        rows = db.execute(sql, params).mappings().all()
+            sort=f"{sort_by} {sort_order}",
+            page=1,
+            page_size=20000,
+        )["items"]
+        rows = items
 
     import openpyxl
     from openpyxl.styles import Font, PatternFill, Alignment
