@@ -176,6 +176,51 @@ def test_content_effect_uses_compact_mysql_regex_aggregation(client: TestClient,
     assert body == {"data": [], "help_key": "content_effect"}
     assert sql.count("REGEXP_LIKE") == 2
     assert "CONCAT_WS(' ', i.behavior_type, i.content) LIKE" not in sql
+    assert "i.behavior_type AS behavior_type" in sql
+    assert "TRIM(i.content) != '--'" in sql
+    assert "GROUP BY i.content, i.behavior_type" in sql
+    assert "ORDER BY touch_count DESC, unique_customers DESC" in sql
+    assert "LIMIT 15" in sql
+
+
+def test_content_effect_returns_behavior_type_and_preserves_metrics(client: TestClient, mock_db):
+    mock_db.add_result(
+        "i.behavior_type AS behavior_type",
+        rows=[
+            {
+                "content": "云桌面白皮书",
+                "behavior_type": "点击邮件链接",
+                "touch_count": 6,
+                "unique_customers": 2,
+                "opens": 0,
+                "clicks": 6,
+                "mql": 1,
+            },
+        ],
+    )
+
+    body = client.get("/api/campaign/content-effect").json()
+
+    assert body == {
+        "data": [
+            {
+                "content": "云桌面白皮书",
+                "behavior_type": "点击邮件链接",
+                "type": "点击邮件链接",
+                "role": "-",
+                "content_interest": "云桌面白皮书",
+                "product_interest": "",
+                "touch_count": 6,
+                "unique_customers": 2,
+                "open_rate": 0.0,
+                "click_rate": 300.0,
+                "mql": 1,
+                "sql": 0,
+                "deal": 0,
+            },
+        ],
+        "help_key": "content_effect",
+    }
 
 
 def test_time_filters_use_half_open_index_range():

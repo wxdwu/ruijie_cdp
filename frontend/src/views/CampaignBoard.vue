@@ -596,10 +596,14 @@ onBeforeUnmount(() => {
             </tr>
           </thead>
           <tbody>
-            <tr v-for="item in contentData.data" :key="item.content" class="content-effect-row">
+            <tr
+              v-for="item in contentData.data"
+              :key="`${item.content}::${item.behavior_type || item.type || ''}`"
+              class="content-effect-row"
+            >
               <td><b>{{ item.content }}</b></td>
-              <td>{{ item.type }}</td>
-              <td>{{ item.role }}</td>
+              <td>{{ item.behavior_type || item.type || '-' }}</td>
+              <td>{{ item.role || '-' }}</td>
               <td>{{ item.content_interest }}</td>
               <td>{{ item.product_interest || '-' }}</td>
               <td>{{ item.open_rate }}%</td>

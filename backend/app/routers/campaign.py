@@ -629,6 +629,7 @@ def _query_content_effect(
         text(
             "SELECT "
             "i.content AS content, "
+            "i.behavior_type AS behavior_type, "
             "COUNT(*) AS touch_count, "
             "COUNT(DISTINCT i.customer_name) AS unique_customers, "
             "SUM(REGEXP_LIKE(CONCAT_WS(' ', i.behavior_type, i.content), "
@@ -637,9 +638,11 @@ def _query_content_effect(
             "'点击|下载|提交|咨询|报名|留资|click_', 'i')) AS clicks, "
             "SUM(CASE WHEN i.is_high_value = 1 THEN 1 ELSE 0 END) AS mql "
             "FROM dws_interaction_detail i "
-            f"WHERE {_where_sql(where_parts)} AND i.content IS NOT NULL AND i.content != '' "
-            "GROUP BY i.content "
-            "ORDER BY unique_customers DESC, clicks DESC, touch_count DESC LIMIT 10"
+            f"WHERE {_where_sql(where_parts)} "
+            "AND i.content IS NOT NULL AND TRIM(i.content) != '' AND TRIM(i.content) != '--' "
+            "GROUP BY i.content, i.behavior_type "
+            "ORDER BY touch_count DESC, unique_customers DESC, i.content ASC, i.behavior_type ASC "
+            "LIMIT 15"
         ),
         params,
     ).fetchall()
@@ -647,8 +650,9 @@ def _query_content_effect(
     data = [
         {
             "content": row.content,
-            "type": "互动内容",
-            "role": "按内容主题识别",
+            "behavior_type": row.behavior_type,
+            "type": row.behavior_type,
+            "role": "-",
             "content_interest": row.content,
             "product_interest": "",
             "touch_count": int(row.touch_count or 0),
