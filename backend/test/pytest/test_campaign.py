@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 
 from app.routers.campaign import (
     _campaign_filters,
+    _customer_scope_sql,
     _interaction_filters,
     get_channel_distribution,
 )
@@ -63,6 +64,22 @@ def test_filter_options_group_raw_channels_like_attribution(client: TestClient, 
     assert set(channel_params.values()) == {
         "email", "邮件", "web", "官网", "event", "直播/活动", "wechat", "微信",
     }
+
+
+def test_filter_options_append_key_account_campaign_once(client: TestClient, mock_db):
+    mock_db.add_result(
+        "SELECT 'campaign' AS option_type",
+        rows=[
+            {"option_type": "campaign", "option_value": "企业彩光ICT"},
+            {"option_type": "campaign", "option_value": "重客"},
+            {"option_type": "industry", "option_value": "制造业"},
+        ],
+    )
+
+    body = client.get("/api/campaign/filter-options").json()
+
+    assert body["campaigns"] == ["企业彩光ICT", "重客"]
+    assert body["campaigns"].count("重客") == 1
 
 
 def test_kpis_keys(client: TestClient):
@@ -176,6 +193,103 @@ def test_time_filters_use_half_open_index_range():
     assert "i.event_time < :end_exclusive" in campaign_parts[-1]
     assert interaction_params["end_exclusive"] == date(2026, 7, 1)
     assert campaign_params["end_exclusive"] == date(2026, 7, 1)
+
+
+def test_key_account_scope_uses_latest_snapshot_and_source_project():
+    scope_sql = _customer_scope_sql("重客")
+    where_parts, params = _campaign_filters(
+        campaign_tag="重客",
+        channel="email",
+        start_date="2026-07-01",
+        end_date="2026-07-14",
+        keyword="集团",
+    )
+    where_sql = " ".join(where_parts)
+
+    assert "ods_crm_key_account_output_list_day" in scope_sql
+    assert "MAX(`time`)" in scope_sql
+    assert "GROUP BY `重客名称`" in scope_sql
+    assert "LEFT JOIN dws_customer_360 c" in scope_sql
+    assert "c.customer_name = ka.`重客名称`" in scope_sql
+    assert "c.campaign_tag = :key_account_source_project" in scope_sql
+    assert "COALESCE(c.customer_name, ka.`重客名称`) LIKE :keyword" in where_sql
+    assert "i.customer_name = COALESCE(c.customer_name, ka.`重客名称`)" in where_sql
+    assert params["key_account_source_project"] == "企业彩光ICT"
+    assert params["keyword"] == "%集团%"
+
+
+def test_key_account_overview_uses_shared_left_join_scope(client: TestClient, mock_db):
+    client.get(
+        "/api/campaign/overview",
+        params={"campaign_tag": "重客", "include_content": "false"},
+    )
+    sql, params = mock_db.calls[0]
+
+    assert "LEFT JOIN dws_customer_360 c" in sql
+    assert "COUNT(DISTINCT COALESCE(c.customer_name, ka.`重客名称`))" in sql
+    assert "COALESCE(NULLIF(c.purchase_stage, ''), '未知阶段')" in sql
+    assert "COALESCE(NULLIF(c.role_coverage, ''), '0/4')" in sql
+    assert params["key_account_source_project"] == "企业彩光ICT"
+
+
+def test_key_account_customer_list_preserves_unmatched_snapshot_row(client: TestClient, mock_db):
+    mock_db.add_result(
+        "SELECT COUNT(DISTINCT COALESCE(c.customer_name, ka.`重客名称`))",
+        scalar=1,
+    )
+    mock_db.add_result(
+        "AS customer_name, '重客' AS campaign_tag",
+        rows=[{
+            "id": None,
+            "customer_name": "尚未进入彩光的重客",
+            "campaign_tag": "重客",
+            "industry": None,
+            "region": None,
+            "attribute": None,
+            "stage": None,
+            "owner_name": None,
+            "intent_level": None,
+            "intent_score": None,
+            "role_coverage": None,
+            "last_interaction_time": None,
+            "last_interaction_channel": None,
+            "active_opp_amount": None,
+            "active_opp_count": None,
+            "interaction_count_total": None,
+            "product_categories": None,
+            "source_tables": None,
+        }],
+    )
+
+    body = client.get(
+        "/api/campaign/customers-by-stage",
+        params={"campaign_tag": "重客", "include_filter_options": "false"},
+    ).json()
+
+    assert body["total"] == 1
+    assert body["flat"][0]["id"] is None
+    assert body["flat"][0]["customer_name"] == "尚未进入彩光的重客"
+    assert body["flat"][0]["campaign_tag"] == "重客"
+    assert body["flat"][0]["stage"] == "未知阶段"
+    assert body["flat"][0]["active_opp_amount"] == 0
+
+
+def test_key_account_content_effect_filters_interactions_by_latest_snapshot(client: TestClient, mock_db):
+    client.get("/api/campaign/content-effect", params={"campaign_tag": "重客"})
+    sql, params = mock_db.calls[0]
+
+    assert "EXISTS (SELECT 1 FROM ods_crm_key_account_output_list_day ka" in sql
+    assert "ka.`重客名称` = i.customer_name" in sql
+    assert "MAX(`time`)" in sql
+    assert "JOIN dws_customer_360 c ON c.customer_name = i.customer_name" not in sql
+    assert params == {}
+
+
+def test_key_account_bootstrap_keeps_campaign_option(client: TestClient):
+    body = client.get("/api/campaign/bootstrap", params={"campaign_tag": "重客"}).json()
+
+    assert body["applied_filters"]["campaign_tag"] == "重客"
+    assert body["filter_options"]["campaigns"] == ["重客"]
 
 
 def test_channel_filters_accept_canonical_categories_and_other_bucket():

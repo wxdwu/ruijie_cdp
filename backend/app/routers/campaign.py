@@ -23,12 +23,52 @@ from app.services.channel_classification import (
     add_channel_filter,
     channel_group_case,
 )
+from app.services.key_account_query import KEY_ACCOUNT_SOURCE_PROJECT, KEY_ACCOUNT_TABLE
 
 router = APIRouter(prefix="/api/campaign", tags=["campaign"])
 logger = logging.getLogger(__name__)
 
 
 FilterParts = Tuple[List[str], Dict[str, Any]]
+KEY_ACCOUNT_CAMPAIGN = "重客"
+
+
+def _is_key_account_campaign(campaign_tag: Optional[str]) -> bool:
+    return campaign_tag == KEY_ACCOUNT_CAMPAIGN
+
+
+def _customer_scope_sql(campaign_tag: Optional[str]) -> str:
+    """Return the customer population used by campaign aggregates."""
+    if not _is_key_account_campaign(campaign_tag):
+        return "dws_customer_360 c"
+    return (
+        "(SELECT `重客名称`, MIN(`重客编码`) AS `重客编码` "
+        f"FROM {KEY_ACCOUNT_TABLE} "
+        f"WHERE `time` = (SELECT MAX(`time`) FROM {KEY_ACCOUNT_TABLE}) "
+        "AND `重客名称` IS NOT NULL AND TRIM(`重客名称`) != '' "
+        "GROUP BY `重客名称`) ka "
+        "LEFT JOIN dws_customer_360 c "
+        "ON c.customer_name = ka.`重客名称` "
+        "AND c.campaign_tag = :key_account_source_project"
+    )
+
+
+def _customer_name_sql(campaign_tag: Optional[str]) -> str:
+    if _is_key_account_campaign(campaign_tag):
+        return "COALESCE(c.customer_name, ka.`重客名称`)"
+    return "c.customer_name"
+
+
+def _campaign_label_sql(campaign_tag: Optional[str]) -> str:
+    if _is_key_account_campaign(campaign_tag):
+        return "'重客'"
+    return "c.campaign_tag"
+
+
+def _campaign_options(values: List[str]) -> List[str]:
+    campaigns = sorted({value for value in values if value and value != KEY_ACCOUNT_CAMPAIGN})
+    campaigns.append(KEY_ACCOUNT_CAMPAIGN)
+    return campaigns
 
 
 def _parse_date(value: Optional[str]) -> Optional[date]:
@@ -89,8 +129,11 @@ def _campaign_filters(
 ) -> FilterParts:
     where_parts: List[str] = ["1=1"]
     params: Dict[str, Any] = {}
+    customer_name = _customer_name_sql(campaign_tag)
 
-    if campaign_tag:
+    if _is_key_account_campaign(campaign_tag):
+        params["key_account_source_project"] = KEY_ACCOUNT_SOURCE_PROJECT
+    elif campaign_tag:
         where_parts.append(f"{alias}.campaign_tag = :campaign_tag")
         params["campaign_tag"] = campaign_tag
     if industry:
@@ -103,10 +146,10 @@ def _campaign_filters(
         where_parts.append(f"{alias}.owner_name = :owner")
         params["owner"] = owner
     if keyword:
-        where_parts.append(f"{alias}.customer_name LIKE :keyword")
+        where_parts.append(f"{customer_name} LIKE :keyword")
         params["keyword"] = f"%{keyword}%"
 
-    interaction_parts = [f"i.customer_name = {alias}.customer_name"]
+    interaction_parts = [f"i.customer_name = {customer_name}"]
     add_channel_filter(
         interaction_parts,
         params,
@@ -142,7 +185,22 @@ def _interaction_filters(
     where_parts = [f"{alias}.customer_name IS NOT NULL", f"{alias}.customer_name != ''"]
     params: Dict[str, Any] = {}
 
-    if campaign_tag or industry:
+    if _is_key_account_campaign(campaign_tag):
+        where_parts.append(
+            f"EXISTS (SELECT 1 FROM {KEY_ACCOUNT_TABLE} ka "
+            f"WHERE ka.`time` = (SELECT MAX(`time`) FROM {KEY_ACCOUNT_TABLE}) "
+            f"AND ka.`重客名称` = {alias}.customer_name)"
+        )
+        if industry:
+            where_parts.append(
+                "EXISTS (SELECT 1 FROM dws_customer_360 c "
+                f"WHERE c.customer_name = {alias}.customer_name "
+                "AND c.campaign_tag = :key_account_source_project "
+                "AND c.industry = :industry)"
+            )
+            params["key_account_source_project"] = KEY_ACCOUNT_SOURCE_PROJECT
+            params["industry"] = industry
+    elif campaign_tag or industry:
         customer_parts = [f"c.customer_name = {alias}.customer_name"]
         if campaign_tag:
             customer_parts.append("c.campaign_tag = :campaign_tag")
@@ -265,7 +323,9 @@ def get_filter_options(db: Session = Depends(get_db)) -> Dict[str, Any]:
     )).one()
     dates_ms = _elapsed_ms(query_started)
 
-    campaigns = sorted(row.option_value for row in customer_options if row.option_type == "campaign")
+    campaigns = _campaign_options([
+        row.option_value for row in customer_options if row.option_type == "campaign"
+    ])
     industries = sorted(row.option_value for row in customer_options if row.option_type == "industry")
     available_channels = {row.channel for row in channel_rows if row.channel}
     channels = [channel for channel in CHANNEL_FILTER_ORDER if channel in available_channels]
@@ -297,6 +357,8 @@ def get_campaign_kpis(
     db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
     """Get 5 campaign KPI cards using the shared campaign filters."""
+    customer_scope = _customer_scope_sql(campaign_tag)
+    customer_name = _customer_name_sql(campaign_tag)
 
     total_customer_where, total_customer_params = _campaign_filters(
         campaign_tag=campaign_tag,
@@ -319,12 +381,12 @@ def get_campaign_kpis(
     )
 
     total_customers = db.execute(
-        text(f"SELECT COUNT(DISTINCT c.customer_name) FROM dws_customer_360 c WHERE {_where_sql(total_customer_where)}"),
+        text(f"SELECT COUNT(DISTINCT {customer_name}) FROM {customer_scope} WHERE {_where_sql(total_customer_where)}"),
         total_customer_params,
     ).scalar() or 0
 
     active_customers = db.execute(
-        text(f"SELECT COUNT(DISTINCT c.customer_name) FROM dws_customer_360 c WHERE {_where_sql(active_where)}"),
+        text(f"SELECT COUNT(DISTINCT {customer_name}) FROM {customer_scope} WHERE {_where_sql(active_where)}"),
         active_params,
     ).scalar() or 0
 
@@ -334,8 +396,8 @@ def get_campaign_kpis(
             "COALESCE(SUM(COALESCE(NULLIF(c.active_opp_count, 0), c.funnel_opp_count, 0)), 0) AS opportunity_count, "
             "COALESCE(SUM(c.active_opp_amount), 0) AS total_amount, "
             "COUNT(DISTINCT CASE WHEN COALESCE(c.won_amount, 0) > 0 "
-            " OR c.purchase_stage = '阶段6：完成采购，实现进入' THEN c.customer_name END) AS deal_customers "
-            "FROM dws_customer_360 c "
+            f" OR c.purchase_stage = '阶段6：完成采购，实现进入' THEN {customer_name} END) AS deal_customers "
+            f"FROM {customer_scope} "
             f"WHERE {_where_sql(customer_where)}"
         ),
         customer_params,
@@ -361,6 +423,7 @@ def get_funnel_distribution(
     db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
     """Get opportunity forecast distribution with status buckets."""
+    customer_scope = _customer_scope_sql(campaign_tag)
 
     where_parts, params = _campaign_filters(
         campaign_tag=campaign_tag,
@@ -374,7 +437,7 @@ def get_funnel_distribution(
             " OR c.purchase_stage = '阶段6：完成采购，实现进入' THEN 1 ELSE 0 END) AS deal_count, "
             "SUM(CASE WHEN COALESCE(c.active_opp_count, 0) > 0 OR COALESCE(c.funnel_opp_count, 0) > 0 THEN 1 ELSE 0 END) AS active_count, "
             "SUM(CASE WHEN c.purchase_stage IS NULL OR c.purchase_stage = '' THEN 1 ELSE 0 END) AS unknown_count "
-            "FROM dws_customer_360 c "
+            f"FROM {customer_scope} "
             f"WHERE {_where_sql(where_parts)} "
             "GROUP BY COALESCE(NULLIF(c.forecast_type, ''), '未标注') "
             "ORDER BY customer_count DESC"
@@ -407,6 +470,8 @@ def get_channel_distribution(
     db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
     """Get customer-level channel attribution from dws_customer_360."""
+    customer_scope = _customer_scope_sql(campaign_tag)
+    customer_name = _customer_name_sql(campaign_tag)
 
     where_parts, params = _campaign_filters(
         campaign_tag=campaign_tag,
@@ -416,8 +481,8 @@ def get_channel_distribution(
     rows = db.execute(
         text(
             f"SELECT {channel_group} AS channel, "
-            "COUNT(DISTINCT c.customer_name) AS customer_count "
-            "FROM dws_customer_360 c "
+            f"COUNT(DISTINCT {customer_name}) AS customer_count "
+            f"FROM {customer_scope} "
             f"WHERE {_where_sql(where_parts)} "
             f"GROUP BY {channel_group} "
             "ORDER BY customer_count DESC"
@@ -447,6 +512,7 @@ def get_role_coverage(
     db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
     """Get key role coverage distribution."""
+    customer_scope = _customer_scope_sql(campaign_tag)
 
     where_parts, params = _campaign_filters(
         campaign_tag=campaign_tag,
@@ -456,7 +522,7 @@ def get_role_coverage(
         text(
             "SELECT COALESCE(NULLIF(c.role_coverage, ''), '0/4') AS role_coverage, "
             "COUNT(*) AS customer_count "
-            "FROM dws_customer_360 c "
+            f"FROM {customer_scope} "
             f"WHERE {_where_sql(where_parts)} "
             "GROUP BY COALESCE(NULLIF(c.role_coverage, ''), '0/4') "
             "ORDER BY customer_count DESC"
@@ -485,6 +551,7 @@ def get_stage_distribution(
     db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
     """Get purchase stage distribution."""
+    customer_scope = _customer_scope_sql(campaign_tag)
 
     where_parts, params = _campaign_filters(
         campaign_tag=campaign_tag,
@@ -493,7 +560,7 @@ def get_stage_distribution(
     rows = db.execute(
         text(
             "SELECT COALESCE(NULLIF(c.purchase_stage, ''), '未知阶段') AS stage, COUNT(*) AS count "
-            "FROM dws_customer_360 c "
+            f"FROM {customer_scope} "
             f"WHERE {_where_sql(where_parts)} "
             "GROUP BY COALESCE(NULLIF(c.purchase_stage, ''), '未知阶段') "
             "ORDER BY count DESC"
@@ -518,6 +585,7 @@ def get_tag_signals(
     db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
     """Return available tag-like signals from DWS fields."""
+    customer_scope = _customer_scope_sql(campaign_tag)
 
     customer_where, customer_params = _campaign_filters(
         campaign_tag=campaign_tag,
@@ -527,7 +595,7 @@ def get_tag_signals(
     industry_rows = db.execute(
         text(
             "SELECT c.industry AS signal_name, COUNT(*) AS signal_count, '行业' AS signal_type "
-            "FROM dws_customer_360 c "
+            f"FROM {customer_scope} "
             f"WHERE {_where_sql(customer_where)} AND c.industry IS NOT NULL AND c.industry != '' "
             "GROUP BY c.industry ORDER BY signal_count DESC LIMIT 8"
         ),
@@ -550,19 +618,12 @@ def _query_content_effect(
     industry: Optional[str] = None,
 ) -> Dict[str, Any]:
     where_parts, params = _interaction_filters(
+        campaign_tag=campaign_tag,
+        industry=industry,
         channel=channel,
         start_date=start_date,
         end_date=end_date,
     )
-    join_sql = ""
-    if campaign_tag or industry:
-        join_sql = "JOIN dws_customer_360 c ON c.customer_name = i.customer_name "
-        if campaign_tag:
-            where_parts.append("c.campaign_tag = :campaign_tag")
-            params["campaign_tag"] = campaign_tag
-        if industry:
-            where_parts.append("c.industry = :industry")
-            params["industry"] = industry
 
     rows = db.execute(
         text(
@@ -576,7 +637,6 @@ def _query_content_effect(
             "'点击|下载|提交|咨询|报名|留资|click_', 'i')) AS clicks, "
             "SUM(CASE WHEN i.is_high_value = 1 THEN 1 ELSE 0 END) AS mql "
             "FROM dws_interaction_detail i "
-            f"{join_sql}"
             f"WHERE {_where_sql(where_parts)} AND i.content IS NOT NULL AND i.content != '' "
             "GROUP BY i.content "
             "ORDER BY unique_customers DESC, clicks DESC, touch_count DESC LIMIT 10"
@@ -637,6 +697,8 @@ def get_campaign_overview(
 ) -> Dict[str, Any]:
     """Return all non-paginated campaign sections with two DB round trips."""
     started_at = time.perf_counter()
+    customer_scope = _customer_scope_sql(campaign_tag)
+    customer_name = _customer_name_sql(campaign_tag)
 
     base_where, base_params = _campaign_filters(
         campaign_tag=campaign_tag,
@@ -693,21 +755,21 @@ def get_campaign_overview(
     aggregate_rows = db.execute(
         text(
             "SELECT 'kpi_total' AS section, '' AS label, "
-            "COUNT(DISTINCT c.customer_name) AS count_value, 0 AS active_value, "
+            f"COUNT(DISTINCT {customer_name}) AS count_value, 0 AS active_value, "
             "0 AS deal_value, 0 AS unknown_value, 0 AS amount_value "
-            "FROM dws_customer_360 c "
+            f"FROM {customer_scope} "
             f"WHERE {base_sql} "
             "UNION ALL "
-            "SELECT 'kpi_active', '', COUNT(DISTINCT c.customer_name), 0, 0, 0, 0 "
-            "FROM dws_customer_360 c "
+            f"SELECT 'kpi_active', '', COUNT(DISTINCT {customer_name}), 0, 0, 0, 0 "
+            f"FROM {customer_scope} "
             f"WHERE {active_sql} "
             "UNION ALL "
             "SELECT 'kpi_metrics', '', "
             "COALESCE(SUM(COALESCE(NULLIF(c.active_opp_count, 0), c.funnel_opp_count, 0)), 0), "
             "0, COUNT(DISTINCT CASE WHEN COALESCE(c.won_amount, 0) > 0 "
-            "OR c.purchase_stage = '阶段6：完成采购，实现进入' THEN c.customer_name END), "
+            f"OR c.purchase_stage = '阶段6：完成采购，实现进入' THEN {customer_name} END), "
             "0, COALESCE(SUM(c.active_opp_amount), 0) "
-            "FROM dws_customer_360 c "
+            f"FROM {customer_scope} "
             f"WHERE {metric_sql} "
             "UNION ALL "
             "SELECT 'opportunity', COALESCE(NULLIF(c.forecast_type, ''), '未标注'), "
@@ -717,37 +779,37 @@ def get_campaign_overview(
             "SUM(CASE WHEN COALESCE(c.won_amount, 0) > 0 "
             "OR c.purchase_stage = '阶段6：完成采购，实现进入' THEN 1 ELSE 0 END), "
             "SUM(CASE WHEN c.purchase_stage IS NULL OR c.purchase_stage = '' THEN 1 ELSE 0 END), 0 "
-            "FROM dws_customer_360 c "
+            f"FROM {customer_scope} "
             f"WHERE {base_sql} "
             "GROUP BY COALESCE(NULLIF(c.forecast_type, ''), '未标注') "
             "UNION ALL "
-            f"SELECT 'channel', {channel_group}, COUNT(DISTINCT c.customer_name), 0, 0, 0, 0 "
-            "FROM dws_customer_360 c "
+            f"SELECT 'channel', {channel_group}, COUNT(DISTINCT {customer_name}), 0, 0, 0, 0 "
+            f"FROM {customer_scope} "
             f"WHERE {base_sql} "
             f"GROUP BY {channel_group} "
             "UNION ALL "
             "SELECT 'stage', COALESCE(NULLIF(c.purchase_stage, ''), '未知阶段'), "
-            "COUNT(*), 0, 0, 0, 0 FROM dws_customer_360 c "
+            f"COUNT(*), 0, 0, 0, 0 FROM {customer_scope} "
             f"WHERE {base_sql} "
             "GROUP BY COALESCE(NULLIF(c.purchase_stage, ''), '未知阶段') "
             "UNION ALL "
             "SELECT 'role', COALESCE(NULLIF(c.role_coverage, ''), '0/4'), "
-            "COUNT(*), 0, 0, 0, 0 FROM dws_customer_360 c "
+            f"COUNT(*), 0, 0, 0, 0 FROM {customer_scope} "
             f"WHERE {base_sql} "
             "GROUP BY COALESCE(NULLIF(c.role_coverage, ''), '0/4') "
             "UNION ALL "
             "SELECT 'signal', c.industry, COUNT(*), 0, 0, 0, 0 "
-            "FROM dws_customer_360 c "
+            f"FROM {customer_scope} "
             f"WHERE {base_sql} AND c.industry IS NOT NULL AND c.industry != '' "
             "GROUP BY c.industry "
             "UNION ALL "
             "SELECT 'stage_option', c.purchase_stage, 0, 0, 0, 0, 0 "
-            "FROM dws_customer_360 c "
+            f"FROM {customer_scope} "
             f"WHERE {base_sql} AND c.purchase_stage IS NOT NULL AND c.purchase_stage != '' "
             "GROUP BY c.purchase_stage "
             "UNION ALL "
             "SELECT 'owner_option', c.owner_name, 0, 0, 0, 0, 0 "
-            "FROM dws_customer_360 c "
+            f"FROM {customer_scope} "
             f"WHERE {base_sql} AND c.owner_name IS NOT NULL AND c.owner_name != '' "
             f"GROUP BY c.owner_name{global_option_sql}"
         ),
@@ -883,7 +945,7 @@ def get_campaign_overview(
     if include_global_filter_options:
         available_global_channels = set(channels_for_filter)
         result["global_filter_options"] = {
-            "campaigns": sorted(set(campaigns_for_filter)),
+            "campaigns": _campaign_options(campaigns_for_filter),
             "industries": sorted(set(industries_for_filter)),
             "channels": [
                 channel
@@ -917,10 +979,21 @@ def get_customers_by_stage(
 ) -> Dict[str, Any]:
     """Get customers for follow-up table."""
     started_at = time.perf_counter()
+    customer_scope = _customer_scope_sql(campaign_tag)
+    customer_name = _customer_name_sql(campaign_tag)
+    campaign_label = _campaign_label_sql(campaign_tag)
+    count_expression = (
+        f"COUNT(DISTINCT {customer_name})"
+        if _is_key_account_campaign(campaign_tag)
+        else "COUNT(*)"
+    )
 
     where_parts, params = _campaign_filters(
         campaign_tag=campaign_tag,
         industry=industry,
+        channel=channel,
+        start_date=start_date,
+        end_date=end_date,
         stage=stage,
         owner=owner,
         keyword=keyword,
@@ -929,7 +1002,7 @@ def get_customers_by_stage(
 
     query_started = time.perf_counter()
     total = db.execute(
-        text(f"SELECT COUNT(*) FROM dws_customer_360 c WHERE {where_sql}"),
+        text(f"SELECT {count_expression} FROM {customer_scope} WHERE {where_sql}"),
         params,
     ).scalar() or 0
     count_ms = _elapsed_ms(query_started)
@@ -940,14 +1013,15 @@ def get_customers_by_stage(
     query_started = time.perf_counter()
     rows = db.execute(
         text(
-            "SELECT c.id, c.customer_name, c.campaign_tag, c.industry, c.region, c.attribute, "
+            f"SELECT c.id, {customer_name} AS customer_name, {campaign_label} AS campaign_tag, "
+            "c.industry, c.region, c.attribute, "
             "c.purchase_stage AS stage, c.owner_name, c.intent_level, c.intent_score, "
             "c.role_coverage, c.last_interaction_time, c.last_interaction_channel, "
             "c.active_opp_amount, c.active_opp_count, c.interaction_count_total, "
             "c.product_categories, c.source_tables "
-            "FROM dws_customer_360 c "
+            f"FROM {customer_scope} "
             f"WHERE {where_sql} "
-            "ORDER BY c.intent_score DESC, c.active_opp_amount DESC, c.customer_name ASC "
+            f"ORDER BY (c.id IS NULL) ASC, c.intent_score DESC, c.active_opp_amount DESC, {customer_name} ASC "
             "LIMIT :page_size OFFSET :offset"
         ),
         {**params, "page_size": page_size, "offset": offset},
@@ -992,7 +1066,7 @@ def get_customers_by_stage(
         query_started = time.perf_counter()
         option_rows = db.execute(
             text(
-                "SELECT c.purchase_stage, c.owner_name FROM dws_customer_360 c "
+                f"SELECT c.purchase_stage, c.owner_name FROM {customer_scope} "
                 f"WHERE {option_sql} AND ((c.purchase_stage IS NOT NULL AND c.purchase_stage != '') "
                 "OR (c.owner_name IS NOT NULL AND c.owner_name != ''))"
             ),
