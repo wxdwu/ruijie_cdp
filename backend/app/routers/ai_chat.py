@@ -26,7 +26,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.services.ai_service import process_chat, export_query_results
+from app.services.wasted.ai_service import process_chat, export_query_results
 
 logger = logging.getLogger(__name__)
 
@@ -77,7 +77,7 @@ def parse_natural_language(
         return {"query": "", "entities": {}}
     
     # 使用 AI 服务进行意图识别
-    from app.services.ai_service import recognize_intent
+    from app.services.wasted.ai_service import recognize_intent
     result = recognize_intent(q, request.history)
     
     return {

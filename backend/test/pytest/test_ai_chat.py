@@ -18,7 +18,7 @@ def test_parse_empty_returns_empty_entities(client: TestClient):
 
 def test_parse_with_query(client: TestClient, monkeypatch):
     monkeypatch.setattr(
-        "app.services.ai_service.recognize_intent",
+        "app.services.wasted.ai_service.recognize_intent",
         lambda q, history=None: {"structured_query": {"region": "广东"}, "intent": "region"},
     )
     r = client.post("/api/ai/parse", json={"query": "广东的客户"})
@@ -38,7 +38,7 @@ def test_chat_empty_returns_prompt(client: TestClient):
 
 def test_chat_with_query(client: TestClient, monkeypatch):
     monkeypatch.setattr(
-        "app.services.ai_service.process_chat",
+        "app.services.wasted.ai_service.process_chat",
         lambda q, history=None, db=None: {
             "query": q,
             "structured_query": {},
@@ -57,7 +57,7 @@ def test_chat_with_query(client: TestClient, monkeypatch):
 
 def test_chat_export_returns_excel(client: TestClient, monkeypatch):
     monkeypatch.setattr(
-        "app.services.ai_service.export_query_results",
+        "app.services.wasted.ai_service.export_query_results",
         lambda structured_query, db, target_table="dws_customer_360": b"fake-xlsx-bytes",
     )
     r = client.post(

@@ -809,6 +809,81 @@ def _load_interactions_tianrun() -> int:
     return n
 
 
+def _ensure_interaction_content_column() -> None:
+    """确保 dws_interaction_detail 及其轮转镜像表（_backup / _temp）均含
+    interaction_content 列。
+
+    该列存放 Linkflow 行为来源搜索词，取自 ods_linkflow_events_day.props_json
+    的 s_term 字段。全量/增量同步在轮转 swap 之前与本写入前都会调用本函数：
+    列已存在则跳过；缺失则 ALTER ADD。这样无论轮转把哪张表变为主表
+    （主表可能来自更早、尚不含该列的 _backup 快照），目标表结构都正确，
+    不会出现“同步后字段丢失”的问题。
+
+    健壮性：仅对实际存在的表做 ALTER；若 _backup 尚不存在（例如上一轮同步
+    异常中断导致备份表被重命名/清理），则先按主表结构创建（主表此时已含该列，
+    新备份表自然继承），避免对不存在的表执行 ALTER 报
+    “Table '..._backup' doesn't exist”。
+    """
+    engine = get_etl_engine()
+
+    def _tbl_exists(conn, name: str) -> bool:
+        # 用 SHOW TABLES（基于当前连接默认库，与下方 ALTER/DDL 的库判定一致），
+        # 避免 information_schema 在个别环境下对刚创建的表判定不准。
+        rows = conn.execute(text("SHOW TABLES LIKE :n"), {"n": name}).fetchall()
+        return bool(rows)
+
+    def _col_exists_for(conn, tbl: str) -> bool:
+        # SHOW COLUMNS 基于当前连接默认库，与 ALTER 同源，判定最可靠。
+        rows = conn.execute(
+            text("SHOW COLUMNS FROM " + tbl + " LIKE :c"),
+            {"c": "interaction_content"},
+        ).fetchall()
+        return bool(rows)
+
+    def _ensure_col(conn, tbl: str) -> None:
+        if not _col_exists_for(conn, tbl):
+            try:
+                _exec(
+                    "ALTER TABLE " + tbl + " "
+                    "ADD COLUMN interaction_content VARCHAR(100) NULL "
+                    "COMMENT 'Linkflow 行为来源搜索词（props_json->s_term）' "
+                    "AFTER content"
+                )
+                logger.info("已为 %s 增加 interaction_content 列", tbl)
+            except Exception as e:  # noqa: BLE001
+                err = str(e)
+                if "1060" in err or "1146" in err:
+                    logger.info(
+                        "为 %s 增加 interaction_content 列时忽略已存在/表缺失：%s",
+                        tbl, err
+                    )
+                    return
+                raise
+
+    with engine.connect() as conn:
+        # 1) 主表优先：确保含该列（后续 _backup 按主表结构创建时可继承）
+        if _tbl_exists(conn, "dws_interaction_detail"):
+            _ensure_col(conn, "dws_interaction_detail")
+        else:
+            logger.warning(
+                "主表 dws_interaction_detail 不存在，跳过 interaction_content 字段确保"
+            )
+            return
+
+        # 2) 备份表：不存在则先按主表结构创建（继承已含的该列），再确保列存在
+        if not _tbl_exists(conn, "dws_interaction_detail_backup"):
+            _exec(
+                "CREATE TABLE dws_interaction_detail_backup "
+                "LIKE dws_interaction_detail"
+            )
+            logger.info("已按主表结构创建备份表 dws_interaction_detail_backup")
+        _ensure_col(conn, "dws_interaction_detail_backup")
+
+        # 3) 增量临时表（若存在则确保列存在）
+        if _tbl_exists(conn, "dws_interaction_detail_temp"):
+            _ensure_col(conn, "dws_interaction_detail_temp")
+
+
 def _load_interactions_linkflow() -> int:
     """Load Linkflow events → dws_interaction_detail.
 
@@ -817,6 +892,9 @@ def _load_interactions_linkflow() -> int:
     hundred valid contacts, a single INSERT ... SELECT is faster than batching
     by contact_id and avoids extra round-trips.
     """
+    # 写入前先确保目标表含 interaction_content 字段，缺失则更新表结构
+    _ensure_interaction_content_column()
+
     total_contacts = _table_count("tmp_valid_linkflow_contacts")
     logger.info(
         "  Loading Linkflow events using %d valid contacts...",
@@ -826,12 +904,16 @@ def _load_interactions_linkflow() -> int:
     n = _exec(
         "INSERT IGNORE INTO dws_interaction_detail "
         "  (customer_name, contact_name, mobile, source_table, "
-        "   channel, behavior_type, event_time, source_id, etl_time) "
+        "   channel, behavior_type, event_time, source_id, etl_time, "
+        "   interaction_content) "
         "SELECT "
         "  lc.customer_name, lc.name, lc.mobile_phone, 'linkflow', "
         "  'web', e.event_name, "
         "  FROM_UNIXTIME(e.event_date_ms / 1000), "
-        "  e.event_id, NOW() "
+        "  e.event_id, NOW(), "
+        "  LEFT(NULLIF(TRIM(JSON_UNQUOTE(JSON_EXTRACT( "
+        "    CASE WHEN JSON_VALID(e.props_json) THEN e.props_json ELSE '{}' END, "
+        "    '$.s_term'))), ''), 100) "
         "FROM ods_linkflow_events_day e "
         "INNER JOIN tmp_valid_linkflow_contacts lc ON lc.contact_id = e.contact_id"
     )
@@ -1671,7 +1753,13 @@ def run_full_sync(trigger_by: str = "system") -> Dict[str, Any]:
         logger.info("── Step 0: Ensuring backup tables exist ──")
         ensure_backup_tables()
         stats["steps"]["backup_tables"] = "ensured"
-        
+
+        # Step 0.5: 轮转 swap 前，先确保互动明细表（主表 + 备份表）含
+        # interaction_content 列。否则 swap 会把不含该列的旧 _backup 变为主表，
+        # 导致该字段在同步后“消失”。
+        logger.info("── Step 0.5: Ensuring interaction_content column on detail tables ──")
+        _ensure_interaction_content_column()
+
         # Step 1: Prepare backup tables for sync (swap with main tables)
         logger.info("── Step 1: Preparing backup tables for sync ──")
         engine = get_etl_engine()
@@ -1902,6 +1990,11 @@ def run_incremental_sync(trigger_by: str = "system") -> Dict[str, Any]:
         ensure_backup_tables()
         stats["steps"]["backup_tables"] = "ensured"
         _phase_end("Step 0: Ensuring backup tables exist", t0)
+
+        # Step 0.5: 轮转重建 _temp 表（CREATE ... LIKE 主表）前，先确保主表与
+        # 备份表含 interaction_content 列，避免后续 swap 后主表缺该字段。
+        logger.info("── Step 0.5: Ensuring interaction_content column on detail tables ──")
+        _ensure_interaction_content_column()
 
         # Step 1: Prepare for table rotation
         t0 = _phase_start("Step 1: Preparing for table rotation")
@@ -2555,6 +2648,9 @@ def _incremental_load_linkflow(batch_id: int) -> int:
     按配置（ods_linkflow_events_day: extra_id / id）计算水位过滤，
     仅处理 extra_id 大于上一轮最大 id 的事件。
     """
+    # 写入前先确保目标表（含增量临时表）含 interaction_content 字段
+    _ensure_interaction_content_column()
+
     engine = get_etl_engine()
 
     # 按配置计算水位过滤（extra_id 最大 ID 水位）
@@ -2568,12 +2664,16 @@ def _incremental_load_linkflow(batch_id: int) -> int:
     sql = text(
         "INSERT IGNORE INTO dws_interaction_detail_temp "
         "  (customer_name, contact_name, mobile, source_table, "
-        "   channel, behavior_type, event_time, source_id, etl_time, sync_batch_id) "
+        "   channel, behavior_type, event_time, source_id, etl_time, "
+        "   sync_batch_id, interaction_content) "
         "SELECT "
         "  lc.customer_name, lc.name, lc.mobile_phone, 'linkflow', "
         "  'web', e.event_name, "
         "  FROM_UNIXTIME(e.event_date_ms / 1000), "
-        "  e.event_id, NOW(), :batch_id "
+        "  e.event_id, NOW(), :batch_id, "
+        "  LEFT(NULLIF(TRIM(JSON_UNQUOTE(JSON_EXTRACT( "
+        "    CASE WHEN JSON_VALID(e.props_json) THEN e.props_json ELSE '{}' END, "
+        "    '$.s_term'))), ''), 100) "
         "FROM ods_linkflow_events_day e "
         "INNER JOIN tmp_valid_linkflow_contacts lc ON lc.contact_id = e.contact_id "
         f" {time_filter} "
