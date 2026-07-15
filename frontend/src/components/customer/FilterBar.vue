@@ -124,6 +124,19 @@ function scheduleApply() {
   }, AUTO_APPLY_DELAY)
 }
 
+function resetFilters() {
+  selectedKeyword.value = []
+  specialProject.value = ["企业彩光ICT"]
+  industry.value = []
+  selectedRegion.value = []
+  selectedOwner.value = []
+  attribute.value = ""
+  channel.value = []
+  interaction_min.value = null
+  interaction_period.value = 30
+  applyNow()
+}
+
 function handleSpecialProjectChange() {
   if (isKeyAccountSelection.value) {
     attribute.value = "heavy"
@@ -147,7 +160,21 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="relative z-40 overflow-visible rounded-xl border border-[var(--line)] bg-[var(--panel)] p-5 backdrop-blur">
-    <div class="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-8 gap-4">
+    <!-- 一键重置筛选条件 -->
+    <button
+      type="button"
+      @click="resetFilters"
+      title="重置全部筛选条件"
+      aria-label="重置筛选条件"
+      class="absolute right-4 top-4 z-10 flex h-8 w-8 items-center justify-center rounded-lg border border-[var(--line)] bg-[var(--bg1)] text-[var(--muted)] transition-all hover:rotate-180 hover:border-[var(--brand)] hover:text-[var(--brand)] active:scale-90"
+    >
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" class="h-4 w-4">
+        <path d="M4 20 L4 10 Q4 4 10 4 L20 4" />
+        <path d="M9 15 L9 10 Q9 9 10 9 L15 9" />
+      </svg>
+    </button>
+
+    <div class="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-8 gap-4 pr-10">
       <!-- 专项 -->
       <div class="flex min-w-0 flex-col gap-1.5">
         <label class="text-xs font-medium text-[var(--muted)]">专项</label>

@@ -50,6 +50,8 @@ watch(() => store.filters.page, () => {
 })
 
 onMounted(() => {
+  // 进入客户管理界面时重置筛选条件，避免保留上一次切换 tab 前的搜索结果
+  store.reset()
   store.fetchList()
 })
 
