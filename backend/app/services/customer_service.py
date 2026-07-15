@@ -26,51 +26,72 @@ ALLOWED_SORT = {
 }
 
 
+def _add_in_filter(
+    where_parts: List[str],
+    params: Dict[str, Any],
+    column: str,
+    values: Optional[List[str]],
+    prefix: str,
+) -> None:
+    """追加 ``column IN (:p0, :p1, ...)`` 谓词，支持多选维度过滤。"""
+    if not values:
+        return
+    placeholders: List[str] = []
+    for index, value in enumerate(values):
+        key = f"{prefix}_{index}"
+        params[key] = value
+        placeholders.append(f":{key}")
+    where_parts.append(f"{column} IN ({', '.join(placeholders)})")
+
+
 def get_customer_list(
     db: Session,
     *,
-    keyword: Optional[str] = None,
-    special_project: Optional[str] = None,
-    industry: Optional[str] = None,
-    region: Optional[str] = None,
+    keyword: Optional[List[str]] = None,
+    special_project: Optional[List[str]] = None,
+    industry: Optional[List[str]] = None,
+    region: Optional[List[str]] = None,
     region_keyword: Optional[str] = None,
-    owner: Optional[str] = None,
+    owner: Optional[List[str]] = None,
     owner_keyword: Optional[str] = None,
     stage: Optional[str] = None,
     intent_level: Optional[str] = None,
     interaction_min: Optional[int] = None,
     interaction_period: int = 30,
     attribute: Optional[str] = None,
-    channel: Optional[str] = None,
+    channel: Optional[List[str]] = None,
     sort: str = "intent_score DESC",
     page: int = 1,
     page_size: int = 50,
 ) -> Dict[str, Any]:
-    """查询 dws_customer_360，支持多维度筛选、排序与分页。
+    """查询 dws_customer_360，支持多维度（含多选）筛选、排序与分页。
 
     作为客户列表 / 导出等场景的唯一查询来源，统一过滤逻辑。
+    专项、行业、区域、负责人、互动方式均支持多选（IN 过滤）。
     返回 {items, total, page, page_size, filters_applied}。
     """
     where_parts: List[str] = ["1=1"]
     params: Dict[str, Any] = {}
 
-    if keyword:
-        where_parts.append("customer_name LIKE :keyword")
-        params["keyword"] = f"%{keyword}%"
-    if special_project:
-        where_parts.append("campaign_tag = :special_project")
-        params["special_project"] = special_project
-    if industry:
-        where_parts.append("industry = :industry")
-        params["industry"] = industry
-    # 区域筛选（兼容「广东」与「广东区域」两种写法）
+    # 客户关键词：多选时按 customer_name 精确 IN 过滤
+    _add_in_filter(where_parts, params, "customer_name", keyword, "keyword")
+    # 专项：多选时按 campaign_tag IN 过滤
+    _add_in_filter(where_parts, params, "campaign_tag", special_project, "special_project")
+    # 行业：多选 IN 过滤
+    _add_in_filter(where_parts, params, "industry", industry, "industry")
+    # 区域：多选（兼容「广东」与「广东区域」两种写法）
     add_region_filter(
         where_parts, params,
         column="region", region=region, region_keyword=region_keyword,
     )
+    # 负责人：多选 IN 过滤
     if owner:
-        where_parts.append("owner_name = :owner")
-        params["owner"] = owner
+        owner_placeholders: List[str] = []
+        for index, value in enumerate(owner):
+            key = f"owner_{index}"
+            params[key] = value
+            owner_placeholders.append(f":{key}")
+        where_parts.append(f"owner_name IN ({', '.join(owner_placeholders)})")
     elif owner_keyword:
         where_parts.append("owner_name LIKE :owner_keyword")
         params["owner_keyword"] = f"%{owner_keyword}%"
@@ -99,7 +120,7 @@ def get_customer_list(
     elif attribute == "non_heavy":
         where_parts.append("(attribute IS NULL OR attribute != :heavy_attribute)")
         params["heavy_attribute"] = "H"
-    # 渠道筛选（基于互动明细 EXISTS 子查询）
+    # 渠道筛选（基于互动明细 EXISTS 子查询，支持多选）
     add_customer_interaction_channel_filter(
         where_parts, params,
         customer_name_column="dws_customer_360.customer_name",

@@ -1,10 +1,31 @@
 import axios from 'axios'
 import { BASE_URL } from '../config'
 
+// 将数组参数序列化为重复 key（region=广东&region=北京），
+// 以匹配 FastAPI 中 List[str] = Query([]) 的接收方式（而非 region[]=...）。
+function serializeParams(params) {
+  const search = new URLSearchParams()
+  Object.keys(params).forEach((key) => {
+    const value = params[key]
+    if (value === undefined || value === null) return
+    if (Array.isArray(value)) {
+      value.forEach((item) => {
+        if (item !== undefined && item !== null && item !== '') {
+          search.append(key, item)
+        }
+      })
+    } else {
+      search.append(key, value)
+    }
+  })
+  return search.toString()
+}
+
 const http = axios.create({
   baseURL: BASE_URL,
   timeout: 30000,
   headers: { 'Content-Type': 'application/json' },
+  paramsSerializer: { serialize: serializeParams },
 })
 
 http.interceptors.response.use(

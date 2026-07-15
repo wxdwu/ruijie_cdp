@@ -11,11 +11,11 @@ export const customerFieldHelp = {
   keyword: {
     title: '客户关键词',
     type: 'src',
-    meaning: '按客户公司名称进行模糊搜索。',
+    meaning: '按客户公司名称精确匹配筛选，支持多选与搜索。',
     sourceTables: 'dws_customer_360',
     sourceFields: 'dws_customer_360.customer_name',
-    calculation: '后端使用 customer_name LIKE 关键字过滤客户列表。',
-    emptyState: '未输入时不过滤客户名称。',
+    calculation: '从候选项选择时按 customer_name 精确匹配（多选以 IN 生效）；输入关键词时下拉仅展示含该关键词的客户名称。',
+    emptyState: '未选择时不过滤客户名称。',
   },
   industry: {
     title: '行业',

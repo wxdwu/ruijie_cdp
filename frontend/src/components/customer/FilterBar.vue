@@ -1,76 +1,103 @@
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { customerApi } from '../../api'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue"
+import { customerApi } from "../../api"
+import MultiSelect from "./MultiSelect.vue"
 
-const emit = defineEmits(['apply'])
+const emit = defineEmits(["apply"])
 
-const keyword = ref('')
-const industry = ref('')
-const selectedRegion = ref('')
-const selectedOwner = ref('')
-const specialProject = ref('企业彩光ICT')
-const attribute = ref('')
-const channel = ref('')
+const selectedKeyword = ref([])
+const industry = ref([])
+const selectedRegion = ref([])
+const selectedOwner = ref([])
+const specialProject = ref(["企业彩光ICT"])
+const attribute = ref("")
+const channel = ref([])
 const interaction_min = ref(null)
 const interaction_period = ref(30) // 默认30天
 
 const industries = ref([])
 const regions = ref([])
 const owners = ref([])
+const keywords = ref([])
 const availableChannels = ref([])
-const isKeyAccountSelection = computed(() => specialProject.value === '重客')
+const isKeyAccountSelection = computed(() => (
+  specialProject.value.length === 1 && specialProject.value[0] === "重客"
+))
 const AUTO_APPLY_DELAY = 400
 let applyTimer = null
 let filterOptionsRequestId = 0
 
 const channelLabels = {
-  email: '邮件',
-  web: '官网',
-  event: '直播/活动',
-  wechat: '微信',
-  other: '其他',
+  email: "邮件",
+  web: "官网",
+  event: "直播/活动",
+  wechat: "微信",
+  other: "其他",
 }
-const channels = computed(() => [
-  { value: '', label: '全部' },
-  ...availableChannels.value.map(value => ({ value, label: channelLabels[value] || value })),
-])
+const channels = computed(() =>
+  availableChannels.value.map(value => ({ value, label: channelLabels[value] || value })),
+)
 
 const periodOptions = [
-  { value: 30, label: '近30天' },
-  { value: 60, label: '近60天' },
-  { value: 90, label: '近90天' },
-  { value: 180, label: '近180天' },
-  { value: 365, label: '近1年' },
-  { value: 1095, label: '近3年' },
+  { value: 30, label: "近30天" },
+  { value: 60, label: "近60天" },
+  { value: 90, label: "近90天" },
+  { value: 180, label: "近180天" },
+  { value: 365, label: "近1年" },
+  { value: 1095, label: "近3年" },
 ]
+
+const industryOptions = computed(() => (
+  industries.value.map(item => ({ value: item, label: item }))
+))
+const regionOptions = computed(() => (
+  regions.value.map(item => ({ value: item, label: item }))
+))
+const ownerOptions = computed(() => (
+  owners.value.map(item => ({ value: item, label: item }))
+))
+const keywordOptions = computed(() => (
+  keywords.value.map(item => ({ value: item, label: item }))
+))
+const specialProjectOptions = [
+  { value: "企业彩光ICT", label: "企业彩光ICT" },
+  { value: "重客", label: "重客" },
+]
+
+function keepExistingValues(current, options) {
+  return current.filter(v => options.includes(v))
+}
 
 async function fetchFilterOptions(project = specialProject.value) {
   const requestId = ++filterOptionsRequestId
   try {
-    const res = await customerApi.filterOptions({ special_project: project || undefined })
+    const res = await customerApi.filterOptions({
+      special_project: Array.isArray(project) ? project : (project ? [project] : []),
+    })
     if (requestId !== filterOptionsRequestId) return
     industries.value = res.industries || []
     regions.value = res.regions || []
     owners.value = res.owners || []
+    keywords.value = res.keywords || []
     availableChannels.value = res.channels || []
-    if (industry.value && !industries.value.includes(industry.value)) industry.value = ''
-    if (selectedRegion.value && !regions.value.includes(selectedRegion.value)) selectedRegion.value = ''
-    if (selectedOwner.value && !owners.value.includes(selectedOwner.value)) selectedOwner.value = ''
-    if (channel.value && !availableChannels.value.includes(channel.value)) channel.value = ''
+    // 若选项已不存在，自动移除当前已选值
+    industry.value = keepExistingValues(industry.value, industries.value)
+    selectedRegion.value = keepExistingValues(selectedRegion.value, regions.value)
+    selectedOwner.value = keepExistingValues(selectedOwner.value, owners.value)
+    selectedKeyword.value = keepExistingValues(selectedKeyword.value, keywords.value)
+    channel.value = keepExistingValues(channel.value, availableChannels.value)
   } catch (e) {
-    console.error('Failed to fetch filter options:', e)
+    console.error("Failed to fetch filter options:", e)
   }
 }
 
 function handleApply() {
-  emit('apply', {
-    keyword: keyword.value.trim(),
+  emit("apply", {
+    keyword: selectedKeyword.value,
     special_project: specialProject.value,
     industry: industry.value,
     region: selectedRegion.value,
-    region_keyword: '',
     owner: selectedOwner.value,
-    owner_keyword: '',
     interaction_min: interaction_min.value,
     interaction_period: interaction_period.value,
     attribute: attribute.value,
@@ -97,16 +124,17 @@ function scheduleApply() {
   }, AUTO_APPLY_DELAY)
 }
 
-watch(specialProject, async (value, previousValue) => {
-  if (value === '重客') {
-    attribute.value = 'heavy'
-  } else if (previousValue === '重客') {
-    attribute.value = ''
+function handleSpecialProjectChange() {
+  if (isKeyAccountSelection.value) {
+    attribute.value = "heavy"
+  } else if (attribute.value === "heavy") {
+    attribute.value = ""
   }
-  await fetchFilterOptions(value)
-  if (value !== specialProject.value) return
+  fetchFilterOptions(specialProject.value)
   applyNow()
-})
+}
+
+watch(specialProject, handleSpecialProjectChange)
 
 onMounted(() => {
   fetchFilterOptions()
@@ -123,66 +151,66 @@ onBeforeUnmount(() => {
       <!-- 专项 -->
       <div class="flex min-w-0 flex-col gap-1.5">
         <label class="text-xs font-medium text-[var(--muted)]">专项</label>
-        <select
+        <MultiSelect
           v-model="specialProject"
-          class="customer-filter-select rounded-lg border border-[var(--line)] bg-[var(--bg1)] px-3 py-2 text-sm text-[var(--text)] focus:border-[var(--brand)] focus:outline-none"
-        >
-          <option value="">全部</option>
-          <option value="企业彩光ICT">企业彩光ICT</option>
-          <option value="重客">重客</option>
-        </select>
+          :options="specialProjectOptions"
+          placeholder="全部专项"
+          all-label="全部"
+        />
       </div>
 
       <!-- 客户关键词 -->
       <div class="flex min-w-0 flex-col gap-1.5">
         <label class="text-xs font-medium text-[var(--muted)]">客户关键词</label>
-        <input
-          v-model="keyword"
-          type="text"
-          placeholder="输入客户名称..."
-          @input="scheduleApply"
-          @keyup.enter="applyNow"
-          class="rounded-lg border border-[var(--line)] bg-[var(--bg1)] px-3 py-2 text-sm text-[var(--text)] placeholder:text-[var(--muted)] focus:border-[var(--brand)] focus:outline-none"
+        <MultiSelect
+          v-model="selectedKeyword"
+          :options="keywordOptions"
+          placeholder="全部客户"
+          all-label="全部客户"
+          searchable
+          search-placeholder="搜索客户..."
+          @change="applyNow"
         />
       </div>
 
       <!-- 行业 -->
       <div class="flex min-w-0 flex-col gap-1.5">
         <label class="text-xs font-medium text-[var(--muted)]">行业</label>
-        <select
+        <MultiSelect
           v-model="industry"
+          :options="industryOptions"
+          placeholder="全部行业"
+          all-label="全部行业"
           @change="applyNow"
-          class="customer-filter-select rounded-lg border border-[var(--line)] bg-[var(--bg1)] px-3 py-2 text-sm text-[var(--text)] focus:border-[var(--brand)] focus:outline-none"
-        >
-          <option value="">全部行业</option>
-          <option v-for="item in industries" :key="item" :value="item">{{ item }}</option>
-        </select>
+        />
       </div>
 
       <!-- 省份 -->
       <div class="flex min-w-0 flex-col gap-1.5">
         <label class="text-xs font-medium text-[var(--muted)]">省份</label>
-        <select
+        <MultiSelect
           v-model="selectedRegion"
+          :options="regionOptions"
+          placeholder="全部省份"
+          all-label="全部省份"
+          searchable
+          search-placeholder="搜索省份..."
           @change="applyNow"
-          class="customer-filter-select rounded-lg border border-[var(--line)] bg-[var(--bg1)] px-3 py-2 text-sm text-[var(--text)] focus:border-[var(--brand)] focus:outline-none"
-        >
-          <option value="">全部省份</option>
-          <option v-for="item in regions" :key="item" :value="item">{{ item }}</option>
-        </select>
+        />
       </div>
 
       <!-- 负责人 -->
       <div class="flex min-w-0 flex-col gap-1.5">
         <label class="text-xs font-medium text-[var(--muted)]">负责人</label>
-        <select
+        <MultiSelect
           v-model="selectedOwner"
+          :options="ownerOptions"
+          placeholder="全部负责人"
+          all-label="全部负责人"
+          searchable
+          search-placeholder="搜索负责人..."
           @change="applyNow"
-          class="customer-filter-select rounded-lg border border-[var(--line)] bg-[var(--bg1)] px-3 py-2 text-sm text-[var(--text)] focus:border-[var(--brand)] focus:outline-none"
-        >
-          <option value="">全部负责人</option>
-          <option v-for="item in owners" :key="item" :value="item">{{ item }}</option>
-        </select>
+        />
       </div>
 
       <!-- 互动次数筛选 -->
@@ -230,16 +258,15 @@ onBeforeUnmount(() => {
       <!-- 互动方式 -->
       <div class="flex min-w-0 flex-col gap-1.5">
         <label class="text-xs font-medium text-[var(--muted)]">互动方式</label>
-        <select
+        <MultiSelect
           v-model="channel"
+          :options="channels"
+          placeholder="全部互动方式"
+          all-label="全部"
           @change="applyNow"
-          class="customer-filter-select rounded-lg border border-[var(--line)] bg-[var(--bg1)] px-3 py-2 text-sm text-[var(--text)] focus:border-[var(--brand)] focus:outline-none"
-        >
-          <option v-for="item in channels" :key="item.value" :value="item.value">{{ item.label }}</option>
-        </select>
+        />
       </div>
     </div>
-
   </div>
 </template>
 

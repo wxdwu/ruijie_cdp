@@ -1,6 +1,6 @@
 <script setup>
-import { ref } from 'vue'
-import { customerApi } from '../../api'
+import { ref } from "vue"
+import { customerApi } from "../../api"
 
 const props = defineProps({
   filters: {
@@ -13,7 +13,7 @@ const props = defineProps({
   },
   disabledReason: {
     type: String,
-    default: '',
+    default: "",
   },
 })
 
@@ -24,11 +24,26 @@ async function handleExport() {
 
   exporting.value = true
   try {
-    const blob = await customerApi.export(props.filters)
+    // 多选维度直接以数组传给后端，由后端做 IN 过滤
+    const exportParams = {
+      keyword: props.filters.keyword,
+      special_project: props.filters.special_project,
+      industry: props.filters.industry,
+      region: props.filters.region,
+      owner: props.filters.owner,
+      channel: props.filters.channel,
+      interaction_min: props.filters.interaction_min,
+      interaction_period: props.filters.interaction_period,
+      attribute: props.filters.attribute,
+      stage: props.filters.stage,
+      intent_level: props.filters.intent_level,
+      sort: props.filters.sort,
+    }
+    const blob = await customerApi.export(exportParams)
 
     // Create download link
     const url = window.URL.createObjectURL(blob)
-    const link = document.createElement('a')
+    const link = document.createElement("a")
     link.href = url
     link.download = `客户列表_${new Date().toISOString().slice(0, 10)}.xlsx`
     document.body.appendChild(link)
@@ -36,7 +51,7 @@ async function handleExport() {
     document.body.removeChild(link)
     window.URL.revokeObjectURL(url)
   } catch (e) {
-    console.error('Export failed:', e)
+    console.error("Export failed:", e)
   } finally {
     exporting.value = false
   }

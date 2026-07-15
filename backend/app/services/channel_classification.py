@@ -92,27 +92,34 @@ def add_customer_interaction_channel_filter(
     params: MutableMapping[str, Any],
     *,
     customer_name_column: str,
-    channel: str | None,
+    channel: str | Sequence[str] | None = None,
     prefix: str = "interaction_channel",
 ) -> None:
-    """Filter customers by any matching interaction-detail channel."""
-    if not channel:
+    """Filter customers by any matching interaction-detail channel.
+
+    支持多选：``channel`` 可为多个渠道构成的序列，最终以 OR 连接多个 EXISTS 子查询。
+    """
+    channels = [c for c in (channel or []) if c]
+    if not channels:
         return
-    channel_parts: List[str] = []
-    add_channel_filter(
-        channel_parts,
-        params,
-        column="interaction_channel.channel",
-        channel=channel,
-        prefix=prefix,
-    )
-    where_parts.append(
-        "EXISTS ("
-        "SELECT 1 FROM dws_interaction_detail interaction_channel "
-        f"WHERE interaction_channel.customer_name = {customer_name_column} "
-        f"AND {' AND '.join(channel_parts)}"
-        ")"
-    )
+    exists_parts: List[str] = []
+    for index, ch in enumerate(channels):
+        channel_parts: List[str] = []
+        add_channel_filter(
+            channel_parts,
+            params,
+            column="ic.channel",
+            channel=ch,
+            prefix=f"{prefix}_{index}",
+        )
+        exists_parts.append(
+            "EXISTS ("
+            "SELECT 1 FROM dws_interaction_detail ic "
+            f"WHERE ic.customer_name = {customer_name_column} "
+            f"AND {' AND '.join(channel_parts)}"
+            ")"
+        )
+    where_parts.append("(" + " OR ".join(exists_parts) + ")")
 
 
 def channel_group_case(

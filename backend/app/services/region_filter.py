@@ -65,38 +65,48 @@ def add_region_filter(
     params: Dict[str, Any],
     *,
     column: str,
-    region: Optional[str],
-    region_keyword: Optional[str],
+    region: Optional[Iterable[str]] = None,
+    region_keyword: Optional[str] = None,
     prefix: str = "region",
 ) -> None:
-    """Append a region predicate that understands both ``山东`` and ``山东区域``."""
-    selected = region or (region_keyword.strip() if region_keyword else None)
-    if not selected:
+    """Append a region predicate that understands both ``山东`` and ``山东区域``.
+
+    支持多选：``region`` 可以是多个省份构成的序列，最终以 OR 连接。
+    """
+    regions = [r for r in (region or []) if r]
+    if not regions and not region_keyword:
         return
 
-    if selected == "其他":
-        placeholders: List[str] = []
-        canonical = [option for option in REGION_OPTIONS if option != "其他"]
-        for index, value in enumerate(canonical):
-            for suffix, stored_value in (("name", value), ("area", f"{value}区域")):
-                key = f"{prefix}_standard_{index}_{suffix}"
-                placeholders.append(f":{key}")
-                params[key] = stored_value
-        where_parts.append(
-            f"({column} IS NULL OR {column} = '' "
-            f"OR {column} NOT IN ({', '.join(placeholders)}))"
-        )
-        return
+    # 关键词模糊匹配（按结果过滤，独立生效）
+    if region_keyword:
+        keyword_key = f"{prefix}_keyword"
+        where_parts.append(f"{column} LIKE :{keyword_key}")
+        params[keyword_key] = f"%{region_keyword.strip()}%"
+        if not regions:
+            return
 
-    # A dropdown selection is canonical and should include the legacy suffixed value.
-    if region:
-        exact_key = f"{prefix}_exact"
-        area_key = f"{prefix}_area"
-        where_parts.append(f"{column} IN (:{exact_key}, :{area_key})")
+    sub_parts: List[str] = []
+    for idx, selected in enumerate(regions):
+        if selected == "其他":
+            canonical = [option for option in REGION_OPTIONS if option != "其他"]
+            placeholders: List[str] = []
+            for j, value in enumerate(canonical):
+                for suffix, stored_value in (("name", value), ("area", f"{value}区域")):
+                    key = f"{prefix}_other_{idx}_{j}_{suffix}"
+                    placeholders.append(f":{key}")
+                    params[key] = stored_value
+            sub_parts.append(
+                f"({column} IS NULL OR {column} = '' "
+                f"OR {column} NOT IN ({', '.join(placeholders)}))"
+            )
+            continue
+
+        # 下拉选择为规范值，需同时匹配「广东」与历史「广东区域」写法
+        exact_key = f"{prefix}_exact_{idx}"
+        area_key = f"{prefix}_area_{idx}"
+        sub_parts.append(f"{column} IN (:{exact_key}, :{area_key})")
         params[exact_key] = selected
         params[area_key] = f"{selected}区域"
-        return
 
-    keyword_key = f"{prefix}_keyword"
-    where_parts.append(f"{column} LIKE :{keyword_key}")
-    params[keyword_key] = f"%{selected}%"
+    if sub_parts:
+        where_parts.append("(" + " OR ".join(sub_parts) + ")")

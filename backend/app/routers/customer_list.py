@@ -34,17 +34,17 @@ router = APIRouter(prefix="/api/customers", tags=["customers"])
 def _list_key_accounts(
     db: Session,
     *,
-    keyword: Optional[str],
-    industry: Optional[str],
-    region: Optional[str],
+    keyword: Optional[List[str]],
+    industry: Optional[List[str]],
+    region: Optional[List[str]],
     region_keyword: Optional[str],
-    owner: Optional[str],
+    owner: Optional[List[str]],
     owner_keyword: Optional[str],
     stage: Optional[str],
     intent_level: Optional[str],
     interaction_min: Optional[int],
     interaction_period: int,
-    channel: Optional[str],
+    channel: Optional[List[str]],
     sort: Optional[str],
     page: int,
     size: int,
@@ -77,7 +77,7 @@ def _list_key_accounts(
         "items": items,
         "filters_applied": {
             "keyword": keyword,
-            "special_project": "重客",
+            "special_project": ["重客"],
             "industry": industry,
             "region": region,
             "region_keyword": region_keyword,
@@ -101,25 +101,29 @@ def _list_key_accounts(
 @router.get("")
 def list_customers(
     db: Session = Depends(get_db),
-    keyword: Optional[str] = Query(None, description="Search by customer_name"),
-    special_project: Optional[str] = Query(None, description="Filter by campaign_tag"),
-    industry: Optional[str] = Query(None, description="Filter by industry"),
-    region: Optional[str] = Query(None, description="Filter by region"),
+    keyword: List[str] = Query([], description="Filter by customer_name (multi-select)"),
+    special_project: List[str] = Query([], description="Filter by campaign_tag (multi-select)"),
+    industry: List[str] = Query([], description="Filter by industry (multi-select)"),
+    region: List[str] = Query([], description="Filter by region (multi-select)"),
     region_keyword: Optional[str] = Query(None, description="Fuzzy search by region"),
-    owner: Optional[str] = Query(None, description="Filter by owner_name"),
+    owner: List[str] = Query([], description="Filter by owner_name (multi-select)"),
     owner_keyword: Optional[str] = Query(None, description="Fuzzy search by owner_name"),
     stage: Optional[str] = Query(None, description="Filter by purchase_stage"),
     intent_level: Optional[str] = Query(None, description="Filter by intent_level"),
     interaction_min: Optional[int] = Query(None, description="Minimum interaction count"),
     interaction_period: int = Query(30, description="Interaction period in days (30/60/90/180/365/1095)"),
     attribute: Optional[str] = Query(None, description="Filter by key customer rating: heavy/non_heavy"),
-    channel: Optional[str] = Query(None, description="Filter by last_interaction_channel"),
+    channel: List[str] = Query([], description="Filter by last_interaction_channel (multi-select)"),
     sort: Optional[str] = Query(None, description="Sort field and direction, e.g. 'intent_score desc'"),
     page: int = Query(1, ge=1, description="Page number"),
     size: int = Query(20, ge=1, le=100, description="Page size (max 100)"),
 ) -> Dict[str, Any]:
-    """List customers with filters and pagination."""
-    if special_project == "重客":
+    """List customers with filters and pagination.
+
+    专项/行业/区域/负责人/互动方式均支持多选（重复 query 参数，例如
+    ``?region=广东&region=北京``）。
+    """
+    if len(special_project) == 1 and special_project[0] == "重客":
         return _list_key_accounts(
             db,
             keyword=keyword,
@@ -172,13 +176,15 @@ _FILTER_OPTION_COLUMNS = (
 )
 
 
-def _filter_option_rows(db: Session, special_project: Optional[str]) -> List[Any]:
+def _filter_option_rows(db: Session, special_projects: List[str]) -> List[Any]:
+    """返回所选专项客户群体的合并列（用于下拉选项去重）。"""
     columns = ", ".join(f"c.{column}" for column in _FILTER_OPTION_COLUMNS)
-    params: Dict[str, Any] = {}
-    if special_project == "重客":
-        sql = text(
+    rows: List[Any] = []
+    # 重客：来自重客快照表，客户名称优先取重客名称（未进入彩光的重客也能作为候选项）
+    if "重客" in special_projects:
+        ka_sql = text(
             f"""
-            SELECT {columns}
+            SELECT {columns}, COALESCE(ka.`重客名称`, c.customer_name) AS customer_name
             FROM {KEY_ACCOUNT_TABLE} ka
             LEFT JOIN dws_customer_360 c
               ON c.customer_name = ka.`重客名称`
@@ -186,24 +192,35 @@ def _filter_option_rows(db: Session, special_project: Optional[str]) -> List[Any
             WHERE ka.`time` = (SELECT MAX(`time`) FROM {KEY_ACCOUNT_TABLE})
             """
         )
-        params["filter_source_project"] = KEY_ACCOUNT_SOURCE_PROJECT
-    else:
-        where_sql = ""
-        if special_project:
-            where_sql = "WHERE c.campaign_tag = :filter_special_project"
-            params["filter_special_project"] = special_project
-        sql = text(f"SELECT {columns} FROM dws_customer_360 c {where_sql}")
-    return db.execute(sql, params).mappings().all()
+        rows.extend(
+            db.execute(ka_sql, {"filter_source_project": KEY_ACCOUNT_SOURCE_PROJECT}).mappings().all()
+        )
+    # 其余专项：来自 dws_customer_360
+    others = [p for p in special_projects if p != "重客"]
+    if others:
+        other_sql = text(
+            f"SELECT {columns}, c.customer_name AS customer_name FROM dws_customer_360 c "
+            f"WHERE c.campaign_tag IN :filter_other_projects"
+        )
+        rows.extend(
+            db.execute(other_sql, {"filter_other_projects": tuple(others)}).mappings().all()
+        )
+    # 未选任何专项：返回全部客户
+    if not special_projects:
+        all_sql = text(f"SELECT {columns}, c.customer_name AS customer_name FROM dws_customer_360 c")
+        rows.extend(db.execute(all_sql).mappings().all())
+    return rows
 
 
 def _facet_values(rows: List[Any], column: str) -> List[str]:
     return sorted({str(row.get(column)).strip() for row in rows if row.get(column) not in (None, "")})
 
 
-def _channel_option_rows(db: Session, special_project: Optional[str]) -> List[Any]:
+def _channel_option_rows(db: Session, special_projects: List[str]) -> List[Any]:
     params: Dict[str, Any] = {}
-    if special_project == "重客":
-        sql = text(
+    clauses: List[str] = []
+    if "重客" in special_projects:
+        clauses.append(
             f"""
             SELECT DISTINCT interaction.channel
             FROM dws_interaction_detail interaction
@@ -213,32 +230,36 @@ def _channel_option_rows(db: Session, special_project: Optional[str]) -> List[An
             WHERE interaction.channel IS NOT NULL AND TRIM(interaction.channel) != ''
             """
         )
-    elif special_project:
-        sql = text(
+    others = [p for p in special_projects if p != "重客"]
+    if others:
+        clauses.append(
             """
             SELECT DISTINCT interaction.channel
             FROM dws_interaction_detail interaction
             INNER JOIN dws_customer_360 c ON c.customer_name = interaction.customer_name
-            WHERE c.campaign_tag = :channel_special_project
+            WHERE c.campaign_tag IN :channel_other_projects
               AND interaction.channel IS NOT NULL AND TRIM(interaction.channel) != ''
             """
         )
-        params["channel_special_project"] = special_project
-    else:
-        sql = text(
+        params["channel_other_projects"] = tuple(others)
+    if not special_projects:
+        clauses.append(
             """
             SELECT DISTINCT interaction.channel
             FROM dws_interaction_detail interaction
             WHERE interaction.channel IS NOT NULL AND TRIM(interaction.channel) != ''
             """
         )
+    if not clauses:
+        return []
+    sql = text(" UNION ".join(clauses))
     return db.execute(sql, params).mappings().all()
 
 
 @router.get("/filter-options")
 def get_filter_options(
     db: Session = Depends(get_db),
-    special_project: Optional[str] = Query(None, description="Scope options to a project"),
+    special_project: List[str] = Query([], description="Scope options to projects (multi-select)"),
 ) -> Dict[str, List[str]]:
     """Return facets scoped to the same customer population as the list."""
     rows = _filter_option_rows(db, special_project)
@@ -247,6 +268,7 @@ def get_filter_options(
         "industries": _facet_values(rows, "industry"),
         "regions": available_region_options(row.get("region") for row in rows),
         "owners": _facet_values(rows, "owner_name"),
+        "keywords": _facet_values(rows, "customer_name"),
         "stages": _facet_values(rows, "purchase_stage"),
         "intent_levels": _facet_values(rows, "intent_level"),
         "channels": available_channel_options(row.get("channel") for row in channel_rows),
@@ -381,19 +403,19 @@ def get_customer_statistics_by_name(
 @router.get("/export")
 def export_customers(
     db: Session = Depends(get_db),
-    keyword: Optional[str] = Query(None, description="Search by customer_name"),
-    special_project: Optional[str] = Query(None, description="Filter by campaign_tag"),
-    industry: Optional[str] = Query(None, description="Filter by industry"),
-    region: Optional[str] = Query(None, description="Filter by region"),
+    keyword: List[str] = Query([], description="Filter by customer_name (multi-select)"),
+    special_project: List[str] = Query([], description="Filter by campaign_tag (multi-select)"),
+    industry: List[str] = Query([], description="Filter by industry (multi-select)"),
+    region: List[str] = Query([], description="Filter by region (multi-select)"),
     region_keyword: Optional[str] = Query(None, description="Fuzzy search by region"),
-    owner: Optional[str] = Query(None, description="Filter by owner_name"),
+    owner: List[str] = Query([], description="Filter by owner_name (multi-select)"),
     owner_keyword: Optional[str] = Query(None, description="Fuzzy search by owner_name"),
     stage: Optional[str] = Query(None, description="Filter by purchase_stage"),
     intent_level: Optional[str] = Query(None, description="Filter by intent_level"),
     interaction_min: Optional[int] = Query(None, description="Minimum interaction count"),
     interaction_period: int = Query(30, description="Interaction period in days (30/60/90/180/365/1095)"),
     attribute: Optional[str] = Query(None, description="Filter by key customer rating: heavy/non_heavy"),
-    channel: Optional[str] = Query(None, description="Filter by last_interaction_channel"),
+    channel: List[str] = Query([], description="Filter by last_interaction_channel (multi-select)"),
     sort: Optional[str] = Query(None, description="Sort field and direction, e.g. 'intent_score desc'"),
 ) -> Response:
     """Export filtered customer list as Excel file."""

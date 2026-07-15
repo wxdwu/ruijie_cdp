@@ -26,19 +26,37 @@ _SORT_COLUMNS = {
 }
 
 
+def _add_in_filter(
+    where_parts: List[str],
+    params: Dict[str, Any],
+    column: str,
+    values: Optional[Sequence[str]],
+    prefix: str,
+) -> None:
+    """追加 ``column IN (:p0, :p1, ...)`` 谓词，支持多选维度过滤。"""
+    if not values:
+        return
+    placeholders: List[str] = []
+    for index, value in enumerate(values):
+        key = f"{prefix}_{index}"
+        params[key] = value
+        placeholders.append(f":{key}")
+    where_parts.append(f"{column} IN ({', '.join(placeholders)})")
+
+
 def _build_filters(
     *,
-    keyword: Optional[str],
-    industry: Optional[str],
-    region: Optional[str],
+    keyword: Optional[Sequence[str]],
+    industry: Optional[Sequence[str]],
+    region: Optional[Sequence[str]],
     region_keyword: Optional[str],
-    owner: Optional[str],
+    owner: Optional[Sequence[str]],
     owner_keyword: Optional[str],
     stage: Optional[str],
     intent_level: Optional[str],
     interaction_min: Optional[int],
     interaction_period: int,
-    channel: Optional[str],
+    channel: Optional[Sequence[str]],
 ) -> Tuple[str, Dict[str, Any]]:
     where_parts = [
         f"ka.`time` = (SELECT MAX(`time`) FROM {KEY_ACCOUNT_TABLE})",
@@ -47,12 +65,11 @@ def _build_filters(
         "key_account_source_project": KEY_ACCOUNT_SOURCE_PROJECT,
     }
 
-    if keyword:
-        where_parts.append("ka.`重客名称` LIKE :keyword")
-        params["keyword"] = f"%{keyword}%"
-    if industry:
-        where_parts.append("c.industry = :industry")
-        params["industry"] = industry
+    # 客户关键词：多选时按 重客名称 精确 IN 过滤
+    _add_in_filter(where_parts, params, "ka.`重客名称`", keyword, "key_account_keyword")
+    # 行业：多选 IN 过滤
+    _add_in_filter(where_parts, params, "c.industry", industry, "key_account_industry")
+    # 区域：多选（兼容「广东」与「广东区域」两种写法）
     add_region_filter(
         where_parts,
         params,
@@ -61,9 +78,14 @@ def _build_filters(
         region_keyword=region_keyword,
         prefix="key_account_region",
     )
+    # 负责人：多选 IN 过滤
     if owner:
-        where_parts.append("c.owner_name = :owner")
-        params["owner"] = owner
+        owner_placeholders: List[str] = []
+        for index, value in enumerate(owner):
+            key = f"key_account_owner_{index}"
+            params[key] = value
+            owner_placeholders.append(f":{key}")
+        where_parts.append(f"c.owner_name IN ({', '.join(owner_placeholders)})")
     elif owner_keyword:
         where_parts.append("c.owner_name LIKE :owner_keyword")
         params["owner_keyword"] = f"%{owner_keyword}%"
@@ -87,6 +109,7 @@ def _build_filters(
         )
         params["interaction_min"] = interaction_min
         params["period"] = interaction_period
+    # 渠道：多选（基于互动明细 EXISTS 子查询）
     add_customer_interaction_channel_filter(
         where_parts,
         params,

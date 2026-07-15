@@ -6,7 +6,7 @@ from __future__ import annotations
 import io
 import logging
 from datetime import datetime
-from typing import Optional
+from typing import List, Optional
 
 from sqlalchemy.orm import Session
 
@@ -40,24 +40,25 @@ _EXPORT_COLUMNS = [
 def export_customers_excel(
     db: Session,
     *,
-    keyword: Optional[str] = None,
-    special_project: Optional[str] = None,
-    industry: Optional[str] = None,
-    region: Optional[str] = None,
+    keyword: Optional[List[str]] = None,
+    special_project: Optional[List[str]] = None,
+    industry: Optional[List[str]] = None,
+    region: Optional[List[str]] = None,
     region_keyword: Optional[str] = None,
-    owner: Optional[str] = None,
+    owner: Optional[List[str]] = None,
     owner_keyword: Optional[str] = None,
     stage: Optional[str] = None,
     intent_level: Optional[str] = None,
     interaction_min: Optional[int] = None,
     interaction_period: int = 30,
     attribute: Optional[str] = None,
-    channel: Optional[str] = None,
+    channel: Optional[List[str]] = None,
     sort_by: str = "intent_score",
     sort_order: str = "DESC",
 ) -> bytes:
     """Query the selected customer source and return .xlsx bytes."""
-    if special_project == "重客":
+    special_project = special_project or []
+    if special_project == ["重客"]:
         rows = fetch_key_accounts(
             db,
             keyword=keyword,
