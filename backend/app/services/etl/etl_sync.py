@@ -913,7 +913,7 @@ def _load_interactions_linkflow() -> int:
         "  e.event_id, NOW(), "
         "  LEFT(NULLIF(TRIM(JSON_UNQUOTE(JSON_EXTRACT( "
         "    CASE WHEN JSON_VALID(e.props_json) THEN e.props_json ELSE '{}' END, "
-        "    '$.s_term'))), ''), 100) "
+        "    '$.s_title'))), ''), 100) "
         "FROM ods_linkflow_events_day e "
         "INNER JOIN tmp_valid_linkflow_contacts lc ON lc.contact_id = e.contact_id"
     )
@@ -2673,7 +2673,7 @@ def _incremental_load_linkflow(batch_id: int) -> int:
         "  e.event_id, NOW(), :batch_id, "
         "  LEFT(NULLIF(TRIM(JSON_UNQUOTE(JSON_EXTRACT( "
         "    CASE WHEN JSON_VALID(e.props_json) THEN e.props_json ELSE '{}' END, "
-        "    '$.s_term'))), ''), 100) "
+        "    '$.s_title'))), ''), 100) "
         "FROM ods_linkflow_events_day e "
         "INNER JOIN tmp_valid_linkflow_contacts lc ON lc.contact_id = e.contact_id "
         f" {time_filter} "
