@@ -1,50 +1,39 @@
+# 说明：使用 host 网络模式（network_mode: host），容器直接共享宿主机网络栈，
+# 不再创建任何 CNI/bridge 自定义网络，从根本上规避 podman 3.x 的
+# "CNI network not found" 问题，也无需安装 netavark 或升级 podman。
+# 前提：宿主机上 8000（后端）与 28080（nginx）端口未被占用。
 services:
   backend:
     build:
-      context: .
-      dockerfile: docker/backend.Dockerfile
+      context: ..
+      dockerfile: deploy/backend.Dockerfile
     restart: unless-stopped
     # 后端配置统一从 backend/.env 读取（ES / LLM / Embedding 等），
     # 不再依赖项目根目录 .env。
     env_file:
-      - backend/.env
+      - ../backend/.env
     environment:
-      DB_HOST: ${DB_HOST:-192.168.159.22}
-      DB_PORT: ${DB_PORT:-33307}
-      DB_USER: ${DB_USER:-app_cdp}
-      DB_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD is required}
-      DB_NAME: ${DB_NAME:-app_cdp}
       TZ: Asia/Shanghai
-    expose:
-      - "8000"
+    network_mode: host
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=5).read()\""]
       interval: 20s
       timeout: 10s
       retries: 10
       start_period: 30s
-    networks:
-      - ruijie_cdp
 
   nginx:
     build:
-      context: .
-      dockerfile: docker/frontend.Dockerfile
+      context: ..
+      dockerfile: deploy/frontend.Dockerfile
     restart: unless-stopped
     depends_on:
       backend:
         condition: service_healthy
-    ports:
-      - "28080:80"
+    network_mode: host
     healthcheck:
-      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1/api/health || exit 1"]
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:28080/api/health || exit 1"]
       interval: 20s
       timeout: 10s
       retries: 5
       start_period: 10s
-    networks:
-      - ruijie_cdp
-
-networks:
-  ruijie_cdp:
-    driver: bridge
