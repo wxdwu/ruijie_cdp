@@ -13,7 +13,7 @@ const help = {
   type: 'src',
   meaning: '客户 360 概览中的近期互动时间轴卡片。',
   sourceTables: 'dws_interaction_detail',
-  sourceFields: 'dws_interaction_detail.event_time, dws_interaction_detail.source_table, dws_interaction_detail.channel, dws_interaction_detail.behavior_type, dws_interaction_detail.contact_name, dws_interaction_detail.mobile, dws_interaction_detail.content, dws_interaction_detail.is_high_value, dws_interaction_detail.source_id',
+  sourceFields: 'dws_interaction_detail.event_time, dws_interaction_detail.source_table, dws_interaction_detail.channel, dws_interaction_detail.behavior_type, dws_interaction_detail.contact_name, dws_interaction_detail.mobile, dws_interaction_detail.interaction_content, dws_interaction_detail.content, dws_interaction_detail.is_high_value, dws_interaction_detail.source_id',
   fields: [
     {
       type: 'src',
@@ -71,12 +71,12 @@ const help = {
     },
     {
       type: 'src',
-      variable: 'content',
+      variable: 'interaction_content',
       meaning: '行为内容或标题',
       sourceTable: 'dws_interaction_detail',
-      sourceFieldDisplay: 'content(行为内容/标题)',
-      calculation: '四格中的互动内容优先使用 content，缺失时回退 behavior_type。',
-      emptyState: '缺失时显示行为类型或无互动内容。',
+      sourceFieldDisplay: 'interaction_content(互动内容)，兼容 content(旧行为内容/标题)',
+      calculation: '四格中的互动内容按“behavior_type：interaction_content”展示；interaction_content 缺失时兼容 content，具体内容为空时仅展示 behavior_type。',
+      emptyState: '行为类型和具体内容均缺失时显示无互动内容。',
     },
     {
       type: 'src',
@@ -144,7 +144,11 @@ function actorName(item) {
 }
 
 function contentText(item) {
-  return item?.content || item?.behavior_type || '无互动内容'
+  const type = item?.behavior_type
+  const detail = item?.interaction_content || item?.content
+
+  if (type && detail) return `${type}：${detail}`
+  return type || detail || '无互动内容'
 }
 
 function behaviorType(item) {
