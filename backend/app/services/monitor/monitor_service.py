@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import List, Optional
 
 from sqlalchemy import text
@@ -25,6 +25,15 @@ logger = logging.getLogger(__name__)
 
 # 观测结果落库表名
 OBS_TABLE = "dws_sync_obs"
+
+
+def _now_cst() -> datetime:
+    """返回写入 DATETIME 列的“无时区”datetime（北京时间）。
+
+    说明：当前容器环境下 `datetime.now()` 取到的时间比北京时间快 8 小时，
+    因此直接减去 8 小时得到正确的北京时间后再写入。
+    """
+    return datetime.now() - timedelta(hours=8)
 
 
 @dataclass
@@ -50,6 +59,8 @@ _MONITOR_REGISTRY: List[MonitoredTable] = [
     MonitoredTable("review_candidate"),
     # ods 层源表
     MonitoredTable("ods_zhique_behavior_list_day"),
+    MonitoredTable("ods_zhique_contact_day"),
+    MonitoredTable("ods_zhique_contact_detail_day"),
     MonitoredTable("ods_linkflow_contacts_day"),
     MonitoredTable("ods_linkflow_events_day"),
     MonitoredTable("ods_tianrun_customer_profile_day"),
@@ -108,7 +119,7 @@ def run_monitor(db: Session) -> List[dict]:
     返回本次写入的观测记录列表（table_name / table_count / create_at）。
     """
     ensure_obs_table(db)
-    now = datetime.now()
+    now = _now_cst()
     records: List[dict] = []
 
     for table in get_monitored_tables():
