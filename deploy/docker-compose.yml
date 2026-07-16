@@ -49,7 +49,7 @@ services:
       context: ..
       dockerfile: deploy/backend.Dockerfile
     restart: unless-stopped
-    # 生产模式：注入 APP_ENV=production，并加载 backend/.env.production（含 DB / LLM / ES 等）。
+    # 生产模式：显式注入 APP_ENV=production（覆盖 config.py 的 development 默认值），并加载 backend/.env.production（含 DB / LLM / ES 等）。
     # env_file 会把文件中的键注入为容器环境变量，config.py 通过 os.getenv 读取（进程 env 优先）。
     # 若缺少 backend/.env.production，deploy.sh 会在 up 前用 .env.example 生成并告警。
     environment:

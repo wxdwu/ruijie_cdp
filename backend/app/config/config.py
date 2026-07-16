@@ -5,9 +5,11 @@ from dotenv import load_dotenv
 
 # ── 运行模式（一套源码，双模式）─────────────────────────────────────────────
 # APP_ENV 取值：development（本地开发，连云 MySQL）/ production（docker 部署，连本机 docker MySQL）。
-# 默认 production，保证 docker 容器即使未显式设置也走生产配置。
-# 本地开发请显式设置：APP_ENV=development uvicorn app.main:app --reload --port 8000
-APP_ENV = os.getenv("APP_ENV", "production").strip().lower()
+# 默认 development：本地开发最频繁，未指定时即走开发配置（连云 MySQL）。
+# 生产环境必须显式指定 —— docker-compose.yml 已注入 APP_ENV=production；
+# 或手动 export APP_ENV=production / 启动时 APP_ENV=production uvicorn ...
+# 本地开发也可显式设置：APP_ENV=development uvicorn app.main:app --reload --port 8000
+APP_ENV = os.getenv("APP_ENV", "development").strip().lower()
 
 # 仅加载「模式专属」env 文件：backend/.env.{APP_ENV}（本文件位于 app/config/config.py，
 # 故 backend/ 为上两级目录 parents[2]）。override=False 保证「真实进程环境变量 /
@@ -22,8 +24,9 @@ load_dotenv(override=False)
 class Settings(BaseModel):
     # 当前运行模式（development / production），供日志、健康检查等使用。
     APP_ENV: str = APP_ENV
-    # 数据库默认指向「本机 docker MySQL」（deploy/docker-compose.yml 中的 mysql 服务，
-    # host 网络模式下监听宿主机 127.0.0.1:3306），部署时无需 backend/.env 即可连库。
+    # 数据库兜底默认值（仅在「未加载任何 .env.{APP_ENV} 文件」时生效）。
+    # 实际连接由 .env.{APP_ENV} 决定：development 连云 MySQL（见 backend/.env.development），
+    # production 连本机 docker MySQL（deploy/docker-compose.yml 的 mysql 服务，host 网络下监听 127.0.0.1:3306）。
     # 说明：PyMySQL 1.1.1 未安装 cryptography，只能使用 mysql_native_password 认证，
     # 故直接用 root（已改为 mysql_native_password）。如改用 app_cdp，需先执行
     # deploy/sql_init/00_init_user.sql 创建该账号。

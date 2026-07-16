@@ -7,12 +7,12 @@
 
 | 层 | 机制 | 开发（development） | 生产（production） |
 |----|------|--------------------|--------------------|
-| 后端 | 环境变量 `APP_ENV` 选择 `backend/.env.{APP_ENV}` | `APP_ENV=development` → `backend/.env.development`（连**云 MySQL**） | `APP_ENV=production` → `backend/.env.production`（连**本机 docker MySQL**，默认） |
-| 前端 | Vite 内置 mode 加载 `frontend/.env.{mode}` | `npm run dev`（mode=development） | `npm run build`（mode=production） |
+| 后端 | 环境变量 `APP_ENV` 选择 `backend/.env.{APP_ENV}` | `APP_ENV=development` → `backend/.env.development`（连**云 MySQL**，默认） | `APP_ENV=production` → `backend/.env.production`（连**本机 docker MySQL**，需显式指定） |
+| 前端 | Vite 内置 mode 加载 `frontend/.env.{mode}` | `npm run dev`（mode=development，默认） | `npm run build`（mode=production） |
 | 部署 | `deploy/deploy.sh` | 本地进程，不用 docker | `sudo bash deploy.sh up`，docker 全套 |
 
 后端配置优先级：**进程环境变量 > `.env.{APP_ENV}` 文件 > `config.py` 默认值**。
-默认 `APP_ENV=production`，因此 docker 容器即使未显式设置也走生产配置。
+默认 `APP_ENV=development`（本地开发最频繁）；生产环境由 `deploy/docker-compose.yml` 显式设置 `APP_ENV=production`，故 docker 部署仍走生产配置。
 
 ## 一、开发模式（本地进程，连云 MySQL）
 

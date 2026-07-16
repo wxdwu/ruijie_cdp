@@ -16,8 +16,9 @@
 #   - 构建上下文为项目根目录（..），因此 backend/、frontend/ 源码可被正确打包。
 #   - 数据库为本机 docker MySQL（compose 中的 mysql 服务），首次启动自动执行
 #     sql_init/ 下的建表与数据脚本。
-#   - 本脚本为「生产模式」部署：backend 容器通过 APP_ENV=production 与
-#     env_file: backend/.env.production 加载生产配置（连本机 docker MySQL）。
+#   - 本脚本为「生产模式」部署：docker-compose.yml 已显式注入 APP_ENV=production
+#     （覆盖 config.py 默认的 development），并通过 env_file: backend/.env.production
+#     加载生产配置（连本机 docker MySQL）。
 #     开发模式（连云 MySQL）请在本地运行：
 #       APP_ENV=development uvicorn app.main:app --reload --port 8000  （后端）
 #       npm run dev                                                     （前端）
