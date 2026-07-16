@@ -18,12 +18,12 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.database.engine import get_session_factory
-from app.services.channel_classification import (
+from app.services.common.channel_classification import (
     CHANNEL_FILTER_ORDER,
     add_channel_filter,
     channel_group_case,
 )
-from app.services.key_account_query import KEY_ACCOUNT_SOURCE_PROJECT, KEY_ACCOUNT_TABLE
+from app.services.customer.key_account_query import KEY_ACCOUNT_SOURCE_PROJECT, KEY_ACCOUNT_TABLE
 
 router = APIRouter(prefix="/api/campaign", tags=["campaign"])
 logger = logging.getLogger(__name__)

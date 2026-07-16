@@ -4,7 +4,7 @@
 """
 from fastapi.testclient import TestClient
 
-from app.services.contact_recommend import recommend_priority_contacts
+from app.services.ai.contact_recommend import recommend_priority_contacts
 
 
 CUSTOMER_ROW = {

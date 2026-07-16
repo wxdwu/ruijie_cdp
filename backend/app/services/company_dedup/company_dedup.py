@@ -32,7 +32,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.services.llm_client import LLMClient
+from app.services.ai.llm_client import LLMClient
 
 logger = logging.getLogger(__name__)
 

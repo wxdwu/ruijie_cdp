@@ -16,16 +16,16 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.services.channel_classification import available_channel_options
-from app.services.customer_service import get_customer_list
-from app.services.export_service import export_customers_excel
-from app.services.key_account_query import (
+from app.services.common.channel_classification import available_channel_options
+from app.services.customer.customer_service import get_customer_list
+from app.services.customer.export_service import export_customers_excel
+from app.services.customer.key_account_query import (
     KEY_ACCOUNT_SOURCE_PROJECT,
     KEY_ACCOUNT_TABLE,
     count_key_accounts,
     fetch_key_accounts,
 )
-from app.services.region_filter import available_region_options
+from app.services.common.region_filter import available_region_options
 
 logger = logging.getLogger(__name__)
 

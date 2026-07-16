@@ -302,7 +302,7 @@ def get_customer_ai_insight(
     db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
     """Get AI-generated insight for the customer (rule-based)."""
-    from app.services.contact_recommend import recommend_priority_contacts
+    from app.services.ai.contact_recommend import recommend_priority_contacts
 
     # Get customer data
     customer_name = _get_customer_name(db, id)

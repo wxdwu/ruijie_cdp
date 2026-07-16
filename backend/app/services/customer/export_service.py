@@ -10,8 +10,8 @@ from typing import List, Optional
 
 from sqlalchemy.orm import Session
 
-from app.services.customer_service import get_customer_list
-from app.services.key_account_query import fetch_key_accounts
+from app.services.customer.customer_service import get_customer_list
+from app.services.customer.key_account_query import fetch_key_accounts
 
 logger = logging.getLogger(__name__)
 

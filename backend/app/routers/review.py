@@ -388,7 +388,7 @@ def approve_merge(
 
     # 执行实际合并逻辑
     try:
-        from app.services.companyDedup.company_dedup import merge_customer_records
+        from app.services.company_dedup.company_dedup import merge_customer_records
         merge_customer_records(
             dict(item), db
         )
@@ -473,7 +473,7 @@ def batch_approve(
     if not request.ids:
         raise HTTPException(status_code=400, detail="No IDs provided")
 
-    from app.services.companyDedup.company_dedup import merge_customer_records
+    from app.services.company_dedup.company_dedup import merge_customer_records
 
     # 逐条执行合并
     approved_count = 0
@@ -564,7 +564,7 @@ def run_deduplication(
     Runs in background: fetches all company names, computes embeddings,
     finds similar pairs, scores them, and populates the review queue.
     """
-    from app.services.companyDedup.company_dedup import start_deduplication
+    from app.services.company_dedup.company_dedup import start_deduplication
     return start_deduplication()
 
 
@@ -575,5 +575,5 @@ def run_deduplication(
 @router.get("/dedup-progress")
 def get_dedup_progress() -> Dict[str, Any]:
     """Get the current deduplication progress and results."""
-    from app.services.companyDedup.company_dedup import get_dedup_progress
+    from app.services.company_dedup.company_dedup import get_dedup_progress
     return get_dedup_progress()

@@ -56,7 +56,7 @@ def test_approve_missing_returns_404(client):
 def test_approve_success(client: TestClient, mock_db, monkeypatch):
     mock_db.add_result("SELECT * FROM review_candidate", rows=[dict(REVIEW_ROW)])
     monkeypatch.setattr(
-        "app.services.companyDedup.company_dedup.merge_customer_records",
+        "app.services.company_dedup.company_dedup.merge_customer_records",
         lambda item, db: None,
     )
     r = client.post("/api/review/7/approve")
@@ -91,7 +91,7 @@ def test_batch_reject_empty_ids_400(client):
 def test_batch_approve_runs(client: TestClient, mock_db, monkeypatch):
     mock_db.add_result("SELECT * FROM review_candidate", rows=[dict(REVIEW_ROW)])
     monkeypatch.setattr(
-        "app.services.companyDedup.company_dedup.merge_customer_records",
+        "app.services.company_dedup.company_dedup.merge_customer_records",
         lambda item, db: None,
     )
     r = client.post("/api/review/batch-approve", json={"ids": [7]})
@@ -101,7 +101,7 @@ def test_batch_approve_runs(client: TestClient, mock_db, monkeypatch):
 
 def test_run_dedup(client, monkeypatch):
     monkeypatch.setattr(
-        "app.services.companyDedup.company_dedup.start_deduplication",
+        "app.services.company_dedup.company_dedup.start_deduplication",
         lambda: {"status": "started", "task_id": "abc"},
     )
     r = client.post("/api/review/run-dedup")

@@ -6,7 +6,7 @@
 """
 from conftest import MockDBSession
 
-from app.services.companyDedup.company_dedup import batch_calculate_evidence_scores
+from app.services.company_dedup.company_dedup import batch_calculate_evidence_scores
 
 
 PAIRS = [

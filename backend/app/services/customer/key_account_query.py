@@ -6,8 +6,8 @@ from typing import Any, Dict, List, Optional, Tuple
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from app.services.channel_classification import add_customer_interaction_channel_filter
-from app.services.region_filter import add_region_filter
+from app.services.common.channel_classification import add_customer_interaction_channel_filter
+from app.services.common.region_filter import add_region_filter
 
 
 KEY_ACCOUNT_TABLE = "ods_crm_key_account_output_list_day"

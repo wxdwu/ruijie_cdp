@@ -3,8 +3,8 @@
 覆盖：opportunity_service 过滤条件、interaction_service 过滤条件，
 以及 customer_service 的分页信封返回。
 """
-from app.services.opportunity_service import get_opportunities
-from app.services.interaction_service import get_interactions
+from app.services.customer.opportunity_service import get_opportunities
+from app.services.customer.interaction_service import get_interactions
 
 
 def test_opportunity_owner_like(mock_db):

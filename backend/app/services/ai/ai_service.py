@@ -20,8 +20,8 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any, Dict, List, Optional, Tuple
 
-from app.services.channel_classification import normalize_channel
-from app.services.llm_client import LLMClient
+from app.services.common.channel_classification import normalize_channel
+from app.services.ai.llm_client import LLMClient
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 

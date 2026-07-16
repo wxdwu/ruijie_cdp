@@ -13,8 +13,8 @@ from typing import Any, Dict, List, Optional
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from app.services.channel_classification import add_customer_interaction_channel_filter
-from app.services.region_filter import add_region_filter
+from app.services.common.channel_classification import add_customer_interaction_channel_filter
+from app.services.common.region_filter import add_region_filter
 
 logger = logging.getLogger(__name__)
 
