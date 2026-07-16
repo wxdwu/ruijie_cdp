@@ -22,7 +22,7 @@ ENV/
 *.sqlite3
 
 # 数据库初始化 SQL：仅忽略从源库导出的 01/02（体积大且含数据，不入库）
-deploy/sql_init/01_init_table_struc.sql
+#deploy/sql_init/01_init_table_struc.sql
 deploy/sql_init/02_init_table_data.sql
 
 # Environment variables
