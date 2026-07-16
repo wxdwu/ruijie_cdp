@@ -5,15 +5,22 @@
 # 基于 deploy/ 目录下的 docker-compose 构建并启动「后端 + 前端(Nginx)」。
 #
 # 用法：
-#   ./deploy.sh            # 构建并后台启动服务
+#   ./deploy.sh            # 构建并后台启动服务（含等待 MySQL 初始化完成）
 #   ./deploy.sh rebuild    # 强制重新构建（代码更新后使用）
+#   ./deploy.sh reinit     # 清空 MySQL 数据卷，下次启动重新初始化数据库
 #   ./deploy.sh down       # 停止并移除容器
 #   ./deploy.sh logs       # 实时查看日志
 #   ./deploy.sh ps         # 查看容器状态
 #
 # 说明：
 #   - 构建上下文为项目根目录（..），因此 backend/、frontend/ 源码可被正确打包。
-#   - 后端配置通过 ../backend/.env 注入（数据库 / LLM / ES 等）。
+#   - 数据库为本机 docker MySQL（compose 中的 mysql 服务），首次启动自动执行
+#     sql_init/ 下的建表与数据脚本。
+#   - 本脚本为「生产模式」部署：backend 容器通过 APP_ENV=production 与
+#     env_file: backend/.env.production 加载生产配置（连本机 docker MySQL）。
+#     开发模式（连云 MySQL）请在本地运行：
+#       APP_ENV=development uvicorn app.main:app --reload --port 8000  （后端）
+#       npm run dev                                                     （前端）
 #   - 前端在 nginx 镜像内完成构建，最终由 Nginx 统一对外提供 28080 端口。
 #
 set -euo pipefail
@@ -87,25 +94,69 @@ if command -v podman >/dev/null 2>&1; then
   podman network rm deploy_ruijie_cdp >/dev/null 2>&1 || true
 fi
 
-# ---------- 后端环境变量检查 ----------
-# 后端全部数据库 / LLM 配置均来自 ../backend/.env（相对路径，通用适配）
-ENV_FILE="../backend/.env"
-if [ ! -f "$ENV_FILE" ]; then
-  echo "[ERROR] 未找到 $ENV_FILE，后端无法读取数据库 / LLM 等配置。" >&2
-  echo "        请参考 backend/.env 示例创建该文件后再执行部署。" >&2
-  exit 1
-fi
-if ! grep -q '^DB_PASSWORD=' "$ENV_FILE"; then
-  echo "[ERROR] $ENV_FILE 中缺少 DB_PASSWORD，请补充数据库密码配置。" >&2
-  exit 1
+# ---------- 数据库初始化脚本检查 ----------
+# 本机 docker MySQL 首次启动（数据卷为空时）会按字典序自动执行 sql_init/ 下脚本：
+#   00_init_user.sql        创建 app_cdp 账号并授予全库权限（随仓库提供）
+#   01_init_table_struc.sql 建库 + 表结构（含索引）
+#   02_init_table_data.sql  导入初始化数据
+# 01/02 由 sql_init/dump_from_source.sh 从源库导出（不纳入版本库，需本地存在）。
+for f in "./sql_init/00_init_user.sql" "./sql_init/01_init_table_struc.sql" "./sql_init/02_init_table_data.sql"; do
+  if [ ! -f "$f" ]; then
+    echo "[ERROR] 未找到 $f，MySQL 无法完成初始化。" >&2
+    if [[ "$f" == *00_init_user.sql ]]; then
+      echo "        该文件用于创建 app_cdp 账号，应随仓库提供。" >&2
+    else
+      echo "        请先运行 sql_init/dump_from_source.sh 从源库导出建表与数据脚本。" >&2
+    fi
+    exit 1
+  fi
+done
+
+# ---------- 生产环境配置文件检查 ----------
+# docker-compose.yml 的 backend 服务通过 env_file 加载 ../backend/.env.production，
+# 缺失会导致 compose 解析失败，故此处兜底：不存在则由 .env.example 生成并告警。
+PROD_ENV_FILE="../backend/.env.production"
+ENV_TEMPLATE="../backend/.env.example"
+if [ ! -f "$PROD_ENV_FILE" ]; then
+  echo "[WARN] 未找到 $PROD_ENV_FILE（生产环境后端配置）。" >&2
+  if [ -f "$ENV_TEMPLATE" ]; then
+    cp "$ENV_TEMPLATE" "$PROD_ENV_FILE"
+    echo "[INFO] 已由模板生成 $PROD_ENV_FILE，请确认其中 DB_* / LLM_* 等为生产环境正确值。" >&2
+  else
+    echo "[ERROR] 模板 $ENV_TEMPLATE 也不存在，无法生成生产配置。请手动创建 $PROD_ENV_FILE。" >&2
+    exit 1
+  fi
 fi
 
 ACTION="${1:-up}"
+
+# 等待 MySQL 完成初始化（initdb 执行完、3306 可连、app_cdp 库已建）
+wait_mysql_ready() {
+  local max="${1:-120}"
+  for i in $(seq 1 "$max"); do
+    if $DC exec -T mysql mysqladmin ping -h127.0.0.1 -P3306 -uroot -p123456 --silent >/dev/null 2>&1; then
+      return 0
+    fi
+    echo "    ... MySQL 初始化中（${i}/${max}），大体积数据导入可能耗时数分钟"
+    sleep 10
+  done
+  return 1
+}
 
 case "$ACTION" in
   up)
     echo "==> 构建并启动服务（后台）..."
     $DC up -d --build
+    echo ""
+    echo "==> 等待 MySQL 初始化完成（建库/建表/导数据）..."
+    if wait_mysql_ready 120; then
+      echo "[OK] MySQL 已就绪，初始化完成。"
+    else
+      echo "[ERROR] MySQL 在预期时间内未就绪，请查看日志排查： ./deploy.sh logs" >&2
+      echo "        常见原因：01/02 SQL 导入失败，或数据卷为旧残留。" >&2
+      echo "        可尝试先执行 ./deploy.sh reinit 清空数据卷，再重新 ./deploy.sh。" >&2
+      exit 1
+    fi
     echo ""
     echo "部署完成！"
     echo "  前端页面： http://<服务器IP>:28080"
@@ -118,6 +169,19 @@ case "$ACTION" in
     echo "==> 强制重新构建并启动..."
     $DC up -d --build --force-recreate
     ;;
+  reinit)
+    # 清空 MySQL 数据卷，下次 ./deploy.sh 将重新执行 initdb 脚本（00/01/02）完成初始化。
+    echo "==> 停止并移除 MySQL 容器，清空数据卷..."
+    $DC stop mysql >/dev/null 2>&1 || true
+    $DC rm -f mysql >/dev/null 2>&1 || true
+    VOL=$(docker volume ls -q 2>/dev/null | grep -i mysql_data | head -1 || true)
+    if [ -n "$VOL" ]; then
+      docker volume rm "$VOL" >/dev/null 2>&1 && echo "[INFO] 已删除数据卷：$VOL"
+    else
+      echo "[WARN] 未找到 MySQL 数据卷，可能尚未创建。"
+    fi
+    echo "完成。请重新执行 ./deploy.sh 进行初始化。"
+    ;;
   down)
     echo "==> 停止并移除容器..."
     $DC down
@@ -129,7 +193,7 @@ case "$ACTION" in
     $DC ps
     ;;
   *)
-    echo "用法: $0 {up|rebuild|down|logs|ps}"
+    echo "用法: $0 {up|rebuild|reinit|down|logs|ps}"
     exit 1
     ;;
 esac

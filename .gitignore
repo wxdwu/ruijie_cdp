@@ -21,10 +21,21 @@ ENV/
 *.sqlite
 *.sqlite3
 
+# 数据库初始化 SQL：仅忽略从源库导出的 01/02（体积大且含数据，不入库）
+deploy/sql_init/01_init_table_struc.sql
+deploy/sql_init/02_init_table_data.sql
+
 # Environment variables
+# 忽略所有环境文件（含真实密钥），但保留可提交的模板 .env.example
 .env
 .env.local
 .env.*.local
+# 实际上线之前请勿将此配置上线
+#.env.development
+#.env.production
+.env.dev
+.env.prod
+!.env.example
 
 # OS files
 .DS_Store
