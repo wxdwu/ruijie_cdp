@@ -1,0 +1,106 @@
+"""ETL 共享底层子包。
+
+集中抽取全量/增量同步共用的原语（DB 引擎、常量、锚点/临时表、水位、sync_meta），
+被 full_sync / incremental_sync 通过 `from app.services.etl.common import *` 复用。
+本子包自身不反向依赖上层模块，避免循环依赖。
+"""
+
+from app.services.etl.common.db import (
+    get_etl_engine,
+    _exec,
+    _exec_query,
+    _ensure_index,
+    _table_count,
+    _table_count_approx,
+    _create_indexes,
+    ensure_backup_tables,
+    _validate_table_data,
+    _rotate_tables_for_incremental,
+    _ensure_interaction_content_column,
+    _count_table_rows,
+)
+from app.services.etl.common.constants import (
+    BATCH_SIZE,
+    ROLE_MAP,
+    ZHIQUE_CHANNEL_MAP,
+    LINKFLOW_DEFAULT_CHANNEL,
+    _build_zhique_channel_case,
+    _ODS_TABLES,
+)
+from app.services.etl.common.anchor import (
+    _build_icp_customers_table,
+    _ETL_TEMP_TABLES,
+    _drop_etl_temp_tables,
+    _create_etl_temp_tables,
+    _build_tmp_icp_filters,
+    _build_tmp_crm_mobiles,
+    _build_tmp_valid_linkflow_contacts,
+    _build_tmp_crm_aggregates,
+    _phase_start,
+    _phase_end,
+)
+from app.services.etl.common.watermark import (
+    ODS_INCREMENTAL_CONFIG,
+    _ensure_sync_batch_column,
+    _ensure_attribute_column,
+    ensure_schema_for_incremental,
+    _get_sync_batch_id,
+    _get_last_sync_time,
+    _get_last_watermark_id,
+    _ensure_watermark_column,
+    _watermark_filter,
+    _set_watermark_after_load,
+)
+from app.services.etl.common.sync_meta import (
+    _update_sync_meta,
+    _create_sync_log,
+    _update_sync_log,
+    _calculate_accurate_rows_synced,
+    _get_accurate_stats_by_source,
+)
+
+__all__ = [
+    "get_etl_engine",
+    "_exec",
+    "_exec_query",
+    "_ensure_index",
+    "_table_count",
+    "_table_count_approx",
+    "_create_indexes",
+    "ensure_backup_tables",
+    "_validate_table_data",
+    "_rotate_tables_for_incremental",
+    "_ensure_interaction_content_column",
+    "BATCH_SIZE",
+    "ROLE_MAP",
+    "ZHIQUE_CHANNEL_MAP",
+    "LINKFLOW_DEFAULT_CHANNEL",
+    "_build_zhique_channel_case",
+    "_ODS_TABLES",
+    "_build_icp_customers_table",
+    "_ETL_TEMP_TABLES",
+    "_drop_etl_temp_tables",
+    "_create_etl_temp_tables",
+    "_build_tmp_icp_filters",
+    "_build_tmp_crm_mobiles",
+    "_build_tmp_valid_linkflow_contacts",
+    "_build_tmp_crm_aggregates",
+    "_phase_start",
+    "_phase_end",
+    "ODS_INCREMENTAL_CONFIG",
+    "_ensure_sync_batch_column",
+    "_ensure_attribute_column",
+    "ensure_schema_for_incremental",
+    "_get_sync_batch_id",
+    "_get_last_sync_time",
+    "_get_last_watermark_id",
+    "_ensure_watermark_column",
+    "_watermark_filter",
+    "_set_watermark_after_load",
+    "_update_sync_meta",
+    "_count_table_rows",
+    "_create_sync_log",
+    "_update_sync_log",
+    "_calculate_accurate_rows_synced",
+    "_get_accurate_stats_by_source",
+]
