@@ -6,7 +6,7 @@ from datetime import date
 
 from fastapi.testclient import TestClient
 
-from app.routers.campaign import (
+from app.services.campaign.campaign_service import (
     _campaign_filters,
     _customer_scope_sql,
     _interaction_filters,

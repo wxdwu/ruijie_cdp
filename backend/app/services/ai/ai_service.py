@@ -1247,6 +1247,38 @@ def answer_other_question(question: str) -> str:
 # 主流程：完整对话处理
 # ─────────────────────────────────────────────────────────────────────────────
 
+def parse_nl_query(query: str, history: Optional[List[Dict]] = None) -> Dict[str, Any]:
+    """识别自然语言查询的意图与实体，返回 API 契约 {query, entities, intent}。
+
+    供路由层 /api/ai/parse 直接透出，避免路由内重复做字段映射与跨层引用。
+    """
+    result = recognize_intent(query, history)
+    return {
+        "query": query,
+        "entities": result.get("structured_query", {}),
+        "intent": result.get("intent", "other"),
+    }
+
+
+def build_chat_response(result: Dict[str, Any]) -> Dict[str, Any]:
+    """将 process_chat 的内部结果映射为 /api/ai/chat 的 API 响应。
+
+    路由层只负责调用与返回，字段适配（entities / data / target_table）下沉到此。
+    """
+    response_data: Dict[str, Any] = {
+        "query": result.get("query", ""),
+        "entities": result.get("structured_query", {}),
+        "response": result.get("response", ""),
+        "customers": result.get("customers", {"total": 0, "items": [], "page": 1, "page_size": 50}),
+        "intent": result.get("intent", "other"),
+        "preprocessed_query": result.get("preprocessed_query", ""),
+    }
+    if "data" in result:
+        response_data["data"] = result["data"]
+        response_data["target_table"] = result.get("target_table", "dws_customer_360")
+    return response_data
+
+
 def process_chat(query: str, history: Optional[List[Dict]] = None, 
                  db: Optional[Session] = None) -> Dict[str, Any]:
     """

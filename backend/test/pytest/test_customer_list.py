@@ -10,7 +10,7 @@ from io import BytesIO
 import openpyxl
 from fastapi.testclient import TestClient
 
-from app.routers.customer_list import get_filter_options, list_customers
+from app.routers.customer import get_filter_options, list_customers
 
 
 # ─────────────────────────────────────────────────────────────────────────────

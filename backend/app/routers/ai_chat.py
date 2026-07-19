@@ -26,7 +26,12 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.services.ai.ai_service import process_chat, export_query_results
+from app.services.ai.ai_service import (
+    process_chat,
+    export_query_results,
+    parse_nl_query,
+    build_chat_response,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -75,16 +80,8 @@ def parse_natural_language(
     q = request.get_query()
     if not q:
         return {"query": "", "entities": {}}
-    
-    # 使用 AI 服务进行意图识别
-    from app.services.ai.ai_service import recognize_intent
-    result = recognize_intent(q, request.history)
-    
-    return {
-        "query": q,
-        "entities": result.get("structured_query", {}),
-        "intent": result.get("intent", "other"),
-    }
+    # 意图识别与字段映射统一下沉到 ai_service，路由仅做编排
+    return parse_nl_query(q, request.history)
 
 
 @router.post("/chat")
@@ -111,25 +108,9 @@ def chat(
             "customers": {"total": 0, "items": [], "page": 1, "page_size": 50},
         }
     
-    # 使用 AI 服务处理完整对话流程（传入对话历史）
+    # 使用 AI 服务处理完整对话流程（传入对话历史），响应字段映射下沉到 ai_service
     result = process_chat(q, request.history, db)
-    
-    # 保持返回格式兼容性，并添加多表查询结果
-    response_data = {
-        "query": result["query"],
-        "entities": result.get("structured_query", {}),
-        "response": result["response"],
-        "customers": result["customers"],
-        "intent": result.get("intent", "other"),
-        "preprocessed_query": result.get("preprocessed_query", ""),
-    }
-    
-    # 如果查询的是其他表，添加 data 字段
-    if "data" in result:
-        response_data["data"] = result["data"]
-        response_data["target_table"] = result.get("target_table", "dws_customer_360")
-    
-    return response_data
+    return build_chat_response(result)
 
 
 @router.post("/chat/export")

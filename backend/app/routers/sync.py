@@ -16,8 +16,8 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
-from app.services.etl.etl_sync import run_full_sync, run_incremental_sync, get_etl_engine
-from sqlalchemy import text
+from app.services.etl.etl_sync import run_full_sync, run_incremental_sync
+from app.services.etl.sync_status import get_sync_status, get_sync_history
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +50,7 @@ class SyncStatusResponse(BaseModel):
 
 
 class SyncHistoryItem(BaseModel):
-    id: int
+    sync_id: int
     sync_type: str
     trigger_by: Optional[str] = None
     status: str
@@ -67,7 +67,7 @@ class SyncHistoryResponse(BaseModel):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# API Endpoints
+# API Endpoints（仅做编排，业务逻辑委托 etl_sync / sync_status 服务）
 # ─────────────────────────────────────────────────────────────────────────────
 
 @router.post("/full", response_model=SyncTriggerResponse)
@@ -111,75 +111,22 @@ async def trigger_increment_sync(
 
 
 @router.get("/status")
-async def get_sync_status():
-    """Get the latest sync status."""
+async def get_sync_status_endpoint():
+    """Get the latest sync status（委托 sync_status 服务查询 dws_sync_log）。"""
     try:
-        engine = get_etl_engine()
-        with engine.connect() as conn:
-            result = conn.execute(
-                text(
-                    "SELECT id, sync_type, trigger_by, status, "
-                    "  start_time, end_time, "
-                    "  TIMESTAMPDIFF(SECOND, start_time, end_time) AS elapsed_seconds, "
-                    "  rows_synced, error_message "
-                    "FROM dws_sync_log "
-                    "ORDER BY id DESC "
-                    "LIMIT 1"
-                )
-            )
-            row = result.fetchone()
-        if not row:
-            return {"status": "no_sync_found"}
-        return {
-            "sync_id": row[0],
-            "sync_type": row[1],
-            "trigger_by": row[2],
-            "status": row[3],
-            "start_time": str(row[4]) if row[4] else None,
-            "end_time": str(row[5]) if row[5] else None,
-            "elapsed_seconds": row[6],
-            "rows_synced": row[7],
-            "error_message": row[8],
-        }
+        return get_sync_status()
     except Exception as exc:
         logger.exception("get_sync_status failed")
         raise HTTPException(status_code=500, detail=str(exc))
 
 
 @router.get("/history", response_model=SyncHistoryResponse)
-async def get_sync_history(
+async def get_sync_history_endpoint(
     limit: int = Query(10, ge=1, le=100, description="Number of records to return"),
 ):
-    """Get sync history."""
-    engine = get_etl_engine()
-    with engine.connect() as conn:
-        total_result = conn.execute(text("SELECT COUNT(*) FROM dws_sync_log"))
-        total = total_result.fetchone()[0]
-        result = conn.execute(
-            text(
-                "SELECT id, sync_type, trigger_by, status, "
-                "  start_time, end_time, "
-                "  TIMESTAMPDIFF(SECOND, start_time, end_time) AS elapsed_seconds, "
-                "  rows_synced, error_message "
-                "FROM dws_sync_log "
-                "ORDER BY id DESC "
-                "LIMIT :limit"
-            ),
-            {"limit": limit},
-        )
-        rows = result.fetchall()
-    records = [
-        {
-            "id": row[0],
-            "sync_type": row[1],
-            "trigger_by": row[2],
-            "status": row[3],
-            "start_time": str(row[4]) if row[4] else None,
-            "end_time": str(row[5]) if row[5] else None,
-            "elapsed_seconds": row[6],
-            "rows_synced": row[7] or 0,
-            "error_message": row[8],
-        }
-        for row in rows
-    ]
-    return {"total": total, "records": records}
+    """Get sync history（委托 sync_status 服务查询 dws_sync_log）。"""
+    try:
+        return get_sync_history(limit)
+    except Exception as exc:
+        logger.exception("get_sync_history failed")
+        raise HTTPException(status_code=500, detail=str(exc))

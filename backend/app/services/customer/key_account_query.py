@@ -1,13 +1,14 @@
 """Shared query helpers for enriched key-account customer lists."""
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.services.common.channel_classification import add_customer_interaction_channel_filter
 from app.services.common.region_filter import add_region_filter
+from app.services.utils import add_in_filter as _add_in_filter
 
 
 KEY_ACCOUNT_TABLE = "ods_crm_key_account_output_list_day"
@@ -24,24 +25,6 @@ _SORT_COLUMNS = {
     "won_amount": "c.won_amount",
     "updated_at": "c.updated_at",
 }
-
-
-def _add_in_filter(
-    where_parts: List[str],
-    params: Dict[str, Any],
-    column: str,
-    values: Optional[Sequence[str]],
-    prefix: str,
-) -> None:
-    """追加 ``column IN (:p0, :p1, ...)`` 谓词，支持多选维度过滤。"""
-    if not values:
-        return
-    placeholders: List[str] = []
-    for index, value in enumerate(values):
-        key = f"{prefix}_{index}"
-        params[key] = value
-        placeholders.append(f":{key}")
-    where_parts.append(f"{column} IN ({', '.join(placeholders)})")
 
 
 def _build_filters(
@@ -200,3 +183,71 @@ def fetch_key_accounts(
     )
     rows = db.execute(sql, params).mappings().all()
     return _normalize_rows(rows)
+
+
+def list_key_accounts(
+    db: Session,
+    *,
+    keyword: Optional[List[str]] = None,
+    industry: Optional[List[str]] = None,
+    region: Optional[List[str]] = None,
+    region_keyword: Optional[str] = None,
+    owner: Optional[List[str]] = None,
+    owner_keyword: Optional[str] = None,
+    stage: Optional[str] = None,
+    intent_level: Optional[str] = None,
+    interaction_min: Optional[int] = None,
+    interaction_period: int = 30,
+    channel: Optional[List[str]] = None,
+    sort: Optional[str] = None,
+    page: int = 1,
+    size: int = 20,
+) -> Dict[str, Any]:
+    """重客专项列表查询编排：取最新快照并用客户 360 数据补充。
+
+    统一负责计数、分页取数与响应信封（filters_applied）的组装，
+    使路由层仅需委托，无需感知重客数据源细节。
+    返回 {total, items, filters_applied}，与标准客户列表响应结构对齐。
+    """
+    query_filters: Dict[str, Any] = {
+        "keyword": keyword,
+        "industry": industry,
+        "region": region,
+        "region_keyword": region_keyword,
+        "owner": owner,
+        "owner_keyword": owner_keyword,
+        "stage": stage,
+        "intent_level": intent_level,
+        "interaction_min": interaction_min,
+        "interaction_period": interaction_period,
+        "channel": channel,
+    }
+    total = count_key_accounts(db, **query_filters)
+    items = fetch_key_accounts(
+        db,
+        page=page,
+        size=size,
+        sort=sort,
+        **query_filters,
+    )
+
+    return {
+        "total": total,
+        "items": items,
+        "filters_applied": {
+            "keyword": keyword,
+            "special_project": ["重客"],
+            "industry": industry,
+            "region": region,
+            "region_keyword": region_keyword,
+            "owner": owner,
+            "owner_keyword": owner_keyword,
+            "stage": stage,
+            "intent_level": intent_level,
+            "interaction_min": interaction_min,
+            "interaction_period": interaction_period,
+            "attribute": "heavy",
+            "channel": channel,
+            "sort": sort,
+        },
+    }

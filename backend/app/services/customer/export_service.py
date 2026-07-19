@@ -53,8 +53,7 @@ def export_customers_excel(
     interaction_period: int = 30,
     attribute: Optional[str] = None,
     channel: Optional[List[str]] = None,
-    sort_by: str = "intent_score",
-    sort_order: str = "DESC",
+    sort: Optional[str] = None,
 ) -> bytes:
     """Query the selected customer source and return .xlsx bytes."""
     special_project = special_project or []
@@ -72,7 +71,7 @@ def export_customers_excel(
             interaction_min=interaction_min,
             interaction_period=interaction_period,
             channel=channel,
-            sort=f"{sort_by} {sort_order}",
+            sort=sort,
             limit=20000,
         )
     else:
@@ -91,7 +90,7 @@ def export_customers_excel(
             interaction_period=interaction_period,
             attribute=attribute,
             channel=channel,
-            sort=f"{sort_by} {sort_order}",
+            sort=sort,
             page=1,
             page_size=20000,
         )["items"]

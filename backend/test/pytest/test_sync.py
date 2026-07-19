@@ -52,7 +52,7 @@ def _make_engine():
 
 def test_etl_status(client: TestClient, monkeypatch):
     engine = _make_engine()
-    monkeypatch.setattr("app.routers.sync.get_etl_engine", lambda: engine)
+    monkeypatch.setattr("app.services.etl.sync_status.get_etl_engine", lambda: engine)
     r = client.get("/api/admin/etl/status")
     assert r.status_code == 200
     body = r.json()
@@ -63,7 +63,7 @@ def test_etl_status(client: TestClient, monkeypatch):
 
 def test_etl_history(client: TestClient, monkeypatch):
     engine = _make_engine()
-    monkeypatch.setattr("app.routers.sync.get_etl_engine", lambda: engine)
+    monkeypatch.setattr("app.services.etl.sync_status.get_etl_engine", lambda: engine)
     r = client.get("/api/admin/etl/history", params={"limit": 5})
     assert r.status_code == 200
     body = r.json()
