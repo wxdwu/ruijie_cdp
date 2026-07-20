@@ -8,6 +8,11 @@ import logging
 import time
 
 from app.services.etl.common.db import get_etl_engine, _exec, _table_count
+from app.services.etl.common.zhique_detail_clean import (
+    read_filtered_zhique_detail_companies,
+    read_filtered_companies_from,
+    bulk_insert_companies_into_tmp_icp,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -36,20 +41,13 @@ def _build_icp_customers_table() -> int:
     # Truncate and reload
     _exec("TRUNCATE TABLE tmp_icp_customers")
     
-    n = _exec(
-        "INSERT IGNORE INTO tmp_icp_customers (customer_name) "
-        "SELECT DISTINCT related_company "
-        "FROM ods_zhique_contact_day "
-        "WHERE related_company IS NOT NULL AND related_company != ''"
-    )
+    # 智渠联系人（ods_zhique_contact_day.related_company）：先按公司名规则过滤再写入
+    companies = read_filtered_companies_from("ods_zhique_contact_day", "related_company")
+    bulk_insert_companies_into_tmp_icp(companies)
 
-    # 智渠联系人明细（整理表）：更全面，追加其关联公司作为 ICP 客户
-    _exec(
-        "INSERT IGNORE INTO tmp_icp_customers (customer_name) "
-        "SELECT DISTINCT `关联公司` "
-        "FROM ods_zhique_contact_detail_day "
-        "WHERE `关联公司` IS NOT NULL AND `关联公司` != ''"
-    )
+    # 智渠联系人明细（整理表）：更全面，追加其关联公司作为 ICP 客户（先过滤非公司名）
+    companies = read_filtered_zhique_detail_companies()
+    bulk_insert_companies_into_tmp_icp(companies)
 
     total = _table_count("tmp_icp_customers")
     logger.info("tmp_icp_customers built: %d ICP customers", total)
@@ -161,12 +159,9 @@ def _build_tmp_icp_filters() -> None:
     _exec("TRUNCATE TABLE tmp_icp_customers")
     _exec("TRUNCATE TABLE tmp_icp_mobiles")
 
-    _exec("""
-        INSERT IGNORE INTO tmp_icp_customers (customer_name)
-        SELECT DISTINCT related_company
-        FROM ods_zhique_contact_day
-        WHERE related_company IS NOT NULL AND related_company != ''
-    """)
+    # 智渠联系人（ods_zhique_contact_day.related_company）：先按公司名规则过滤再写入
+    companies = read_filtered_companies_from("ods_zhique_contact_day", "related_company")
+    bulk_insert_companies_into_tmp_icp(companies)
 
     _exec("""
         INSERT IGNORE INTO tmp_icp_mobiles (mobile)
@@ -175,13 +170,9 @@ def _build_tmp_icp_filters() -> None:
         WHERE mobile IS NOT NULL AND mobile != ''
     """)
 
-    # 智渠联系人明细（整理表）：更全面，补充 ICP 公司与手机号
-    _exec("""
-        INSERT IGNORE INTO tmp_icp_customers (customer_name)
-        SELECT DISTINCT `关联公司`
-        FROM ods_zhique_contact_detail_day
-        WHERE `关联公司` IS NOT NULL AND `关联公司` != ''
-    """)
+    # 智渠联系人明细（整理表）：更全面，补充 ICP 公司（先过滤非公司名）与手机号
+    companies = read_filtered_zhique_detail_companies()
+    bulk_insert_companies_into_tmp_icp(companies)
     _exec("""
         INSERT IGNORE INTO tmp_icp_mobiles (mobile)
         SELECT DISTINCT `手机号`

@@ -256,27 +256,13 @@ def _incremental_upsert_contact_mapping(batch_id: int) -> Dict[str, int]:
     # 列映射：关联公司→customer_name, 姓名→contact_name, 手机号→mobile, 邮箱→email,
     # 部门→department, 职务→position。按 time 字段水位增量，仅处理新/更新记录。
     detail_filter, _wm = _watermark_filter("ods_zhique_contact_detail_day", "d")
-    detail_params = {"batch_id": batch_id}
+    read_params = {}
     if _wm is not None:
-        detail_params["watermark"] = _wm
-    n = _exec(
-        "INSERT INTO dws_contact_mapping_temp "
-        "  (customer_name, contact_name, mobile, email, department, "
-        "   position, source_table, etl_time, sync_batch_id) "
-        "SELECT "
-        "  d.`关联公司`, d.`姓名`, d.`手机号`, d.`邮箱`, d.`部门`, d.`职务`, "
-        "  'zhique_detail', NOW(), :batch_id "
-        "FROM ods_zhique_contact_detail_day d "
-        "WHERE d.`关联公司` IS NOT NULL AND d.`关联公司` != '' "
-        f" {detail_filter} "
-        "ON DUPLICATE KEY UPDATE "
-        "  contact_name = VALUES(contact_name), "
-        "  email = VALUES(email), "
-        "  department = VALUES(department), "
-        "  position = VALUES(position), "
-        "  etl_time = VALUES(etl_time), "
-        "  sync_batch_id = VALUES(sync_batch_id)",
-        detail_params,
+        read_params["watermark"] = _wm
+    # 先按 关联公司 + 姓名 过滤，再按水位读取并 upsert 进 contact_mapping_temp
+    rows = read_filtered_zhique_detail_contacts(detail_filter, read_params)
+    n = bulk_write_contact_mapping(
+        rows, target_table="dws_contact_mapping_temp", sync_batch_id=batch_id
     )
     stats["zhique_detail"] = n
     logger.info("  Zhique (detail): %d records upserted (incremental)", n)

@@ -119,16 +119,9 @@ def _load_contact_mapping() -> Dict[str, int]:
     # 与 [a] 同口径，仅数据源改用 ods_zhique_contact_detail_day；
     # 列名映射：关联公司→customer_name, 姓名→contact_name, 手机号→mobile,
     # 邮箱→email, 部门→department, 职务→position。全量口径下整表载入（不按水位过滤）。
-    n = _exec(
-        "INSERT IGNORE INTO dws_contact_mapping "
-        "  (customer_name, contact_name, mobile, email, department, "
-        "   position, source_table, etl_time) "
-        "SELECT "
-        "  d.`关联公司`, d.`姓名`, d.`手机号`, d.`邮箱`, d.`部门`, d.`职务`, "
-        "  'zhique_detail', NOW() "
-        "FROM ods_zhique_contact_detail_day d "
-        "WHERE d.`关联公司` IS NOT NULL AND d.`关联公司` != ''"
-    )
+    # f. 智渠联系人明细：先按 关联公司 + 姓名 过滤，再写入 contact_mapping
+    rows = read_filtered_zhique_detail_contacts()
+    n = bulk_write_contact_mapping(rows, target_table="dws_contact_mapping")
     stats["zhique_detail"] = n
     logger.info("[f] Zhique contacts (detail): %d rows", n)
 

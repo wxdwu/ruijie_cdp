@@ -296,27 +296,10 @@ def _incremental_build_customer_360(batch_id: int) -> int:
             {"customers": tuple(affected_customers)}
         )
 
-    # Step 2: INSERT new customers (by key_customer_name)
-    with engine.begin() as conn:
-        conn.execute(
-            text(
-                "INSERT IGNORE INTO dws_customer_360_temp ("
-                "  customer_name, owner_name, region, industry, attribute, updated_at"
-                ") "
-                "SELECT DISTINCT "
-                "  kc.key_customer_name, "
-                "  kc.customer_name, "
-                "  kc.department_level3, "
-                "  kc.industry_category, "
-                "  kc.attribute, "
-                "  NOW() "
-                "FROM ods_key_customer kc "
-                "WHERE kc.key_customer_name IS NOT NULL AND kc.key_customer_name != '' "
-                "  AND kc.key_customer_name NOT IN ("
-                "    SELECT customer_name FROM dws_customer_360_temp"
-                "  )"
-            )
-        )
+    # Step 2: INSERT new customers (by key_customer_name)，先按公司名规则过滤再聚合
+    logger.info("    Inserting filtered key customers into dws_customer_360_temp...")
+    key_rows = read_filtered_key_customers()
+    bulk_insert_key_customers(key_rows, "dws_customer_360_temp")
 
     logger.info("  customer_360 updated: %d customers (complete with Phase 1-5)", total_updated)
     return total_updated

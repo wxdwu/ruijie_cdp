@@ -177,25 +177,10 @@ def _build_customer_360() -> int:
     )
     logger.info("  Updated %d rows by key_customer_name", n)
 
-    # Step 2: INSERT new customers (by key_customer_name)
-    n = _exec(
-        "INSERT IGNORE INTO dws_customer_360 ("
-        "  customer_name, owner_name, region, industry, attribute, updated_at"
-        ") "
-        "SELECT DISTINCT "
-        "  kc.key_customer_name, "
-        "  kc.customer_name, "
-        "  kc.department_level3, "
-        "  kc.industry_category, "
-        "  kc.attribute, "
-        "  NOW() "
-        "FROM ods_key_customer kc "
-        "WHERE kc.key_customer_name IS NOT NULL AND kc.key_customer_name != '' "
-        "  AND kc.key_customer_name NOT IN ("
-        "    SELECT customer_name FROM dws_customer_360"
-        "  )"
-    )
-    logger.info("  Inserted %d new rows by key_customer_name", n)
+    # Step 2: INSERT new customers (by key_customer_name)，先按公司名规则过滤再聚合
+    key_rows = read_filtered_key_customers()
+    n = bulk_insert_key_customers(key_rows, "dws_customer_360")
+    logger.info("  Inserted %d new rows by key_customer_name (filtered)", n)
     logger.info("Phase 5 done: ods_key_customer enriched")
 
     total = _table_count("dws_customer_360")

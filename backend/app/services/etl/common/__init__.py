@@ -27,6 +27,17 @@ from app.services.etl.common.constants import (
     _build_zhique_channel_case,
     _ODS_TABLES,
 )
+from app.services.etl.common.zhique_detail_clean import (
+    is_valid_company_name,
+    is_valid_person_name,
+    read_filtered_zhique_detail_companies,
+    read_filtered_companies_from,
+    bulk_insert_companies_into_tmp_icp,
+    read_filtered_zhique_detail_contacts,
+    bulk_write_contact_mapping,
+    read_filtered_key_customers,
+    bulk_insert_key_customers,
+)
 from app.services.etl.common.anchor import (
     _build_icp_customers_table,
     _ETL_TEMP_TABLES,
@@ -103,4 +114,13 @@ __all__ = [
     "_update_sync_log",
     "_calculate_accurate_rows_synced",
     "_get_accurate_stats_by_source",
+    "is_valid_company_name",
+    "is_valid_person_name",
+    "read_filtered_zhique_detail_companies",
+    "read_filtered_companies_from",
+    "bulk_insert_companies_into_tmp_icp",
+    "read_filtered_zhique_detail_contacts",
+    "bulk_write_contact_mapping",
+    "read_filtered_key_customers",
+    "bulk_insert_key_customers",
 ]
