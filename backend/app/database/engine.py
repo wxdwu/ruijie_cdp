@@ -329,7 +329,11 @@ def get_engine() -> Engine:
                     pool_timeout=POOL_TIMEOUT,
                     pool_pre_ping=POOL_PRE_PING,
                     pool_use_lifo=POOL_USE_LIFO,
-                    pool_reset_on_return="commit",
+                    # 连接归还池时执行 rollback 而非 commit：避免未显式提交的事务
+                    # 以 pending 状态残留在池中，进而在下次复用时触发
+                    # PendingRollbackError（"Can't reconnect until invalid transaction
+                    # is rolled back"）。业务均显式 db.commit()，故 rollback 不影响已提交数据。
+                    pool_reset_on_return="rollback",
                     echo=False,
                     connect_args={
                         "connect_timeout": 15,
@@ -495,7 +499,7 @@ def get_pool_config() -> dict[str, Any]:
         "pool_timeout": POOL_TIMEOUT,
         "pool_pre_ping": POOL_PRE_PING,
         "pool_use_lifo": POOL_USE_LIFO,
-        "pool_reset_on_return": "commit",
+        "pool_reset_on_return": "rollback",
         "jitter_strategy": JITTER_STRATEGY,
         "deadlock_max_retries": DEADLOCK_MAX_RETRIES,
         "deadlock_base_delay": DEADLOCK_BASE_DELAY,

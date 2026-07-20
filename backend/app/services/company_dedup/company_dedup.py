@@ -2174,6 +2174,13 @@ def run_deduplication_background() -> None:
             logger.info(f"Deduplication completed: {results}")
 
         finally:
+            # 先回滚再关闭：若 generate_review_pairs / auto_merge 中途抛错，
+            # 会话事务可能处于 invalid（pending rollback）状态，仅 close() 无法清理，
+            # 会导致该连接归还池中后再次复用时抛出 PendingRollbackError。
+            try:
+                db.rollback()
+            except Exception:
+                pass
             db.close()
 
     except Exception as e:
