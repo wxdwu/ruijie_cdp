@@ -95,7 +95,7 @@ onBeforeUnmount(() => {
           :key="i"
           @click="typeof p === 'number' ? handlePageChange(p) : null"
           :disabled="p === '...'"
-          class="h-9 w-9 rounded-lg text-sm transition-colors"
+          class="h-9 min-w-9 whitespace-nowrap rounded-lg px-2 text-sm transition-colors"
           :class="
             p === '...'
               ? 'border-none text-[var(--muted)] cursor-default'
