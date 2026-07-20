@@ -100,6 +100,9 @@ def _create_indexes() -> None:
     # 2) 智渠联系人按 related_company 取 ICP 客户（DISTINCT）及按 mobile 取 ICP 手机号
     _ensure_index("ods_zhique_contact_day", "idx_zqc_related", "related_company")
     _ensure_index("ods_zhique_contact_day", "idx_zqc_mobile", "mobile")
+    # 2b) 智渠联系人明细（整理表）按 关联公司 / 手机号 取 ICP 客户与手机号
+    _ensure_index("ods_zhique_contact_detail_day", "idx_zqcd_company", "`关联公司`(191)")
+    _ensure_index("ods_zhique_contact_detail_day", "idx_zqcd_mobile", "`手机号`(191)")
     # 3) 天润会话按 customer_name 过滤（建 contact_mapping 与交互明细时跳过 NULL）
     _ensure_index("ods_tianrun_session_day", "idx_tr_custname", "customer_name")
     # 4) 交互明细按 (contact_name, mobile) 分组构建 dws_contact_360 时避免 filesort

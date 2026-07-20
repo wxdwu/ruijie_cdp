@@ -42,7 +42,15 @@ def _build_icp_customers_table() -> int:
         "FROM ods_zhique_contact_day "
         "WHERE related_company IS NOT NULL AND related_company != ''"
     )
-    
+
+    # 智渠联系人明细（整理表）：更全面，追加其关联公司作为 ICP 客户
+    _exec(
+        "INSERT IGNORE INTO tmp_icp_customers (customer_name) "
+        "SELECT DISTINCT `关联公司` "
+        "FROM ods_zhique_contact_detail_day "
+        "WHERE `关联公司` IS NOT NULL AND `关联公司` != ''"
+    )
+
     total = _table_count("tmp_icp_customers")
     logger.info("tmp_icp_customers built: %d ICP customers", total)
     return total
@@ -165,6 +173,20 @@ def _build_tmp_icp_filters() -> None:
         SELECT DISTINCT mobile
         FROM ods_zhique_contact_day
         WHERE mobile IS NOT NULL AND mobile != ''
+    """)
+
+    # 智渠联系人明细（整理表）：更全面，补充 ICP 公司与手机号
+    _exec("""
+        INSERT IGNORE INTO tmp_icp_customers (customer_name)
+        SELECT DISTINCT `关联公司`
+        FROM ods_zhique_contact_detail_day
+        WHERE `关联公司` IS NOT NULL AND `关联公司` != ''
+    """)
+    _exec("""
+        INSERT IGNORE INTO tmp_icp_mobiles (mobile)
+        SELECT DISTINCT `手机号`
+        FROM ods_zhique_contact_detail_day
+        WHERE `手机号` IS NOT NULL AND `手机号` != ''
     """)
 
     logger.info(

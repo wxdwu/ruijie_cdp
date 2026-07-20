@@ -107,6 +107,7 @@ def _get_last_sync_time(table_name: str) -> datetime | None:
 
 ODS_INCREMENTAL_CONFIG: Dict[str, Dict[str, Any]] = {
     "ods_zhique_behavior_list_day":      {"mode": "incremental", "field": "behavior_time",   "field_type": "time"},
+    "ods_zhique_contact_detail_day":     {"mode": "incremental", "field": "time",            "field_type": "time"},
     "ods_linkflow_contacts_day":         {"mode": "incremental", "field": "contact_id",      "field_type": "id"},
     "ods_linkflow_events_day":           {"mode": "incremental", "field": "extra_id",        "field_type": "id"},
     "ods_tianrun_session_day":           {"mode": "incremental", "field": "start_time_sec",  "field_type": "unix_time"},
@@ -175,9 +176,9 @@ def _watermark_filter(table_name: str, alias: str):
 
     field = cfg["field"]
     if cfg["field_type"] == "unix_time":
-        clause = f"AND FROM_UNIXTIME({alias}.{field}) > :watermark"
+        clause = f"AND FROM_UNIXTIME({alias}.`{field}`) > :watermark"
     else:
-        clause = f"AND {alias}.{field} > :watermark"
+        clause = f"AND {alias}.`{field}` > :watermark"
     return clause, wm
 
 
@@ -202,7 +203,7 @@ def _set_watermark_after_load(table_name: str) -> None:
             {"tbl": table_name},
         )
     else:
-        max_expr = f"FROM_UNIXTIME(MAX({field}))" if cfg["field_type"] == "unix_time" else f"MAX({field})"
+        max_expr = f"FROM_UNIXTIME(MAX(`{field}`))" if cfg["field_type"] == "unix_time" else f"MAX(`{field}`)"
         _exec(
             "INSERT INTO dws_sync_meta "
             "  (table_name, last_sync_time, last_run_time, status) "

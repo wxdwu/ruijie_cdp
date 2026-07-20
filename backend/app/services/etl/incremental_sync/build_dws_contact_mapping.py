@@ -44,7 +44,24 @@ def _incremental_update_icp_customers(batch_id: int) -> int:
         f"  {filter_clause}",
         params
     )
-    
+
+    # 智渠联系人明细（整理表）：追加其新增关联公司为 ICP 客户（按 time 水位增量）
+    last_sync_detail = _get_last_sync_time("ods_zhique_contact_detail_day")
+    detail_filter = ""
+    detail_params: Dict[str, Any] = {"batch_id": batch_id}
+    if last_sync_detail:
+        detail_filter = "AND `time` > :last_sync_time"
+        detail_params["last_sync_time"] = last_sync_detail
+    n_detail = _exec(
+        "INSERT IGNORE INTO tmp_icp_customers (customer_name) "
+        "SELECT DISTINCT `关联公司` "
+        "FROM ods_zhique_contact_detail_day "
+        "WHERE `关联公司` IS NOT NULL AND `关联公司` != '' "
+        f"  {detail_filter}",
+        detail_params
+    )
+    n += n_detail
+
     total = _table_count("tmp_icp_customers")
     logger.info("tmp_icp_customers updated: %d new customers, %d total", n, total)
     return n
@@ -234,7 +251,37 @@ def _incremental_upsert_contact_mapping(batch_id: int) -> Dict[str, int]:
     stats["tianrun"] = n
     logger.info("  Tianrun: %d records upserted (incremental)", n)
     _set_watermark_after_load("ods_tianrun_session_day")
-    
+
+    # Zhique contacts (detail / 整理表)：与 zhique 同口径，数据源改为 ods_zhique_contact_detail_day。
+    # 列映射：关联公司→customer_name, 姓名→contact_name, 手机号→mobile, 邮箱→email,
+    # 部门→department, 职务→position。按 time 字段水位增量，仅处理新/更新记录。
+    detail_filter, _wm = _watermark_filter("ods_zhique_contact_detail_day", "d")
+    detail_params = {"batch_id": batch_id}
+    if _wm is not None:
+        detail_params["watermark"] = _wm
+    n = _exec(
+        "INSERT INTO dws_contact_mapping_temp "
+        "  (customer_name, contact_name, mobile, email, department, "
+        "   position, source_table, etl_time, sync_batch_id) "
+        "SELECT "
+        "  d.`关联公司`, d.`姓名`, d.`手机号`, d.`邮箱`, d.`部门`, d.`职务`, "
+        "  'zhique_detail', NOW(), :batch_id "
+        "FROM ods_zhique_contact_detail_day d "
+        "WHERE d.`关联公司` IS NOT NULL AND d.`关联公司` != '' "
+        f" {detail_filter} "
+        "ON DUPLICATE KEY UPDATE "
+        "  contact_name = VALUES(contact_name), "
+        "  email = VALUES(email), "
+        "  department = VALUES(department), "
+        "  position = VALUES(position), "
+        "  etl_time = VALUES(etl_time), "
+        "  sync_batch_id = VALUES(sync_batch_id)",
+        detail_params,
+    )
+    stats["zhique_detail"] = n
+    logger.info("  Zhique (detail): %d records upserted (incremental)", n)
+    _set_watermark_after_load("ods_zhique_contact_detail_day")
+
     # For incremental sync, we don't delete records (only add/update)
     # Delete detection can be implemented separately if needed
     stats["deleted"] = 0

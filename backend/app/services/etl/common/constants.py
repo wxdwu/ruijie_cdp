@@ -56,6 +56,7 @@ _ODS_TABLES = [
     "ods_crm_contact_day",
     "ods_crm_opportunity_day",
     "ods_zhique_contact_day",
+    "ods_zhique_contact_detail_day",
     "ods_marketing_lead_day",
     "ods_zhique_behavior_list_day",
     "ods_tianrun_session_day",
