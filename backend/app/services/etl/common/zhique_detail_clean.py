@@ -6,8 +6,12 @@
 dws_contact_mapping 等聚合结果。
 
 校验规则（集中在此，便于单测与按需扩展）：
-- 关联公司（→ customer_name）：必须是像公司名的字符串，过滤纯数字、含特殊字符、
-  明显非公司名的短语（如"兔兔"）、已知脏数据（如"吴磊"）。
+- 关联公司（→ customer_name）：必须是像公司名的字符串。允许含数字的合法机构
+  （学校如 第110中学、研究所如 718所、品牌如 58同城/360）；允许并列/连接符号
+  （/ 、 ， － — ""）以保留多实体机构名（如"三亚中心医院（...、...）"）。
+  仅过滤纯序号、手机号、邮箱、广告链接、日期等垃圾信号，以及含不允许的特殊字符
+  （点 & 制表符 不可见字符等）、明显非公司名短语（如"兔兔"/"学校"/"医院"）、
+  已知脏数据（如"吴磊"）。
 - 姓名（→ contact_name）：必须是正常姓名，支持中英文数字混合，但不允许逗号等
   特殊符号、不允许纯数字。
 
@@ -26,12 +30,72 @@ logger = logging.getLogger(__name__)
 
 
 # ── 公司名字段（`关联公司`）校验 ──────────────────────────────────────────────
-# 公司名允许的字符（折中口径）：CJK 汉字、拉丁字母、数字、全/半角括号，
-# 以及真实公司名中常见的 空格 与 连字符(-)。其余（斜杠、点、&、间隔号·、
-# 顿号、方头括号、【】、制表符、不可见字符等）一律视为非法并过滤。
-_COMPANY_ALLOWED = re.compile(r"^[0-9A-Za-z一-鿿（）() \-]+$")
+# 公司名允许的字符（折中口径）：CJK 汉字、拉丁字母、数字、全/半角括号、空格、连字符(-)，
+# 以及合法机构名中常见的并列/连接符号：斜杠(/、／)、顿号(、)、全角逗号(，)、
+# 全角杠(－)、破折号(—)、弯引号("")、汉字零(〇)、间隔号(·)。
+# 其余（点、&、方头括号、【】、制表符、不可见字符、首尾/内部格式残渣等）经噪声清洗后过滤，
+# 详见 _clean_company_for_validation。
+_COMPANY_ALLOWED = re.compile(r"^[0-9A-Za-z一-鿿（）() /、，－—“”〇·／\-]+$")
 # 公司名必须至少含一个汉字/字母/数字，避免出现纯符号串（如 "-"、"（）"、" "）。
 _HAS_SUBSTANCE = re.compile(r"[0-9A-Za-z一-鿿]")
+
+# 纯数字品牌白名单（允许保留，如 360、58 同城关联主体）
+_COMPANY_DIGIT_BRAND_OK = {"360", "58"}
+# 明显非公司名子串黑名单（包含即过滤，如 "测试"）
+_COMPANY_SUBSTR_BLACKLIST = ("测试",)
+# 广告 / 垃圾关键词
+_GARBAGE_KW = re.compile(r"扣扣|客服电话|出排名|复制此链接|抖音|关键词|官网-腾龙|热线")
+_URL_RE = re.compile(r"https?://|://|\.com|\.cn|\.net|douyin|v\.douyin", re.I)
+_DATE_RE = re.compile(r"[A-Za-z]+ \d+, \d{4}|月 \d{1,2}, \d{4}|\d{4}年\d{1,2}月\d{1,2}日")
+_INVIS_RE = re.compile(r"[\t ­ ­ ­ ­ ­ ­\ufeff]")
+# 以纯数字开头、后直接跟 有限公司/公司/集团（无意义编号前缀，如 "123有限公司"）
+_DIGIT_PREFIX_COMPANY = re.compile(r"^\d+(有限|公司|集团)")
+
+
+def _is_company_name_digit_garbage(s: str) -> bool:
+    """含数字但属垃圾信号的判定（命中即视为非法公司名）。
+
+    仅覆盖高置信垃圾，保留含数字的合法机构（学校如 第110中学、研究所如 718所、
+    医院/部队如 301医院、品牌如 58同城/360/h3c）。
+    """
+    # 纯数字串（允许少量数字品牌）
+    if re.fullmatch(r"\d+", s):
+        return s not in _COMPANY_DIGIT_BRAND_OK
+    # 长数字（手机号 / 电话 / 邮编，>=7 位连续）
+    if re.search(r"\d{7,}", s):
+        return True
+    # 邮箱 / URL / 广告词 / 日期 / 不可见字符
+    if "@" in s or _GARBAGE_KW.search(s) or _URL_RE.search(s) \
+            or _DATE_RE.search(s) or _INVIS_RE.search(s):
+        return True
+    # 数字开头 + "有限公司/公司/集团"（无意义编号前缀）
+    if _DIGIT_PREFIX_COMPANY.match(s):
+        return True
+    return False
+
+
+# 判定前的噪声清洗：去除首尾及内部的格式残渣（OCR / 复制粘贴引入的标点、引号、不可见字符、
+# 以及全角冒号/分号/&/方头括号/尖括号/方括号/句号 等），但保留合法机构名所需的并列/连接符号
+# （/ 、 ， － — "" （） 〇 · ／）。仅用于"是否保留"的合法性判定，不修改落库原始值。
+# 注意：@ 与 . 故意保留（它们是邮箱 / URL 的垃圾信号，移除会漏判）。
+_EDGE_CHARS = (
+    " \t\n\r\xa0"
+    ".?？!！~_*`'‘’\"\u201c\u201d〓\u002d\uff0d\u2014\u2026"
+    "\uff08\uff09()\u3014\u3015[]\u3010\u3011\u3008\u3009\u300a\u300b"
+    "\u3001\uff0c\uff1a\uff1b%#&:;\u3000\u3002\uff0e"
+    "".join(chr(c) for c in range(0x2000, 0x200C)) + "\ufeff"
+)
+_INTERNAL_JUNK_RE = re.compile(
+    r"[?？!！~*`'‘’〓\u2026\u3014\u3015\[\]\u3010\u3011\u3008\u3009\u300a\u300b"
+    r"\uff1a\uff1b%#&:;\xa0\u3002\uff0e\u2000-\u200b\u3000\ufeff]+"
+)
+
+
+def _clean_company_for_validation(s: str) -> str:
+    """去除 company 名首尾/内部的噪声字符，用于合法性判定（不改变落库值）。"""
+    s = s.strip(_EDGE_CHARS)
+    return _INTERNAL_JUNK_RE.sub("", s)
+
 
 # 姓名允许出现的字符：CJK 汉字、拉丁字母、数字、空白、间隔号（民族姓名如 阿依古丽·买买提）。
 _NAME_ALLOWED = re.compile(r"^[0-9A-Za-z一-鿿·\s]+$")
@@ -41,6 +105,15 @@ _COMPANY_BLACKLIST = {
     "兔兔", "吴磊", "测试", "test", "暂无", "无", "未知", "某某", "null", "none",
     "未填写", "未提供", "保密", "个人", "其他", "其它", "空", "待定", "无公司",
     "未知公司", "公司名", "微信", "扫码", "无名称",
+    # 泛称/类别词（非具体公司名，精确匹配，不影响含这些词的合法机构名如 三亚中心医院）
+    "学校", "个体", "医院", "学生", "选项一", "选项", "单位", "部门", "科室",
+    "公司", "集团", "先生", "女士", "老师", "同学", "朋友", "同事", "领导",
+    "客户", "用户", "业主", "家属", "居民", "群众", "团队", "店铺", "商家",
+    "门店", "商户",
+    # 口语/垃圾短语（非公司名特征，如 激* 系列 spam、各类昵称式叠词）
+    "激励激励了", "激凸kkk", "激情戏", "激活", "激萌", "澜起",
+    "哈哈", "呵呵", "嘿嘿", "嗯嗯", "哦哦", "天天", "试试", "看看", "刚刚",
+    "好好", "滴滴", "嘟嘟", "哥哥", "姐姐", "弟弟", "妹妹",
 }
 
 # 明显非姓名的短语黑名单（按需扩展）。大小写不敏感匹配。
@@ -66,27 +139,39 @@ def is_valid_company_name(value) -> bool:
     """判断 `关联公司` 是否为可接受的客户公司名。
 
     过滤：空值、超长、纯数字、含不允许的特殊字符、黑名单短语、
-    以及两字完全相同的昵称（如 兔兔、哈哈）。
+    含数字的垃圾信号（纯序号/手机号/邮箱/广告链接/日期等）、
+    以及两字完全相同的昵称（如 兔兔、哈哈）。判定前会先做噪声清洗
+    （_clean_company_for_validation），但落库值保持原始。
     """
     s = _normalize(value)
     if not s:
         return False
+    # 判定前清洗 OCR / 复制残渣（不改变落库值）
+    s = _clean_company_for_validation(s)
+    if not s:
+        return False
     if len(s) > _MAX_COMPANY_LEN:
         return False
-    # 纯数字（如 "12345"）
+    # 纯数字（如 "12345"，仅允许 360/58 等数字品牌）
     if re.fullmatch(r"\d+", s):
-        return False
-    # 含不允许的特殊字符（斜杠、点、&、间隔号、制表符、不可见字符等）
+        return s in _COMPANY_DIGIT_BRAND_OK
+    # 含不允许的特殊字符（点、&、方头括号、【】、制表符、不可见字符等）
     if not _COMPANY_ALLOWED.match(s):
         return False
     # 仅由空格/连字符/括号组成、不含任何汉字/字母/数字（如 "-"、"（）"）
     if not _HAS_SUBSTANCE.search(s):
         return False
-    # 黑名单短语（大小写不敏感）
+    # 黑名单短语（精确，大小写不敏感）
     if s.lower() in _COMPANY_BLACKLIST:
+        return False
+    # 明显非公司名子串（包含即过滤，如 "测试"）
+    if any(b in s for b in _COMPANY_SUBSTR_BLACKLIST):
         return False
     # 两字完全相同的昵称（非公司名特征）
     if len(s) == 2 and s[0] == s[1]:
+        return False
+    # 含数字的垃圾信号（纯序号、手机号、邮箱、广告链接、日期等）
+    if _is_company_name_digit_garbage(s):
         return False
     return True
 
