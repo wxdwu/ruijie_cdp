@@ -2,7 +2,7 @@
 #
 # Ruijie CDP 一键部署脚本
 # --------------------------------------------------
-# 基于 deploy/ 目录下的 docker-compose 构建并启动「后端 + 前端(Nginx)」。
+# 基于 deploy/deploy_cloud/ 目录下的 docker-compose 构建并启动「后端 + 前端(Nginx) + 本机 MySQL」。
 #
 # 用法：
 #   ./deploy.sh            # 构建并后台启动服务（含等待 MySQL 初始化完成）
@@ -17,12 +17,13 @@
 #   - 数据库为本机 docker MySQL（compose 中的 mysql 服务），首次启动自动执行
 #     sql_init/ 下的建表与数据脚本。
 #   - 本脚本为「生产模式」部署：docker-compose.yml 已显式注入 APP_ENV=production
-#     （覆盖 config.py 默认的 development），并通过 env_file: backend/.env.production
+#     （覆盖 config.py 默认的 development），并通过 env_file: ../../backend/.env.production
 #     加载生产配置（连本机 docker MySQL）。
 #     开发模式（连云 MySQL）请在本地运行：
 #       APP_ENV=development uvicorn app.main:app --reload --port 8000  （后端）
 #       npm run dev                                                     （前端）
 #   - 前端在 nginx 镜像内完成构建，最终由 Nginx 统一对外提供 28080 端口。
+#   - 构建上下文为项目根目录（../../），backend/、frontend/ 源码可被正确打包。
 #
 set -euo pipefail
 
@@ -114,10 +115,10 @@ for f in "./sql_init/00_init_user.sql" "./sql_init/01_init_table_struc.sql" "./s
 done
 
 # ---------- 生产环境配置文件检查 ----------
-# docker-compose.yml 的 backend 服务通过 env_file 加载 ../backend/.env.production，
+# docker-compose.yml 的 backend 服务通过 env_file 加载 ../../backend/.env.production，
 # 缺失会导致 compose 解析失败，故此处兜底：不存在则由 .env.example 生成并告警。
-PROD_ENV_FILE="../backend/.env.production"
-ENV_TEMPLATE="../backend/.env.example"
+PROD_ENV_FILE="../../backend/.env.production"
+ENV_TEMPLATE="../../backend/.env.example"
 if [ ! -f "$PROD_ENV_FILE" ]; then
   echo "[WARN] 未找到 $PROD_ENV_FILE（生产环境后端配置）。" >&2
   if [ -f "$ENV_TEMPLATE" ]; then

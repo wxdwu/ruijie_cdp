@@ -1,0 +1,45 @@
+# 说明：局域网（LAN）部署 —— 仅「后端 + 前端(Nginx)」，数据库直接使用「远程云 MySQL」
+#   （即 backend/.env.development 中的 192.168.159.22:33307 / app_cdp）。
+# 使用 host 网络模式（network_mode: host），容器共享宿主机网络栈，
+# 规避 podman 3.x 的 "CNI network not found" 问题。前提：宿主机 8000（后端）、28080（nginx）端口未被占用。
+#
+# 本套不含 MySQL 服务、也不含 sql_init：数据库由云库提供，无需本地初始化。
+# backend 通过 APP_ENV=development + env_file: ../../backend/.env.development
+# 加载云库连接配置（DB_HOST=192.168.159.22 / DB_PORT=33307 / ...）。
+# 注意：backend/.env.development 含真实密钥，已被 .gitignore 忽略，部署目标机须存在该文件
+#       （可复制 backend/.env.example 后填入云 MySQL 值）。
+services:
+  backend:
+    build:
+      context: ../../
+      dockerfile: deploy/deploy_local/backend.Dockerfile
+    restart: unless-stopped
+    # 开发模式：加载 backend/.env.development（连云 MySQL）
+    environment:
+      TZ: Asia/Shanghai
+      APP_ENV: development
+    env_file:
+      - ../../backend/.env.development
+    network_mode: host
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=5).read()\""]
+      interval: 20s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+
+  nginx:
+    build:
+      context: ../../
+      dockerfile: deploy/deploy_local/frontend.Dockerfile
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    network_mode: host
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:28080/api/health || exit 1"]
+      interval: 20s
+      timeout: 10s
+      retries: 5
+      start_period: 10s
