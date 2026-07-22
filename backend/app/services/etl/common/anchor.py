@@ -83,6 +83,7 @@ def _create_etl_temp_tables() -> None:
     """
     _drop_etl_temp_tables()
 
+    # 智渠联系人去重手机号
     _exec("""
         CREATE TABLE tmp_icp_mobiles (
             mobile VARCHAR(255) NOT NULL PRIMARY KEY

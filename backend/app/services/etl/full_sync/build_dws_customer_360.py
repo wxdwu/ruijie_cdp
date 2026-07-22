@@ -11,6 +11,7 @@ logger = logging.getLogger(__name__)
 
 
 # 以下函数/常量由原 etl_sync.py 抽取，SQL 与调用语义保持不变
+# base TLB dws_interaction_detail
 def _build_customer_360() -> int:
     """Build dws_customer_360 from interaction_detail, CRM opps, and contacts.
 
@@ -156,6 +157,8 @@ def _build_customer_360() -> int:
     )
 
     # ── Phase 5: Enrich/Insert with ods_key_customer (重要客户) ─────────
+    # 重要客户目前不需要再添加到之前的数据里面
+    # 单独开一栏展示
     logger.info("Phase 5: Enriching with ods_key_customer...")
 
     # Step 1: UPDATE existing customers (match by key_customer_name -> customer_name)

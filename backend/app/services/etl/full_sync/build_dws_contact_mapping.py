@@ -85,6 +85,7 @@ def _load_contact_mapping() -> Dict[str, int]:
     # ── d. Linkflow contacts (73K rows, company is NULL for all) ────────
     # Match linkflow contacts to CRM customers via mobile_phone.
     # The valid contacts have already been pre-computed in tmp_valid_linkflow_contacts.
+    # Source: ods_linkflow_contacts_day
     n = _exec(
         "INSERT IGNORE INTO dws_contact_mapping "
         "  (customer_name, contact_name, mobile, email, "
@@ -103,6 +104,7 @@ def _load_contact_mapping() -> Dict[str, int]:
     # contains channel labels (百度营销, 网页, 企微客服), not real company names.
     # We create contact_mapping entries using customer_name where available,
     # understanding these are low-quality matches.
+    # Source: ods_tianrun_session_day
     n = _exec(
         "INSERT IGNORE INTO dws_contact_mapping "
         "  (customer_name, contact_name, source_table, etl_time) "
