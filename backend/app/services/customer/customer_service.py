@@ -328,70 +328,57 @@ def get_customer_list(
 # 筛选选项 / 统计（原 customer_list 路由内的裸 SQL 逻辑，下沉到 service 层）
 # ─────────────────────────────────────────────────────────────────────────────
 
-_FILTER_OPTION_COLUMNS = (
-    "industry",
-    "region",
-    "owner_name",
-    "purchase_stage",
-    "intent_level",
-)
+_FILTER_OPTION_DIMENSIONS = {
+    "industry": "industry",
+    "region": "region",
+    "owner": "owner_name",
+    "stage": "purchase_stage",
+    "intent_level": "intent_level",
+}
 
 
-def _distinct_column(db: Session, column: str, special_projects: List[str]) -> set:
-    """按专项维度取单列去重值，配合 idx_c360_campaign_tag* 索引纯索引扫描，仅返回少量值。
+def _facet_selects(from_sql: str, base_where: str) -> List[str]:
+    """Build bounded GROUP BY selects so MySQL, not Python, performs deduplication."""
+    selects: List[str] = []
+    for option_type, column in _FILTER_OPTION_DIMENSIONS.items():
+        selects.append(
+            f"SELECT '{option_type}' AS option_type, c.{column} AS option_value "
+            f"{from_sql} WHERE {base_where} "
+            f"AND c.{column} IS NOT NULL AND TRIM(c.{column}) != '' "
+            f"GROUP BY c.{column}"
+        )
+    return selects
 
-    改为按列 DISTINCT（而非一次性 SELECT 多列后由 Python 去重）后，每条查询命中覆盖索引、
-    返回的行数从「整表行数」降为「该列 distinct 值数」，彻底消除 get_filter_options 在 ETL
-    高负载窗口因大结果集传输触发的 (2013) 连接失活。
-    """
-    col_expr = "c.customer_name" if column == "customer_name" else f"c.{column}"
-    clauses: List[str] = []
+
+def _filter_option_rows(db: Session, special_projects: List[str]) -> List[Any]:
+    """Return only distinct low-cardinality facets for the selected populations."""
+    selects: List[str] = []
     params: Dict[str, Any] = {}
-    # 重客：来自重客快照表，customer_name 优先取重客名称（未进入彩光的重客也可作为候选项）
+
     if "重客" in special_projects:
-        ka_expr = ("COALESCE(ka.`重客名称`, c.customer_name)"
-                   if column == "customer_name" else col_expr)
-        clauses.append(
-            f"SELECT DISTINCT {ka_expr} FROM {KEY_ACCOUNT_TABLE} ka "
-            f"LEFT JOIN dws_customer_360 c "
-            f"ON c.customer_name = ka.`重客名称` "
-            f"AND c.campaign_tag = :ka_src "
-            f"WHERE ka.`time` = (SELECT MAX(`time`) FROM {KEY_ACCOUNT_TABLE}) "
-            f"AND {ka_expr} IS NOT NULL AND TRIM({ka_expr}) <> ''"
-        )
-        params["ka_src"] = KEY_ACCOUNT_SOURCE_PROJECT
-    # 其余专项：来自 dws_customer_360
-    others = [p for p in special_projects if p != "重客"]
+        selects.extend(_facet_selects(
+            f"FROM {KEY_ACCOUNT_TABLE} ka "
+            "LEFT JOIN dws_customer_360 c "
+            "ON c.customer_name = ka.`重客名称` "
+            "AND c.campaign_tag = :filter_source_project",
+            f"ka.`time` = (SELECT MAX(`time`) FROM {KEY_ACCOUNT_TABLE})",
+        ))
+        params["filter_source_project"] = KEY_ACCOUNT_SOURCE_PROJECT
+
+    others = [project for project in special_projects if project != "重客"]
     if others:
-        clauses.append(
-            f"SELECT DISTINCT {col_expr} FROM dws_customer_360 c "
-            f"WHERE c.campaign_tag IN :others "
-            f"AND {col_expr} IS NOT NULL AND TRIM({col_expr}) <> ''"
-        )
-        params["others"] = tuple(others)
-    # 未选任何专项：返回全部客户
+        selects.extend(_facet_selects(
+            "FROM dws_customer_360 c",
+            "c.campaign_tag IN :filter_other_projects",
+        ))
+        params["filter_other_projects"] = tuple(others)
+
     if not special_projects:
-        clauses.append(
-            f"SELECT DISTINCT {col_expr} FROM dws_customer_360 c "
-            f"WHERE {col_expr} IS NOT NULL AND TRIM({col_expr}) <> ''"
-        )
-    if not clauses:
-        return set()
-    sql = text(" UNION ".join(clauses))
-    rows = db.execute(sql, params).all()
-    return {r[0] for r in rows if r[0] not in (None, "")}
+        selects.extend(_facet_selects("FROM dws_customer_360 c", "1=1"))
 
-
-def _filter_option_rows(db: Session, special_projects: List[str]) -> Dict[str, set]:
-    """返回所选专项客户群体的维度值集合（结构：{列名: 去重值集合}）。
-
-    逐列调用 _distinct_column，配合 dws_customer_360 上的 campaign_tag 覆盖索引做到纯索引
-    扫描，仅返回少量 distinct 值（而非整表行）。
-    """
-    result: Dict[str, set] = {}
-    for column in (*_FILTER_OPTION_COLUMNS, "customer_name"):
-        result[column] = _distinct_column(db, column, special_projects)
-    return result
+    if not selects:
+        return []
+    return db.execute(text(" UNION ALL ".join(selects)), params).mappings().all()
 
 
 def _channel_option_rows(db: Session, special_projects: List[str]) -> List[Any]:
@@ -412,11 +399,21 @@ def _channel_option_rows(db: Session, special_projects: List[str]) -> List[Any]:
     if others:
         clauses.append(
             """
-            SELECT DISTINCT interaction.channel
-            FROM dws_interaction_detail interaction
-            INNER JOIN dws_customer_360 c ON c.customer_name = interaction.customer_name
-            WHERE c.campaign_tag IN :channel_other_projects
-              AND interaction.channel IS NOT NULL AND TRIM(interaction.channel) != ''
+            SELECT channel_candidate.channel
+            FROM (
+                SELECT channel
+                FROM dws_interaction_detail
+                WHERE channel IS NOT NULL AND TRIM(channel) != ''
+                GROUP BY channel
+            ) channel_candidate
+            WHERE EXISTS (
+                SELECT 1
+                FROM dws_interaction_detail interaction FORCE INDEX (idx_channel)
+                INNER JOIN dws_customer_360 c
+                  ON c.customer_name = interaction.customer_name
+                WHERE interaction.channel = channel_candidate.channel
+                  AND c.campaign_tag IN :channel_other_projects
+            )
             """
         )
         params["channel_other_projects"] = tuple(others)
@@ -438,7 +435,7 @@ def get_filter_options(
     db: Session,
     special_project: Optional[List[str]] = None,
 ) -> Dict[str, List[str]]:
-    """返回与列表同口径的客户群体筛选维度（行业/区域/负责人/名称/阶段/意向/渠道）。
+    """返回低基数筛选维度；客户名称由远程建议接口按需检索。
 
     韧性：若传入会话的连接在长耗时处理/服务端回收后失活（报 2013 Lost connection 或
     PendingRollbackError），回滚并换一个全新会话重试一次，避免一次性网络/连接抖动直接 500。
@@ -450,26 +447,8 @@ def get_filter_options(
         _channel_rows = _channel_option_rows(sess, special_project)
         return _rows, _channel_rows
 
-    def _load_with_fold(sess: Session) -> tuple:
-        """加载筛选维度，并按合并映射过滤掉已被合并为别名的公司名。"""
-        _rows, _channel_rows = _load(sess)
-        try:
-            _alias_set = {
-                r[0]
-                for r in sess.execute(
-                    text("SELECT alias_name FROM company_merge_map")
-                ).all()
-            }
-        except Exception:
-            _alias_set = set()
-        # _rows 为 {列名: 去重值集合}，仅剔除已被合并为别名的客户名
-        _rows["customer_name"] = {
-            _n for _n in _rows["customer_name"] if _n not in _alias_set
-        }
-        return _rows, _channel_rows
-
     try:
-        rows, channel_rows = _load_with_fold(db)
+        rows, channel_rows = _load(db)
     except (OperationalError, PendingRollbackError) as _exc:
         logger.warning("get_filter_options 连接失活，尝试换会话重试: %s", _exc)
         try:
@@ -485,16 +464,239 @@ def get_filter_options(
         time.sleep(0.3)
         from app.database import SessionLocal
         with SessionLocal() as _db2:
-            rows, channel_rows = _load_with_fold(_db2)
+            rows, channel_rows = _load(_db2)
 
+    options: Dict[str, List[str]] = {key: [] for key in _FILTER_OPTION_DIMENSIONS}
+    for row in rows:
+        option_type = row.get("option_type")
+        option_value = row.get("option_value")
+        if option_type not in options or option_value in (None, ""):
+            continue
+        options[option_type].append(str(option_value).strip())
     return {
-        "industries": sorted(rows["industry"]),
-        "regions": available_region_options(rows["region"]),
-        "owners": sorted(rows["owner_name"]),
-        "keywords": sorted(rows["customer_name"]),
-        "stages": sorted(rows["purchase_stage"]),
-        "intent_levels": sorted(rows["intent_level"]),
+        "industries": sorted(set(options["industry"])),
+        "regions": available_region_options(options["region"]),
+        "owners": sorted(set(options["owner"])),
+        # 兼容旧响应；完整名称目录由 name-options 分页读取，不再塞进筛选响应。
+        "keywords": [],
+        "stages": sorted(set(options["stage"])),
+        "intent_levels": sorted(set(options["intent_level"])),
         "channels": available_channel_options(row.get("channel") for row in channel_rows),
+    }
+
+
+def _escape_like_prefix(value: str) -> str:
+    """Escape MySQL LIKE wildcards using '=' as the explicit escape character."""
+    return value.replace("=", "==").replace("%", "=%").replace("_", "=_") + "%"
+
+
+def _load_merged_aliases(db: Session) -> tuple[str, ...]:
+    """Best-effort load of company aliases that must stay folded into canonical names."""
+    try:
+        rows = db.execute(text("SELECT alias_name FROM company_merge_map")).all()
+    except Exception as exc:
+        logger.warning("读取公司合并别名失败，名称选项暂不折叠: %s", exc)
+        return ()
+    return tuple(sorted({
+        str(row[0]).strip()
+        for row in rows
+        if row[0] not in (None, "") and str(row[0]).strip()
+    }))
+
+
+def _load_customer_names(
+    db: Session,
+    *,
+    special_project: Optional[List[str]] = None,
+    query: Optional[str] = None,
+    fetch_limit: Optional[int] = None,
+) -> List[str]:
+    """Load de-duplicated names from the standard and key-account sources."""
+    special_projects = special_project or []
+    normalized_query = (query or "").strip()
+    prefix = _escape_like_prefix(normalized_query) if normalized_query else None
+    merged_aliases = _load_merged_aliases(db)
+    names: set[str] = set()
+
+    if "重客" in special_projects:
+        key_account_filters = [
+            f"ka.`time` = (SELECT MAX(`time`) FROM {KEY_ACCOUNT_TABLE})",
+            "ka.`重客名称` IS NOT NULL",
+            "TRIM(ka.`重客名称`) != ''",
+        ]
+        key_account_params: Dict[str, Any] = {}
+        if merged_aliases:
+            key_account_filters.append("ka.`重客名称` NOT IN :merged_aliases")
+            key_account_params["merged_aliases"] = merged_aliases
+        if prefix is not None:
+            key_account_filters.append("ka.`重客名称` LIKE :suggest_prefix ESCAPE '='")
+            key_account_params["suggest_prefix"] = prefix
+        limit_clause = ""
+        if fetch_limit is not None:
+            limit_clause = " LIMIT :suggest_limit"
+            key_account_params["suggest_limit"] = fetch_limit
+        key_account_rows = db.execute(
+            text(
+                f"SELECT DISTINCT ka.`重客名称` AS customer_name "
+                f"FROM {KEY_ACCOUNT_TABLE} ka "
+                f"WHERE {' AND '.join(key_account_filters)} "
+                f"ORDER BY customer_name{limit_clause}"
+            ),
+            key_account_params,
+        ).mappings().all()
+        names.update(
+            str(row.get("customer_name")).strip()
+            for row in key_account_rows
+            if row.get("customer_name") not in (None, "")
+        )
+
+    others = [project for project in special_projects if project != "重客"]
+    if others or not special_projects:
+        where_parts = [
+            "c.customer_name IS NOT NULL",
+            "TRIM(c.customer_name) != ''",
+        ]
+        params: Dict[str, Any] = {}
+        if merged_aliases:
+            where_parts.append("c.customer_name NOT IN :merged_aliases")
+            params["merged_aliases"] = merged_aliases
+        if prefix is not None:
+            where_parts.append("c.customer_name LIKE :suggest_prefix ESCAPE '='")
+            params["suggest_prefix"] = prefix
+        if others:
+            where_parts.append("c.campaign_tag IN :suggest_projects")
+            params["suggest_projects"] = tuple(others)
+        limit_clause = ""
+        if fetch_limit is not None:
+            limit_clause = " LIMIT :suggest_limit"
+            params["suggest_limit"] = fetch_limit
+        standard_rows = db.execute(
+            text(
+                "SELECT DISTINCT c.customer_name AS customer_name "
+                "FROM dws_customer_360 c "
+                f"WHERE {' AND '.join(where_parts)} "
+                f"ORDER BY c.customer_name{limit_clause}"
+            ),
+            params,
+        ).mappings().all()
+        names.update(
+            str(row.get("customer_name")).strip()
+            for row in standard_rows
+            if row.get("customer_name") not in (None, "")
+        )
+
+    names.difference_update(merged_aliases)
+    return sorted(names)
+
+
+def get_all_customer_names(
+    db: Session,
+    *,
+    special_project: Optional[List[str]] = None,
+) -> List[str]:
+    """Load the complete name catalog used to build the Redis sorted set."""
+    return _load_customer_names(db, special_project=special_project)
+
+
+def get_customer_name_options(
+    db: Session,
+    *,
+    query: Optional[str] = None,
+    special_project: Optional[List[str]] = None,
+    offset: int = 0,
+    limit: int = 50,
+) -> Dict[str, Any]:
+    """Return one browsable/searchable page when the Redis catalog is unavailable."""
+    special_projects = special_project or []
+    normalized_query = (query or "").strip()
+    prefix = _escape_like_prefix(normalized_query) if normalized_query else None
+    merged_aliases = _load_merged_aliases(db)
+    selects: List[str] = []
+    params: Dict[str, Any] = {
+        "option_limit": limit + 1,
+        "option_offset": offset,
+    }
+
+    if "重客" in special_projects:
+        key_account_filters = [
+            f"ka.`time` = (SELECT MAX(`time`) FROM {KEY_ACCOUNT_TABLE})",
+            "ka.`重客名称` IS NOT NULL",
+            "TRIM(ka.`重客名称`) != ''",
+        ]
+        if merged_aliases:
+            key_account_filters.append("ka.`重客名称` NOT IN :merged_aliases")
+            params["merged_aliases"] = merged_aliases
+        if prefix is not None:
+            key_account_filters.append("ka.`重客名称` LIKE :option_prefix ESCAPE '='")
+            params["option_prefix"] = prefix
+        selects.append(
+            f"SELECT DISTINCT ka.`重客名称` AS customer_name "
+            f"FROM {KEY_ACCOUNT_TABLE} ka "
+            f"WHERE {' AND '.join(key_account_filters)}"
+        )
+
+    others = [project for project in special_projects if project != "重客"]
+    if others or not special_projects:
+        standard_filters = [
+            "c.customer_name IS NOT NULL",
+            "TRIM(c.customer_name) != ''",
+        ]
+        if merged_aliases:
+            standard_filters.append("c.customer_name NOT IN :merged_aliases")
+            params["merged_aliases"] = merged_aliases
+        if prefix is not None:
+            standard_filters.append("c.customer_name LIKE :option_prefix ESCAPE '='")
+            params["option_prefix"] = prefix
+        if others:
+            standard_filters.append("c.campaign_tag IN :option_projects")
+            params["option_projects"] = tuple(others)
+        selects.append(
+            "SELECT DISTINCT c.customer_name AS customer_name "
+            "FROM dws_customer_360 c "
+            f"WHERE {' AND '.join(standard_filters)}"
+        )
+
+    rows = db.execute(
+        text(
+            "SELECT customer_name FROM ("
+            + " UNION ".join(selects)
+            + ") customer_name_options "
+            "ORDER BY customer_name "
+            "LIMIT :option_limit OFFSET :option_offset"
+        ),
+        params,
+    ).mappings().all()
+    names = [
+        str(row.get("customer_name")).strip()
+        for row in rows
+        if (
+            row.get("customer_name") not in (None, "")
+            and str(row.get("customer_name")).strip() not in merged_aliases
+        )
+    ]
+    return {
+        "items": names[:limit],
+        "has_more": len(names) > limit,
+    }
+
+
+def get_customer_name_suggestions(
+    db: Session,
+    *,
+    query: str,
+    special_project: Optional[List[str]] = None,
+    limit: int = 30,
+) -> Dict[str, Any]:
+    """Return bounded, prefix-matched customer names for the remote multi-select."""
+    ordered = _load_customer_names(
+        db,
+        query=query,
+        special_project=special_project,
+        fetch_limit=limit + 1,
+    )
+    return {
+        "items": ordered[:limit],
+        "has_more": len(ordered) > limit,
     }
 
 

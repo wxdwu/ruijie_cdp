@@ -1,6 +1,7 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue"
 import { customerApi } from "../../api"
+import CustomerNameMultiSelect from "./CustomerNameMultiSelect.vue"
 import MultiSelect from "./MultiSelect.vue"
 
 const emit = defineEmits(["apply"])
@@ -18,7 +19,6 @@ const interaction_period = ref(30) // 默认30天
 const industries = ref([])
 const regions = ref([])
 const owners = ref([])
-const keywords = ref([])
 const availableChannels = ref([])
 const isKeyAccountSelection = computed(() => (
   specialProject.value.length === 1 && specialProject.value[0] === "重客"
@@ -56,9 +56,6 @@ const regionOptions = computed(() => (
 const ownerOptions = computed(() => (
   owners.value.map(item => ({ value: item, label: item }))
 ))
-const keywordOptions = computed(() => (
-  keywords.value.map(item => ({ value: item, label: item }))
-))
 const specialProjectOptions = [
   { value: "企业彩光ICT", label: "企业彩光ICT" },
   { value: "重客", label: "重客" },
@@ -78,13 +75,11 @@ async function fetchFilterOptions(project = specialProject.value) {
     industries.value = res.industries || []
     regions.value = res.regions || []
     owners.value = res.owners || []
-    keywords.value = res.keywords || []
     availableChannels.value = res.channels || []
     // 若选项已不存在，自动移除当前已选值
     industry.value = keepExistingValues(industry.value, industries.value)
     selectedRegion.value = keepExistingValues(selectedRegion.value, regions.value)
     selectedOwner.value = keepExistingValues(selectedOwner.value, owners.value)
-    selectedKeyword.value = keepExistingValues(selectedKeyword.value, keywords.value)
     channel.value = keepExistingValues(channel.value, availableChannels.value)
   } catch (e) {
     console.error("Failed to fetch filter options:", e)
@@ -138,6 +133,7 @@ function resetFilters() {
 }
 
 function handleSpecialProjectChange() {
+  selectedKeyword.value = []
   if (isKeyAccountSelection.value) {
     attribute.value = "heavy"
   } else if (attribute.value === "heavy") {
@@ -189,12 +185,11 @@ onBeforeUnmount(() => {
       <!-- 客户关键词 -->
       <div class="flex min-w-0 flex-col gap-1.5">
         <label class="text-xs font-medium text-[var(--muted)]">客户关键词</label>
-        <MultiSelect
+        <CustomerNameMultiSelect
           v-model="selectedKeyword"
-          :options="keywordOptions"
+          :special-project="specialProject"
           placeholder="全部客户"
           all-label="全部客户"
-          searchable
           search-placeholder="搜索客户..."
           @change="applyNow"
         />

@@ -72,6 +72,17 @@ class Settings(BaseModel):
     # 默认开启，确保客户管理界面不出现异常/口语化脏数据。
     CUSTOMER_NAME_CLEAN_ENABLED: bool = os.getenv("CUSTOMER_NAME_CLEAN_ENABLED", "true").lower() == "true"
 
+    # Redis 页面缓存（默认关闭，生产 docker-compose 显式开启）
+    CACHE_ENABLED: bool = os.getenv("CACHE_ENABLED", "false").lower() == "true"
+    CACHE_URL: str = os.getenv("CACHE_URL", "redis://127.0.0.1:6379/0")
+    CACHE_KEY_PREFIX: str = os.getenv("CACHE_KEY_PREFIX", "cdp")
+    CACHE_CONNECT_TIMEOUT_MS: int = int(os.getenv("CACHE_CONNECT_TIMEOUT_MS", "100"))
+    CACHE_READ_TIMEOUT_MS: int = int(os.getenv("CACHE_READ_TIMEOUT_MS", "100"))
+    CACHE_MAX_CONNECTIONS: int = int(os.getenv("CACHE_MAX_CONNECTIONS", "50"))
+    CACHE_VALUE_MAX_BYTES: int = int(os.getenv("CACHE_VALUE_MAX_BYTES", "1048576"))
+    CACHE_LOCK_TTL_MS: int = int(os.getenv("CACHE_LOCK_TTL_MS", "15000"))
+    CACHE_TTL_JITTER_PERCENT: int = int(os.getenv("CACHE_TTL_JITTER_PERCENT", "10"))
+
     @property
     def DATABASE_URL(self) -> str:
         return (

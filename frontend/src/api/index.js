@@ -47,6 +47,14 @@ export const customerApi = {
     params: { customer_name: customerName },
   }),
   filterOptions: (params = {}) => http.get('/api/customers/filter-options', { params }),
+  nameSuggestions: (params = {}, config = {}) => http.get('/api/customers/name-suggestions', {
+    ...config,
+    params,
+  }),
+  nameOptions: (params = {}, config = {}) => http.get('/api/customers/name-options', {
+    ...config,
+    params,
+  }),
   export: (params) => http.get('/api/customers/export', { params, responseType: 'blob' }),
 }
 

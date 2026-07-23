@@ -13,11 +13,12 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
-from app.database import get_db
+from app.database import SessionLocal, get_db
+from app.cache import CacheResult, cache_service, customer_name_catalog
 from app.services.customer.customer_service import (
     CustomerNotFound,
     get_customer_statistics as query_customer_statistics,
@@ -27,6 +28,9 @@ from app.services.customer.customer_service import (
     get_customer_contacts,
     get_customer_interactions,
     get_customer_opportunities,
+    get_all_customer_names,
+    get_customer_name_options,
+    get_customer_name_suggestions,
     build_customer_ai_insight,
     list_customers as list_customers_service,
 )
@@ -36,6 +40,90 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/customers", tags=["customers"])
 
+_SUPPORTED_FILTER_PROJECTS = {"企业彩光ICT", "重客"}
+_FILTER_OPTIONS_TTL_SECONDS = 60 * 60
+_DEFAULT_LIST_TTL_SECONDS = 2 * 60
+_NAME_SUGGESTION_TTL_SECONDS = 2 * 60
+_EMPTY_NAME_SUGGESTION_TTL_SECONDS = 30
+_NAME_CATALOG_TTL_SECONDS = 60 * 60
+
+
+def _set_cache_headers(response: Response, result: CacheResult) -> None:
+    response.headers["X-Cache"] = result.status
+    response.headers["X-Cache-TTL"] = str(max(0, result.ttl_seconds))
+
+
+def _cacheable_project_scope(special_project: List[str]) -> bool:
+    return len(special_project) <= len(_SUPPORTED_FILTER_PROJECTS) and set(special_project).issubset(
+        _SUPPORTED_FILTER_PROJECTS
+    )
+
+
+def _warm_customer_name_catalog(special_project: List[str]) -> None:
+    """Build a scope catalog after the cold page has already been returned."""
+    db = SessionLocal()
+    try:
+        customer_name_catalog.get_page(
+            special_project=special_project,
+            query="",
+            offset=0,
+            limit=1,
+            ttl_seconds=_NAME_CATALOG_TTL_SECONDS,
+            catalog_loader=lambda: get_all_customer_names(
+                db,
+                special_project=special_project,
+            ),
+            page_loader=lambda: get_customer_name_options(
+                db,
+                special_project=special_project,
+                offset=0,
+                limit=1,
+            ),
+            cacheable=_cacheable_project_scope(special_project),
+            endpoint="/api/customers/name-options:warm",
+        )
+    finally:
+        db.close()
+
+
+def _is_default_customer_page(
+    *,
+    keyword: List[str],
+    special_project: List[str],
+    industry: List[str],
+    region: List[str],
+    region_keyword: Optional[str],
+    owner: List[str],
+    owner_keyword: Optional[str],
+    stage: Optional[str],
+    intent_level: Optional[str],
+    interaction_min: Optional[int],
+    interaction_period: int,
+    attribute: Optional[str],
+    channel: List[str],
+    sort: Optional[str],
+    page: int,
+    size: int,
+) -> bool:
+    return (
+        special_project == ["企业彩光ICT"]
+        and not keyword
+        and not industry
+        and not region
+        and not region_keyword
+        and not owner
+        and not owner_keyword
+        and not stage
+        and not intent_level
+        and interaction_min is None
+        and interaction_period == 30
+        and not attribute
+        and not channel
+        and not sort
+        and page == 1
+        and size == 20
+    )
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Customer list endpoint（委托 customer_service 编排，路由只做编排）
@@ -43,6 +131,7 @@ router = APIRouter(prefix="/api/customers", tags=["customers"])
 
 @router.get("")
 def list_customers(
+    response: Response,
     db: Session = Depends(get_db),
     keyword: List[str] = Query([], description="Filter by customer_name (multi-select)"),
     special_project: List[str] = Query([], description="Filter by campaign_tag (multi-select)"),
@@ -67,25 +156,56 @@ def list_customers(
     ``?region=广东&region=北京``）。数据源切换（重客快照 / dws_customer_360）由
     service 层统一决策。
     """
-    return list_customers_service(
-        db,
-        keyword=keyword,
-        special_project=special_project,
-        industry=industry,
-        region=region,
-        region_keyword=region_keyword,
-        owner=owner,
-        owner_keyword=owner_keyword,
-        stage=stage,
-        intent_level=intent_level,
-        interaction_min=interaction_min,
-        interaction_period=interaction_period,
-        attribute=attribute,
-        channel=channel,
-        sort=sort,
-        page=page,
-        size=size,
+    cache_params = {
+        "keyword": keyword,
+        "special_project": special_project,
+        "industry": industry,
+        "region": region,
+        "region_keyword": region_keyword,
+        "owner": owner,
+        "owner_keyword": owner_keyword,
+        "stage": stage,
+        "intent_level": intent_level,
+        "interaction_min": interaction_min,
+        "interaction_period": interaction_period,
+        "attribute": attribute,
+        "channel": channel,
+        "sort": sort,
+        "page": page,
+        "size": size,
+    }
+
+    def load_customer_page() -> Dict[str, Any]:
+        return list_customers_service(
+            db,
+            keyword=keyword,
+            special_project=special_project,
+            industry=industry,
+            region=region,
+            region_keyword=region_keyword,
+            owner=owner,
+            owner_keyword=owner_keyword,
+            stage=stage,
+            intent_level=intent_level,
+            interaction_min=interaction_min,
+            interaction_period=interaction_period,
+            attribute=attribute,
+            channel=channel,
+            sort=sort,
+            page=page,
+            size=size,
+        )
+
+    result = cache_service.get_or_load_json(
+        "customer:list-default",
+        cache_params,
+        _DEFAULT_LIST_TTL_SECONDS,
+        load_customer_page,
+        cacheable=_is_default_customer_page(**cache_params),
+        endpoint="/api/customers",
     )
+    _set_cache_headers(response, result)
+    return result.value
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -94,11 +214,94 @@ def list_customers(
 
 @router.get("/filter-options")
 def get_filter_options(
+    response: Response,
     db: Session = Depends(get_db),
     special_project: List[str] = Query([], description="Scope options to projects (multi-select)"),
 ) -> Dict[str, List[str]]:
     """Return facets scoped to the same customer population as the list."""
-    return query_filter_options(db, special_project)
+    result = cache_service.get_or_load_json(
+        "customer:filter-options",
+        {"special_project": special_project},
+        _FILTER_OPTIONS_TTL_SECONDS,
+        lambda: query_filter_options(db, special_project),
+        cacheable=_cacheable_project_scope(special_project),
+        endpoint="/api/customers/filter-options",
+    )
+    _set_cache_headers(response, result)
+    return result.value
+
+
+@router.get("/name-suggestions")
+def get_name_suggestions(
+    response: Response,
+    q: str = Query(..., min_length=1, max_length=100, description="Customer-name prefix"),
+    special_project: List[str] = Query([], description="Scope suggestions to projects"),
+    limit: int = Query(30, ge=1, le=50),
+    db: Session = Depends(get_db),
+) -> Dict[str, Any]:
+    """Return a bounded customer-name prefix search for the remote multi-select."""
+    normalized_query = q.strip()
+    if not normalized_query:
+        raise HTTPException(status_code=422, detail="q must contain a non-whitespace character")
+    result = cache_service.get_or_load_json(
+        "customer:name-suggest",
+        {
+            "q": normalized_query.casefold(),
+            "special_project": special_project,
+            "limit": limit,
+        },
+        _NAME_SUGGESTION_TTL_SECONDS,
+        lambda: get_customer_name_suggestions(
+            db,
+            query=normalized_query,
+            special_project=special_project,
+            limit=limit,
+        ),
+        cacheable=_cacheable_project_scope(special_project),
+        empty_ttl_seconds=_EMPTY_NAME_SUGGESTION_TTL_SECONDS,
+        endpoint="/api/customers/name-suggestions",
+    )
+    _set_cache_headers(response, result)
+    return result.value
+
+
+@router.get("/name-options")
+def get_name_options(
+    response: Response,
+    background_tasks: BackgroundTasks,
+    q: Optional[str] = Query(None, max_length=100, description="Optional customer-name prefix"),
+    special_project: List[str] = Query([], description="Scope options to projects"),
+    offset: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=50),
+    db: Session = Depends(get_db),
+) -> Dict[str, Any]:
+    """Browse/search the Redis-backed full customer-name catalog by page."""
+    normalized_query = (q or "").strip()
+    result = customer_name_catalog.get_page(
+        special_project=special_project,
+        query=normalized_query,
+        offset=offset,
+        limit=limit,
+        ttl_seconds=_NAME_CATALOG_TTL_SECONDS,
+        catalog_loader=lambda: get_all_customer_names(
+            db,
+            special_project=special_project,
+        ),
+        page_loader=lambda: get_customer_name_options(
+            db,
+            query=normalized_query,
+            special_project=special_project,
+            offset=offset,
+            limit=limit,
+        ),
+        defer_build=lambda: background_tasks.add_task(
+            _warm_customer_name_catalog,
+            list(special_project),
+        ),
+        cacheable=_cacheable_project_scope(special_project),
+    )
+    _set_cache_headers(response, result)
+    return result.value
 
 
 # ─────────────────────────────────────────────────────────────────────────────

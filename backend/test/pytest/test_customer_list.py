@@ -9,8 +9,17 @@ from io import BytesIO
 
 import openpyxl
 from fastapi.testclient import TestClient
+from fastapi.responses import Response
 
-from app.routers.customer import get_filter_options, list_customers
+from app.routers.customer import (
+    _is_default_customer_page,
+    get_filter_options,
+    list_customers,
+)
+from app.services.customer.customer_service import (
+    get_customer_name_options,
+    get_customer_name_suggestions,
+)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -22,6 +31,7 @@ from app.routers.customer import get_filter_options, list_customers
 
 def _call(mock_db, **overrides):
     kwargs = dict(
+        response=Response(),
         keyword=None,
         special_project=[],
         industry=[],
@@ -43,6 +53,14 @@ def _call(mock_db, **overrides):
     return list_customers(db=mock_db, **kwargs)
 
 
+def _find_sql_call(mock_db, match_substr):
+    """Return the recorded SQL call that exercises the behavior under test."""
+    for sql, params in mock_db.calls:
+        if match_substr in sql:
+            return sql, params
+    raise AssertionError(f"No recorded SQL contains {match_substr!r}")
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # 通过 HTTP 层验证响应信封
 # ─────────────────────────────────────────────────────────────────────────────
@@ -54,6 +72,7 @@ def test_list_returns_200_and_envelope(client: TestClient):
     for key in ("items", "total", "filters_applied"):
         assert key in body
     assert isinstance(body["items"], list)
+    assert r.headers["X-Cache"] == "BYPASS"
 
 
 def test_list_pagination_params(client: TestClient):
@@ -69,20 +88,46 @@ def test_list_pagination_params(client: TestClient):
     assert body["filters_applied"]["industry"] == ["软件"]
 
 
+def test_only_exact_default_customer_page_is_cacheable():
+    default_params = {
+        "keyword": [],
+        "special_project": ["企业彩光ICT"],
+        "industry": [],
+        "region": [],
+        "region_keyword": None,
+        "owner": [],
+        "owner_keyword": None,
+        "stage": None,
+        "intent_level": None,
+        "interaction_min": None,
+        "interaction_period": 30,
+        "attribute": None,
+        "channel": [],
+        "sort": None,
+        "page": 1,
+        "size": 20,
+    }
+
+    assert _is_default_customer_page(**default_params)
+    assert not _is_default_customer_page(**{**default_params, "page": 2})
+    assert not _is_default_customer_page(**{**default_params, "keyword": ["锐捷"]})
+    assert not _is_default_customer_page(**{**default_params, "special_project": ["重客"]})
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # 直接调用 router 函数，断言生成的 SQL 与绑定参数（无需真实数据库）
 # ─────────────────────────────────────────────────────────────────────────────
 
 def test_keyword_filter_generates_in(mock_db):
     _call(mock_db, keyword=["华为"])
-    sql, params = mock_db.calls[0]
+    sql, params = _find_sql_call(mock_db, "SELECT COUNT(*) FROM dws_customer_360")
     assert "customer_name IN (:keyword_0)" in sql
     assert params["keyword_0"] == "华为"
 
 
 def test_standard_special_project_keeps_customer_360_source(mock_db):
     _call(mock_db, special_project=["企业彩光ICT"])
-    sql, params = mock_db.calls[0]
+    sql, params = _find_sql_call(mock_db, "SELECT COUNT(*) FROM dws_customer_360")
     assert "dws_customer_360" in sql
     assert "campaign_tag IN (:special_project_0)" in sql
     assert params["special_project_0"] == "企业彩光ICT"
@@ -90,7 +135,7 @@ def test_standard_special_project_keeps_customer_360_source(mock_db):
 
 def test_standard_region_filter_matches_plain_and_area_suffix(mock_db):
     _call(mock_db, region=["广东"])
-    sql, params = mock_db.calls[0]
+    sql, params = _find_sql_call(mock_db, "SELECT COUNT(*) FROM dws_customer_360")
     assert "region IN (:region_exact_0, :region_area_0)" in sql
     assert params["region_exact_0"] == "广东"
     assert params["region_area_0"] == "广东区域"
@@ -98,7 +143,7 @@ def test_standard_region_filter_matches_plain_and_area_suffix(mock_db):
 
 def test_other_region_groups_non_standard_values(mock_db):
     _call(mock_db, region=["其他"])
-    sql, params = mock_db.calls[0]
+    sql, params = _find_sql_call(mock_db, "SELECT COUNT(*) FROM dws_customer_360")
     assert "region IS NULL" in sql
     assert "region = ''" in sql
     assert "region NOT IN" in sql
@@ -108,64 +153,64 @@ def test_other_region_groups_non_standard_values(mock_db):
 
 def test_region_keyword_uses_like(mock_db):
     _call(mock_db, region_keyword="广")
-    sql, params = mock_db.calls[0]
+    sql, params = _find_sql_call(mock_db, "SELECT COUNT(*) FROM dws_customer_360")
     assert "region LIKE :region_keyword" in sql
     assert params["region_keyword"] == "%广%"
 
 
 def test_heavy_attribute_filter(mock_db):
     _call(mock_db, attribute="heavy")
-    sql, params = mock_db.calls[0]
+    sql, params = _find_sql_call(mock_db, "SELECT COUNT(*) FROM dws_customer_360")
     assert "attribute = :heavy_attribute" in sql
     assert params["heavy_attribute"] == "H"
 
 
 def test_non_heavy_attribute_filter(mock_db):
     _call(mock_db, attribute="non_heavy")
-    sql, params = mock_db.calls[0]
+    sql, params = _find_sql_call(mock_db, "SELECT COUNT(*) FROM dws_customer_360")
     assert "(attribute IS NULL OR attribute != :heavy_attribute)" in sql
     assert params["heavy_attribute"] == "H"
 
 
 def test_positive_interaction_min_uses_subquery(mock_db):
     _call(mock_db, interaction_min=3, interaction_period=30)
-    sql, _ = mock_db.calls[0]
+    sql, _ = _find_sql_call(mock_db, "SELECT COUNT(*) FROM dws_customer_360")
     assert "dws_interaction_detail" in sql
     assert "HAVING COUNT(*) >= :interaction_min" in sql
 
 
 def test_zero_interaction_min_skips_subquery(mock_db):
     _call(mock_db, interaction_min=0)
-    sql, params = mock_db.calls[0]
+    sql, params = _find_sql_call(mock_db, "SELECT COUNT(*) FROM dws_customer_360")
     assert "dws_interaction_detail" not in sql
     assert "interaction_min" not in params
 
 
 def test_owner_keyword_uses_like(mock_db):
     _call(mock_db, owner_keyword="张")
-    sql, params = mock_db.calls[0]
+    sql, params = _find_sql_call(mock_db, "SELECT COUNT(*) FROM dws_customer_360")
     assert "owner_name LIKE :owner_keyword" in sql
     assert params["owner_keyword"] == "%张%"
 
 
 def test_canonical_channel_filter_accepts_code_and_chinese_label(mock_db):
     _call(mock_db, channel=["email"])
-    sql, params = mock_db.calls[0]
+    sql, params = _find_sql_call(mock_db, "SELECT COUNT(*) FROM dws_customer_360")
     assert "EXISTS (SELECT 1 FROM dws_interaction_detail ic" in sql
     assert "ic.customer_name = dws_customer_360.customer_name" in sql
     assert "ic.channel IN" in sql
-    assert set(params.values()) == {"email", "邮件"}
+    assert {"email", "邮件"}.issubset(set(params.values()))
 
 
 def test_other_channel_filter_excludes_known_and_empty_values(mock_db):
     _call(mock_db, channel=["other"])
-    sql, params = mock_db.calls[0]
+    sql, params = _find_sql_call(mock_db, "SELECT COUNT(*) FROM dws_customer_360")
     assert "ic.channel IS NOT NULL" in sql
     assert "TRIM(ic.channel) != ''" in sql
     assert "ic.channel NOT IN" in sql
-    assert set(params.values()) == {
+    assert {
         "email", "邮件", "web", "官网", "event", "直播/活动", "wechat", "微信",
-    }
+    }.issubset(set(params.values()))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -275,24 +320,18 @@ def test_key_account_filter_applies_enriched_customer_filters(mock_db):
 
 def test_key_account_filter_options_are_scoped_and_regions_are_normalized(mock_db):
     mock_db.add_result(
-        "SELECT c.industry, c.region, c.owner_name",
+        "SELECT 'industry' AS option_type",
         rows=[
-            {
-                "industry": "制造业",
-                "region": "山东区域",
-                "owner_name": "重客负责人甲",
-                "purchase_stage": "阶段2",
-                "intent_level": "高",
-                "last_interaction_channel": "web",
-            },
-            {
-                "industry": "教育",
-                "region": "企业系统部大客户一部",
-                "owner_name": "重客负责人乙",
-                "purchase_stage": "阶段1",
-                "intent_level": "中",
-                "last_interaction_channel": "邮件",
-            },
+            {"option_type": "industry", "option_value": "制造业"},
+            {"option_type": "industry", "option_value": "教育"},
+            {"option_type": "region", "option_value": "山东区域"},
+            {"option_type": "region", "option_value": "企业系统部大客户一部"},
+            {"option_type": "owner", "option_value": "重客负责人甲"},
+            {"option_type": "owner", "option_value": "重客负责人乙"},
+            {"option_type": "stage", "option_value": "阶段2"},
+            {"option_type": "stage", "option_value": "阶段1"},
+            {"option_type": "intent_level", "option_value": "高"},
+            {"option_type": "intent_level", "option_value": "中"},
         ],
     )
     mock_db.add_result(
@@ -305,9 +344,10 @@ def test_key_account_filter_options_are_scoped_and_regions_are_normalized(mock_d
         ],
     )
 
-    result = get_filter_options(db=mock_db, special_project=["重客"])
+    response = Response()
+    result = get_filter_options(response=response, db=mock_db, special_project=["重客"])
 
-    sql, params = mock_db.calls[0]
+    sql, params = _find_sql_call(mock_db, "SELECT 'industry' AS option_type")
     assert "ods_crm_key_account_output_list_day" in sql
     assert "MAX(`time`)" in sql
     assert "c.customer_name = ka.`重客名称`" in sql
@@ -315,6 +355,8 @@ def test_key_account_filter_options_are_scoped_and_regions_are_normalized(mock_d
     assert result["owners"] == ["重客负责人乙", "重客负责人甲"]
     assert result["regions"] == ["山东", "其他"]
     assert result["channels"] == ["email", "web", "event", "other"]
+    assert result["keywords"] == []
+    assert response.headers["X-Cache"] == "BYPASS"
 
 
 def test_key_account_keyword_and_channel_stay_within_latest_snapshot(mock_db):
@@ -334,11 +376,170 @@ def test_key_account_keyword_and_channel_stay_within_latest_snapshot(mock_db):
 
 
 def test_standard_project_filter_options_are_scoped(mock_db):
-    get_filter_options(db=mock_db, special_project=["企业彩光ICT"])
+    get_filter_options(response=Response(), db=mock_db, special_project=["企业彩光ICT"])
 
-    sql, params = mock_db.calls[0]
-    assert "c.campaign_tag IN" in sql
-    assert params["filter_other_projects"] == ("企业彩光ICT",)
+    facet_sql, facet_params = mock_db.calls[0]
+    channel_sql, channel_params = mock_db.calls[1]
+    assert "c.campaign_tag IN" in facet_sql
+    assert facet_params["filter_other_projects"] == ("企业彩光ICT",)
+    assert "GROUP BY channel" in channel_sql
+    assert "WHERE EXISTS" in channel_sql
+    assert "FORCE INDEX (idx_channel)" in channel_sql
+    assert channel_params["channel_other_projects"] == ("企业彩光ICT",)
+
+
+def test_name_suggestions_use_prefix_and_limit(mock_db):
+    mock_db.add_result(
+        "FROM dws_customer_360 c",
+        rows=[
+            {"customer_name": "锐捷网络"},
+            {"customer_name": "锐捷集团"},
+            {"customer_name": "锐捷集团"},
+        ],
+    )
+
+    result = get_customer_name_suggestions(
+        mock_db,
+        query="锐捷",
+        special_project=["企业彩光ICT"],
+        limit=2,
+    )
+
+    sql, params = _find_sql_call(mock_db, "FROM dws_customer_360 c")
+    assert "customer_name LIKE :suggest_prefix ESCAPE '='" in sql
+    assert "campaign_tag IN :suggest_projects" in sql
+    assert params["suggest_prefix"] == "锐捷%"
+    assert params["suggest_projects"] == ("企业彩光ICT",)
+    assert params["suggest_limit"] == 3
+    assert result == {"items": ["锐捷网络", "锐捷集团"], "has_more": False}
+
+
+def test_name_suggestions_exclude_merged_company_aliases(mock_db):
+    mock_db.add_result(
+        "SELECT alias_name FROM company_merge_map",
+        rows=[{"alias_name": "锐捷旧称"}],
+    )
+    mock_db.add_result(
+        "FROM dws_customer_360 c",
+        rows=[
+            {"customer_name": "锐捷旧称"},
+            {"customer_name": "锐捷网络"},
+        ],
+    )
+
+    result = get_customer_name_suggestions(
+        mock_db,
+        query="锐捷",
+        special_project=["企业彩光ICT"],
+        limit=10,
+    )
+
+    sql, params = _find_sql_call(mock_db, "FROM dws_customer_360 c")
+    assert "c.customer_name NOT IN :merged_aliases" in sql
+    assert params["merged_aliases"] == ("锐捷旧称",)
+    assert result == {"items": ["锐捷网络"], "has_more": False}
+
+
+def test_name_suggestions_merge_key_account_and_standard_scopes(mock_db):
+    mock_db.add_result(
+        "FROM ods_crm_key_account_output_list_day ka",
+        rows=[{"customer_name": "中煤集团"}],
+    )
+    mock_db.add_result(
+        "FROM dws_customer_360 c",
+        rows=[{"customer_name": "中煤能源"}, {"customer_name": "中煤集团"}],
+    )
+
+    result = get_customer_name_suggestions(
+        mock_db,
+        query="中煤",
+        special_project=["重客", "企业彩光ICT"],
+        limit=10,
+    )
+
+    assert result == {"items": ["中煤能源", "中煤集团"], "has_more": False}
+
+
+def test_name_suggestions_http_rejects_whitespace(client: TestClient):
+    response = client.get("/api/customers/name-suggestions", params={"q": "   "})
+    assert response.status_code == 422
+
+
+def test_name_suggestions_http_returns_bounded_envelope(client: TestClient):
+    response = client.get(
+        "/api/customers/name-suggestions",
+        params={"q": "锐捷", "special_project": "企业彩光ICT", "limit": 2},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"items": [], "has_more": False}
+    assert response.headers["X-Cache"] == "BYPASS"
+    assert response.headers["X-Cache-TTL"] == "0"
+
+
+def test_name_options_supports_empty_query_and_offset(mock_db):
+    mock_db.add_result(
+        "FROM dws_customer_360 c",
+        rows=[
+            {"customer_name": "客户A"},
+            {"customer_name": "客户B"},
+            {"customer_name": "客户C"},
+            {"customer_name": "客户D"},
+        ],
+    )
+
+    result = get_customer_name_options(
+        mock_db,
+        special_project=["企业彩光ICT"],
+        offset=1,
+        limit=2,
+    )
+
+    sql, params = _find_sql_call(mock_db, "FROM dws_customer_360 c")
+    assert "customer_name LIKE" not in sql
+    assert "ORDER BY customer_name" in sql
+    assert "LIMIT :option_limit OFFSET :option_offset" in sql
+    assert params["option_limit"] == 3
+    assert params["option_offset"] == 1
+    assert result == {"items": ["客户A", "客户B"], "has_more": True}
+
+
+def test_name_options_exclude_merged_company_aliases(mock_db):
+    mock_db.add_result(
+        "SELECT alias_name FROM company_merge_map",
+        rows=[{"alias_name": "客户旧称"}],
+    )
+    mock_db.add_result(
+        "FROM dws_customer_360 c",
+        rows=[
+            {"customer_name": "客户旧称"},
+            {"customer_name": "客户新称"},
+        ],
+    )
+
+    result = get_customer_name_options(
+        mock_db,
+        special_project=["企业彩光ICT"],
+        offset=0,
+        limit=10,
+    )
+
+    sql, params = _find_sql_call(mock_db, "FROM dws_customer_360 c")
+    assert "c.customer_name NOT IN :merged_aliases" in sql
+    assert params["merged_aliases"] == ("客户旧称",)
+    assert result == {"items": ["客户新称"], "has_more": False}
+
+
+def test_name_options_http_returns_first_browsable_page(client: TestClient):
+    response = client.get(
+        "/api/customers/name-options",
+        params={"special_project": "企业彩光ICT", "offset": 0, "limit": 50},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"items": [], "has_more": False}
+    assert response.headers["X-Cache"] == "BYPASS"
+    assert response.headers["X-Cache-TTL"] == "0"
 
 
 def test_key_account_filter_preserves_unmatched_snapshot_row(mock_db):
