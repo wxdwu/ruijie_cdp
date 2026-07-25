@@ -62,6 +62,17 @@
       </div>
 
       <div class="type-filter">
+        <div class="search-filter">
+          <input
+            class="search-input"
+            type="text"
+            v-model="keyword"
+            @input="onKeywordInput"
+            placeholder="搜索候选公司名称（A/B）"
+          />
+          <button v-if="keyword" class="search-clear" @click="clearKeyword" title="清空">×</button>
+          <span v-if="searching" class="search-spinner"></span>
+        </div>
         <label class="filter-label">审核类型：</label>
         <select class="filter-select" v-model="reviewType" @change="onFilterChange">
           <option value="">全部</option>
@@ -114,11 +125,17 @@ const tabs = [
 
 const activeTab = ref('')
 const reviewType = ref('')
+const keyword = ref('')
 const page = ref(1)
 const size = ref(20)
 const total = ref(0)
 const items = ref<ReviewItemData[]>([])
 const selectedIds = ref<number[]>([])
+
+// 搜索防抖 / 请求竞态保护（节流等价）
+const searching = ref(false)
+let searchTimer: number | null = null  // 防抖定时器
+let searchToken = 0  // 请求序号令牌，用于丢弃过期响应
 
 // Deduplication state
 const dedupRunning = ref(false)
@@ -244,21 +261,54 @@ const checkInitialProgress = async () => {
 }
 
 const fetchItems = async () => {
+  // 每次请求递增令牌，响应返回时若令牌已过期（已有更新的请求）则丢弃，
+  // 避免乱序响应覆盖最新结果 —— 等价于请求级节流 / 竞态保护。
+  const token = ++searchToken
+  searching.value = true
   try {
     const params = new URLSearchParams()
     if (activeTab.value) params.append('status', activeTab.value)
     if (reviewType.value) params.append('review_type', reviewType.value)
+    const kw = keyword.value.trim()
+    if (kw) params.append('keyword', kw)
     params.append('page', page.value.toString())
     params.append('size', size.value.toString())
 
     const response = await fetch(`${BASE_URL}/api/review?${params}`)
     const data = await response.json()
+    if (token !== searchToken) return  // 过期响应，丢弃
     items.value = data.items || []
     total.value = data.total || 0
     page.value = data.page || 1
   } catch (error) {
     console.error('Failed to fetch review items:', error)
+  } finally {
+    if (token === searchToken) searching.value = false
   }
+}
+
+// 输入防抖：停止输入 300ms 后才触发查询，避免每次按键都打接口。
+const onKeywordInput = () => {
+  page.value = 1
+  selectedIds.value = []
+  if (searchTimer) {
+    clearTimeout(searchTimer)
+  }
+  searchTimer = window.setTimeout(() => {
+    fetchItems()
+  }, 300)
+}
+
+// 清空搜索：立即重置并重新拉取全量。
+const clearKeyword = () => {
+  keyword.value = ''
+  page.value = 1
+  selectedIds.value = []
+  if (searchTimer) {
+    clearTimeout(searchTimer)
+    searchTimer = null
+  }
+  fetchItems()
 }
 
 const refreshAll = async () => {
@@ -372,6 +422,10 @@ onMounted(() => {
 onUnmounted(() => {
   stopDedupPolling()
   stopTimer()
+  if (searchTimer) {
+    clearTimeout(searchTimer)
+    searchTimer = null
+  }
 })
 </script>
 
@@ -598,5 +652,70 @@ onUnmounted(() => {
 .filter-select:focus {
   outline: none;
   border-color: #89b4fa;
+}
+
+.search-filter {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  position: relative;
+}
+
+.search-input {
+  padding: 10px 32px 10px 14px;
+  background: var(--panel2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--text);
+  font-size: 14px;
+  min-width: 240px;
+  transition: border-color 0.2s ease;
+}
+
+.search-input::placeholder {
+  color: var(--muted);
+  opacity: 1;
+}
+
+.search-input:hover {
+  border-color: var(--muted);
+}
+
+.search-input:focus {
+  outline: none;
+  border-color: var(--brand);
+}
+
+.search-clear {
+  position: absolute;
+  right: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  transition: color 0.2s ease;
+}
+
+.search-clear:hover {
+  color: var(--text);
+}
+
+.search-spinner {
+  position: absolute;
+  right: 10px;
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--line);
+  border-top-color: var(--brand);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
 }
 </style>

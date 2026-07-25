@@ -55,12 +55,13 @@ def get_review_items_endpoint(
     db: Session = Depends(get_db),
     review_type: str = Query(None, description="Filter by review_type: company_merge, contact_merge, data_quality"),
     status: str = Query(None, description="Filter by status: pending, auto_merged, rejected, need_review"),
+    keyword: str = Query(None, description="模糊匹配候选 A/B 公司名称 candidate_a_name / candidate_b_name"),
     page: int = Query(1, ge=1, description="Page number"),
     size: int = Query(20, ge=1, le=100, description="Page size (max 100)"),
 ) -> Dict[str, Any]:
     """Get review items with pagination and filters."""
     return get_review_items(
-        db, review_type=review_type, status=status, page=page, size=size
+        db, review_type=review_type, status=status, keyword=keyword, page=page, size=size
     )
 
 

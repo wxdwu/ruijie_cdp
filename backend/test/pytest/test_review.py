@@ -107,3 +107,21 @@ def test_run_dedup(client, monkeypatch):
     r = client.post("/api/review/run-dedup")
     assert r.status_code == 200
     assert r.json()["status"] == "started"
+
+
+def test_list_keyword_filters_by_candidate_names(client: TestClient, mock_db):
+    # keyword 应生成对候选 A / B 名称的模糊匹配（candidate_a_name OR candidate_b_name）
+    r = client.get("/api/review", params={"keyword": "华为"})
+    assert r.status_code == 200
+    like_sqls = [sql for sql, _ in mock_db.calls if "candidate_a_name LIKE" in sql]
+    assert like_sqls, "keyword 未生成候选名称模糊匹配条件"
+    kw_params = [p.get("kw") for _, p in mock_db.calls if "kw" in p]
+    assert any(kw and "华为" in kw for kw in kw_params)
+
+
+def test_list_keyword_escapes_like_wildcards(client: TestClient, mock_db):
+    # 用户输入的 LIKE 通配符（% / _）应被转义，避免被当成通配符解析
+    r = client.get("/api/review", params={"keyword": "50%"})
+    assert r.status_code == 200
+    kw_params = [p.get("kw") for _, p in mock_db.calls if "kw" in p]
+    assert any(kw and "!%" in kw for kw in kw_params), "LIKE 通配符未被转义"

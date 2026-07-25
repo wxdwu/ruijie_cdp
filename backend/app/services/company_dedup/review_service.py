@@ -213,10 +213,15 @@ def get_review_items(
     *,
     review_type: Optional[str] = None,
     status: Optional[str] = None,
+    keyword: Optional[str] = None,
     page: int = 1,
     size: int = 20,
 ) -> Dict[str, Any]:
-    """分页查询审核项，并补充候选公司详情。"""
+    """分页查询审核项，并补充候选公司详情。
+
+    keyword：模糊匹配候选 A / B 的公司名称（candidate_a_name / candidate_b_name），
+    大小写不敏感。输入中的 LIKE 通配符（% / _ / !）会被转义，避免被当作通配符解析。
+    """
     ensure_review_table(db)
 
     where_parts: List[str] = ["1=1"]
@@ -227,6 +232,16 @@ def get_review_items(
     if status:
         where_parts.append("status = :status")
         params["status"] = status
+    if keyword:
+        # 转义用户输入中的 LIKE 通配符，保证按字面量模糊匹配（避免 %/_ 被当成通配符）
+        safe_kw = (
+            keyword.replace("!", "!!").replace("%", "!%").replace("_", "!_")
+        )
+        where_parts.append(
+            "(candidate_a_name LIKE :kw ESCAPE '!' "
+            "OR candidate_b_name LIKE :kw ESCAPE '!')"
+        )
+        params["kw"] = f"%{safe_kw}%"
     where_sql = " AND ".join(where_parts)
 
     total: int = db.execute(
