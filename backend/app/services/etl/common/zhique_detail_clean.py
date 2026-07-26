@@ -215,8 +215,7 @@ def read_filtered_companies_from(table: str, column: str, extra_where: str = "")
     """读取任意 ODS 表的去重公司名字段，按 is_valid_company_name 过滤后返回。
 
     table / column 为内部常量（非用户输入），直接拼接到 SQL 是安全的。
-    供各 customer_name 源（ods_zhique_contact_day.related_company、
-    ods_zhique_contact_detail_day.关联公司 等）在写入 tmp_icp_customers 前过滤。
+    供各 customer_name 源（ods_zhique_contact_detail_day.关联公司 等）在写入 tmp_icp_customers 前过滤。
     """
     sql = (
         f"SELECT DISTINCT `{column}` FROM `{table}` "

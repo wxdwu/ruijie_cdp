@@ -12,38 +12,16 @@ logger = logging.getLogger(__name__)
 
 # 以下函数/常量由原 etl_sync.py 抽取，SQL 与调用语义保持不变
 def _incremental_update_icp_customers(batch_id: int) -> int:
-    """Incrementally update tmp_icp_customers with new Zhique customers.
-    
-    This function ensures that new customers from ods_zhique_contact_day
-    are added to tmp_icp_customers, which serves as the anchor for
-    building dws_customer_360.
-    
+    """增量更新 tmp_icp_customers（ICP 客户名单）。
+
+    数据来源为整理表 ods_zhique_contact_detail_day（全面替代旧
+    ods_zhique_contact_day），按 time 水位增量追加其新增关联公司为 ICP 客户，
+    作为后续构建 dws_customer_360 的锚点。
+
     Returns:
         Number of new ICP customers added.
     """
-    logger.info("Updating tmp_icp_customers with new Zhique customers...")
-    
-    # Get last sync time for Zhique contacts
-    last_sync_zhique = _get_last_sync_time("ods_zhique_contact_day")
-    
-    # Build filter for new records
-    filter_clause = ""
-    params: Dict[str, Any] = {"batch_id": batch_id}
-    
-    if last_sync_zhique:
-        filter_clause = "AND etl_time > :last_sync_time"
-        params["last_sync_time"] = last_sync_zhique
-        logger.info("  Filtering Zhique contacts after %s", last_sync_zhique)
-    
-    # Insert new ICP customers (INSERT IGNORE to avoid duplicates)
-    n = _exec(
-        "INSERT IGNORE INTO tmp_icp_customers (customer_name) "
-        "SELECT DISTINCT related_company "
-        "FROM ods_zhique_contact_day "
-        "WHERE related_company IS NOT NULL AND related_company != '' "
-        f"  {filter_clause}",
-        params
-    )
+    logger.info("Updating tmp_icp_customers with new Zhique detail customers...")
 
     # 智渠联系人明细（整理表）：追加其新增关联公司为 ICP 客户（按 time 水位增量）
     last_sync_detail = _get_last_sync_time("ods_zhique_contact_detail_day")
@@ -77,57 +55,15 @@ def _incremental_upsert_contact_mapping(batch_id: int) -> Dict[str, int]:
     logger.info("Incremental sync: UPSERT dws_contact_mapping (true incremental)...")
     
     # Get last sync time for each table
-    last_sync_zhique = _get_last_sync_time("ods_zhique_contact_day")
     last_sync_crm = _get_last_sync_time("ods_crm_contact_day")
     last_sync_marketing = _get_last_sync_time("ods_marketing_lead_day")
-    # 注：ods_linkflow_contacts_day / ods_tianrun_session_day 的增量水位由配置驱动，见 _watermark_filter
+    # 注：ods_zhique_contact_detail_day 由 _watermark_filter 按 time 水位驱动；
+    #     ods_linkflow_contacts_day / ods_tianrun_session_day 的增量水位也由配置驱动。
 
     # Debug: log last sync times
     logger.info("Last sync times:")
-    logger.info("  zhique: %s", last_sync_zhique)
     logger.info("  crm: %s", last_sync_crm)
     logger.info("  marketing: %s", last_sync_marketing)
-    
-    # Zhique contacts - only new/updated records
-    zhique_filter = ""
-    zhique_params = {"batch_id": batch_id}
-    if last_sync_zhique:
-        zhique_filter = "AND etl_time > :last_sync_time"
-        zhique_params["last_sync_time"] = last_sync_zhique
-        logger.info("  Zhique filter: etl_time > %s", last_sync_zhique)
-    
-    # Debug: check how many records match the filter
-    debug_count = _count_table_rows(
-        "ods_zhique_contact_day",
-        f"related_company IS NOT NULL AND related_company != '' {zhique_filter}",
-        zhique_params
-    )
-    logger.info("  Zhique: %d records match filter", debug_count)
-    
-    n = _exec(
-        f"""
-        INSERT INTO dws_contact_mapping_temp 
-          (customer_name, contact_name, mobile, email, department, 
-           position, source_table, etl_time, sync_batch_id) 
-        SELECT 
-          z.related_company, z.contact_name, z.mobile, z.email, z.department, 
-          z.position, 
-          'zhique', NOW(), :batch_id 
-        FROM ods_zhique_contact_day z 
-        WHERE z.related_company IS NOT NULL AND z.related_company != '' 
-          {zhique_filter}
-        ON DUPLICATE KEY UPDATE 
-          contact_name = VALUES(contact_name), 
-          email = VALUES(email), 
-          department = VALUES(department), 
-          position = VALUES(position), 
-          etl_time = VALUES(etl_time), 
-          sync_batch_id = VALUES(sync_batch_id)
-        """,
-        zhique_params,
-    )
-    stats["zhique"] = n
-    logger.info("  Zhique: %d records upserted (incremental), rowcount=%d", debug_count, n)
     
     # CRM contacts - only new/updated records
     crm_filter = ""

@@ -248,7 +248,6 @@ DEDUP_DATA_SOURCES = [
     "dws_customer_360",              # 客户360宽表（已做过多源聚合的主体表）
     "ods_zhique_behavior_list_day",  # 知鹊行为日表
     "ods_marketing_lead_day",        # 营销线索日表
-    "ods_zhique_contact_day",        # 知鹊联系人日表
     "ods_crm_contact_day",           # CRM 联系人日表
 ]
 
@@ -261,7 +260,7 @@ DEDUP_DATA_SOURCES = [
 #   - phone_field:    表中电话号码字段（用于匹配）
 #   - email_field:    表中邮箱字段（用于匹配）
 EVIDENCE_TABLES = [
-    {"table": "ods_zhique_contact_day",  "company_field": "related_company",  "phone_field": "phone",         "email_field": "email"},
+    {"table": "ods_zhique_contact_detail_day",  "company_field": "关联公司",  "phone_field": "手机号",  "email_field": "邮箱"},
     {"table": "ods_crm_contact_day",     "company_field": "customer_name",    "phone_field": "mobile",        "email_field": "email"},
     {"table": "ods_marketing_lead_day",  "company_field": "customer_company", "phone_field": "contact_phone", "email_field": "email"},
 ]
@@ -951,10 +950,10 @@ def calculate_evidence_score(name_a: str, name_b: str, db: Session) -> tuple:
     # 定义要检查的表和字段（字段名与实际表结构一致）
     tables_to_check = [
         {
-            "table": "ods_zhique_contact_day",
-            "company_field": "related_company",   # 实际列名
-            "phone_field": "phone",
-            "email_field": "email",
+            "table": "ods_zhique_contact_detail_day",
+            "company_field": "关联公司",   # 整理表实际列名
+            "phone_field": "手机号",
+            "email_field": "邮箱",
         },
         {
             "table": "ods_crm_contact_day",
@@ -1050,7 +1049,7 @@ def batch_calculate_evidence_scores(
 
     # 定义要检查的表（字段名与实际表结构一致）
     tables_to_check = [
-        {"table": "ods_zhique_contact_day", "company_field": "related_company", "phone_field": "phone", "email_field": "email", "name_field": "contact_name"},
+        {"table": "ods_zhique_contact_detail_day", "company_field": "关联公司", "phone_field": "手机号", "email_field": "邮箱", "name_field": "姓名"},
         {"table": "ods_crm_contact_day", "company_field": "customer_name", "phone_field": "mobile", "email_field": "email", "name_field": "contact_name"},
         {"table": "ods_marketing_lead_day", "company_field": "customer_company", "phone_field": "contact_phone", "email_field": "email", "name_field": "customer_name"},
     ]
@@ -1357,7 +1356,7 @@ def fetch_all_company_names(db: Session) -> List[Dict[str, Any]]:
     - dws_customer_360 (Customer 360 view)
     - ods_zhique_behavior_list_day (Behavior data)
     - ods_marketing_lead_day (Marketing leads)
-    - ods_zhique_contact_day (Contacts)
+    - ods_zhique_contact_detail_day (Contacts, 整理表，全面替代旧 ods_zhique_contact_day)
     - ods_crm_contact_day (CRM contacts)
 
     Args:
@@ -1456,19 +1455,19 @@ def fetch_all_company_names(db: Session) -> List[Dict[str, Any]]:
     except Exception as e:
         logger.warning(f"[3/5] ods_marketing_lead_day 查询失败: {e}")
 
-    # Source 4: ods_zhique_contact_day
+    # Source 4: ods_zhique_contact_detail_day（整理表，全面替代旧 ods_zhique_contact_day）
     try:
         t0 = time.time()
-        logger.info("[4/5] 查询 ods_zhique_contact_day...")
+        logger.info("[4/5] 查询 ods_zhique_contact_detail_day...")
         sql4 = text("""
-            SELECT related_company, MAX(id) AS record_id
-            FROM ods_zhique_contact_day
-            WHERE related_company IS NOT NULL AND related_company != ''
-            GROUP BY related_company
+            SELECT 关联公司, MAX(id) AS record_id
+            FROM ods_zhique_contact_detail_day
+            WHERE 关联公司 IS NOT NULL AND 关联公司 != ''
+            GROUP BY 关联公司
         """)
         result4 = db.execute(sql4).fetchall()
         for company_name, record_id in result4:
-            src_entry = {"table": "ods_zhique_contact_day", "record_id": record_id}
+            src_entry = {"table": "ods_zhique_contact_detail_day", "record_id": record_id}
             if company_name not in companies:
                 companies[company_name] = {
                     "name": company_name,
@@ -1477,11 +1476,11 @@ def fetch_all_company_names(db: Session) -> List[Dict[str, Any]]:
                 }
             else:
                 existing_tables = {s["table"] if isinstance(s, dict) else s for s in companies[company_name]["sources"]}
-                if "ods_zhique_contact_day" not in existing_tables:
+                if "ods_zhique_contact_detail_day" not in existing_tables:
                     companies[company_name]["sources"].append(src_entry)
-        logger.info(f"[4/5] ods_zhique_contact_day: {len(result4)} 条, 耗时 {time.time()-t0:.1f}s")
+        logger.info(f"[4/5] ods_zhique_contact_detail_day: {len(result4)} 条, 耗时 {time.time()-t0:.1f}s")
     except Exception as e:
-        logger.warning(f"[4/5] ods_zhique_contact_day 查询失败: {e}")
+        logger.warning(f"[4/5] ods_zhique_contact_detail_day 查询失败: {e}")
 
     # Source 5: ods_crm_contact_day
     try:
@@ -1972,12 +1971,12 @@ def _determine_primary_company(
 def _update_contacts_company_name(
     old_name: str, new_name: str, db: Session
 ) -> int:
-    """更新 ods_zhique_contact_day 中的公司名称。"""
+    """更新 ods_zhique_contact_detail_day（整理表）中的公司名称。"""
     update_sql = text("""
-        UPDATE ods_zhique_contact_day
-        SET related_company = :new_name
-        WHERE related_company LIKE :old_name
-          AND related_company != :new_name
+        UPDATE ods_zhique_contact_detail_day
+        SET 关联公司 = :new_name
+        WHERE 关联公司 LIKE :old_name
+          AND 关联公司 != :new_name
     """)
     result = db.execute(update_sql, {
         "new_name": new_name,

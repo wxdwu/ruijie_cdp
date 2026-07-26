@@ -20,11 +20,11 @@ logger = logging.getLogger(__name__)
 
 # 以下函数/常量由原 etl_sync.py 抽取，SQL 与调用语义保持不变
 def _build_icp_customers_table() -> int:
-    """Build tmp_icp_customers table from ods_zhique_contact_day.
-    
-    This table serves as the anchor/基准 for all subsequent ETL steps.
-    It contains distinct customer names from Zhique contacts (ICP customers).
-    
+    """Build tmp_icp_customers table from ods_zhique_contact_detail_day（整理表）。
+
+    整理表全面替代旧 ods_zhique_contact_day，作为后续所有 ETL 步骤的锚点/基准。
+    包含智渠联系人中清洗后的公司名（ICP 客户）。
+
     Returns:
         Number of ICP customers loaded.
     """
@@ -41,11 +41,7 @@ def _build_icp_customers_table() -> int:
     # Truncate and reload
     _exec("TRUNCATE TABLE tmp_icp_customers")
     
-    # 智渠联系人（ods_zhique_contact_day.related_company）：先按公司名规则过滤再写入
-    companies = read_filtered_companies_from("ods_zhique_contact_day", "related_company")
-    bulk_insert_companies_into_tmp_icp(companies)
-
-    # 智渠联系人明细（整理表）：更全面，追加其关联公司作为 ICP 客户（先过滤非公司名）
+    # 智渠联系人明细（整理表，全面替代旧 ods_zhique_contact_day）：先按公司名规则过滤再写入
     companies = read_filtered_zhique_detail_companies()
     bulk_insert_companies_into_tmp_icp(companies)
 
@@ -160,18 +156,7 @@ def _build_tmp_icp_filters() -> None:
     _exec("TRUNCATE TABLE tmp_icp_customers")
     _exec("TRUNCATE TABLE tmp_icp_mobiles")
 
-    # 智渠联系人（ods_zhique_contact_day.related_company）：先按公司名规则过滤再写入
-    companies = read_filtered_companies_from("ods_zhique_contact_day", "related_company")
-    bulk_insert_companies_into_tmp_icp(companies)
-
-    _exec("""
-        INSERT IGNORE INTO tmp_icp_mobiles (mobile)
-        SELECT DISTINCT mobile
-        FROM ods_zhique_contact_day
-        WHERE mobile IS NOT NULL AND mobile != ''
-    """)
-
-    # 智渠联系人明细（整理表）：更全面，补充 ICP 公司（先过滤非公司名）与手机号
+    # 智渠联系人明细（整理表，全面替代旧 ods_zhique_contact_day）：补充 ICP 公司（先过滤非公司名）与手机号
     companies = read_filtered_zhique_detail_companies()
     bulk_insert_companies_into_tmp_icp(companies)
     _exec("""

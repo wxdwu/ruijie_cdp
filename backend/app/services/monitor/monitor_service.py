@@ -59,7 +59,6 @@ _MONITOR_REGISTRY: List[MonitoredTable] = [
     MonitoredTable("review_candidate"),
     # ods 层源表
     MonitoredTable("ods_zhique_behavior_list_day"),
-    MonitoredTable("ods_zhique_contact_day"),
     MonitoredTable("ods_zhique_contact_detail_day"),
     MonitoredTable("ods_linkflow_contacts_day"),
     MonitoredTable("ods_linkflow_events_day"),

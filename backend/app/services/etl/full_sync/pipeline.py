@@ -11,6 +11,7 @@ from app.services.etl.full_sync.build_dws_contact_mapping import _load_contact_m
 from app.services.etl.full_sync.build_dws_interaction_detail import _load_interaction_detail
 from app.services.etl.full_sync.build_dws_customer_360 import _build_customer_360
 from app.services.etl.full_sync.build_dws_contact_360 import _build_contact_360
+from app.services.etl.common.interaction_align import align_interaction_detail_names
 
 logger = logging.getLogger(__name__)
 
@@ -119,6 +120,12 @@ def run_full_sync(trigger_by: str = "system") -> Dict[str, Any]:
         c360_count = _build_customer_360()
         stats["steps"]["customer_360"] = {"rows": c360_count}
         _phase_end("Step 8: Building customer-360", t0)
+
+        # Step 8.5: 对齐互动明细 customer_name 到 customer_360 标准拼写
+        # （解决多源客户名大小写 / 全半角 / 首尾空格不一致导致的聚合分裂）
+        t0 = _phase_start("Step 8.5: Aligning interaction_detail names to customer_360")
+        align_interaction_detail_names("dws_customer_360", "dws_interaction_detail")
+        _phase_end("Step 8.5: Aligning interaction_detail names to customer_360", t0)
 
         # Step 9: Building contact-360
         t0 = _phase_start("Step 9: Building contact-360")

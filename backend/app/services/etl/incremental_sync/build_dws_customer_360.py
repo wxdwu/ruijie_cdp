@@ -8,6 +8,7 @@ from sqlalchemy import text
 from app.services.etl.common import *  # noqa: F401,F403
 from app.services.etl.incremental_sync.build_dws_contact_360 import (
     _build_contact_360, _incremental_build_contact_360)
+from app.services.etl.common.interaction_align import align_interaction_detail_names
 
 logger = logging.getLogger(__name__)
 
@@ -314,6 +315,8 @@ def _incremental_rebuild_aggregates(batch_id: int) -> Dict[str, int]:
     logger.info("Incremental sync: Incrementally updating aggregate tables...")
     
     c360_count = _incremental_build_customer_360(batch_id)
+    # 对齐互动明细 customer_name 到 customer_360 标准拼写（基于 _temp 表，旋转后生效）
+    align_interaction_detail_names("dws_customer_360_temp", "dws_interaction_detail_temp")
     ct360_count = _incremental_build_contact_360(batch_id)
     
     return {"customer_360": c360_count, "contact_360": ct360_count}

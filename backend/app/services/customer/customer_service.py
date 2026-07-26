@@ -28,8 +28,77 @@ from app.services.customer.key_account_query import (
     list_key_accounts,
 )
 from app.services.utils import add_in_filter as _add_in_filter
+from app.config import settings
 
 logger = logging.getLogger(__name__)
+
+# 合法公司名判定：customer_name 包含任一企业特征词即视为有效公司名（保守口径，
+# 仅剔除明显非法/用户名类记录，避免误删真实公司）。正则用于 REGEXP 匹配。
+VALID_COMPANY_REGEX = (
+    "公司|集团|股份|有限公司|有限责任公司|企业|厂|局|所|院|银行|保险|证券|"
+    "医院|学校|大学|学院|电视台|出版社|报社|协会|基金会|合作社|商行|门店|"
+    "中心|科技|网络|技术|实业|控股|投资|管理|咨询|电子|信息|能源|医疗|"
+    "生物|教育|文化|传媒|贸易|物流|建设|工程|房地产|置业|酒店|旅游|食品|"
+    "服饰|汽车|机械|化工|材料|环境|智能|数据|软件|通信|金融|基金|租赁|"
+    "供应链|电子商务"
+)
+
+
+def _load_filter_name_set(db: Session, table: str) -> List[str]:
+    """从指定表读取一列公司名（表需含 customer_name 列）。
+
+    表不存在或列缺失时返回空列表（对应子筛选变为无操作），不抛异常。
+    """
+    try:
+        rows = db.execute(text(f"SELECT customer_name FROM {table}")).fetchall()
+        return [r[0] for r in rows if r[0]]
+    except Exception as exc:  # 表未创建等
+        logger.warning("读取筛选表 %s 失败（已忽略）：%s", table, exc)
+        return []
+
+
+def _apply_customer_filters(
+    where_parts: List[str],
+    params: Dict[str, Any],
+    db: Session,
+) -> None:
+    """按配置开关追加客户列表筛选条件（当前默认全部禁用）。
+
+    规则（均受“保命条件”保护：有联系人/互动的行始终保留，避免误删有效数据）：
+    - 非法公司名/用户名：customer_name 不含任何企业特征词且无联系人与互动的行被剔除。
+    - 黑名单（精确）：命中的公司名被剔除（当前默认禁用）。
+    - 白名单（允许名单）：仅白名单内公司名保留（当前默认禁用）。
+    """
+    if not settings.CUSTOMER_FILTER_ENABLED:
+        return
+
+    # 保命条件：有联系人或有互动的行始终保留
+    keep_data = "(contact_count > 0 OR interaction_count_total > 0)"
+
+    # 1) 非法公司名 / 用户名剔除
+    if settings.CUSTOMER_FILTER_ILLEGAL_ENABLED:
+        where_parts.append(
+            f"(customer_name REGEXP :valid_company_regex OR {keep_data})"
+        )
+        params["valid_company_regex"] = VALID_COMPANY_REGEX
+
+    # 2) 黑名单（精确匹配，当前默认禁用）
+    if settings.CUSTOMER_FILTER_BLACKLIST_ENABLED:
+        blacklist = _load_filter_name_set(db, "company_blacklist")
+        if blacklist:
+            ph = ", ".join(f":bl_{i}" for i in range(len(blacklist)))
+            for i, name in enumerate(blacklist):
+                params[f"bl_{i}"] = name
+            where_parts.append(f"(customer_name NOT IN ({ph}) OR {keep_data})")
+
+    # 3) 白名单（允许名单，当前默认禁用）
+    if settings.CUSTOMER_FILTER_WHITELIST_ENABLED:
+        whitelist = _load_filter_name_set(db, "company_whitelist")
+        if whitelist:
+            ph = ", ".join(f":wl_{i}" for i in range(len(whitelist)))
+            for i, name in enumerate(whitelist):
+                params[f"wl_{i}"] = name
+            where_parts.append(f"(customer_name IN ({ph}) OR {keep_data})")
 
 # 允许排序的字段（白名单，防止 SQL 注入）
 ALLOWED_SORT = {
@@ -204,6 +273,9 @@ def get_customer_list(
         customer_name_column="dws_customer_360.customer_name",
         channel=channel,
     )
+
+    # 客户列表筛选（默认禁用，待数据对齐后开启；见 config.CUSTOMER_FILTER_*）
+    _apply_customer_filters(where_parts, params, db)
 
     where_sql = " AND ".join(where_parts)
 

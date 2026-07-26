@@ -51,6 +51,14 @@ class Settings(BaseModel):
     ES_VERIFY_CERTS: bool = os.getenv("ES_VERIFY_CERTS", "false").lower() == "true"
     ES_ANALYZER: str = os.getenv("ES_ANALYZER", "ik_max_word")
 
+    # ── 客户列表筛选开关 ────────────────────────────────────────────────────
+    # 全量/增量数据对齐完成前临时禁用；对齐验证通过后再开启 CUSTOMER_FILTER_ENABLED。
+    # 各子项可单独控制：非法公司名/用户名剔除、黑名单、白名单。
+    CUSTOMER_FILTER_ENABLED: bool = os.getenv("CUSTOMER_FILTER_ENABLED", "false").lower() == "true"
+    CUSTOMER_FILTER_ILLEGAL_ENABLED: bool = os.getenv("CUSTOMER_FILTER_ILLEGAL_ENABLED", "true").lower() == "true"
+    CUSTOMER_FILTER_BLACKLIST_ENABLED: bool = os.getenv("CUSTOMER_FILTER_BLACKLIST_ENABLED", "false").lower() == "true"
+    CUSTOMER_FILTER_WHITELIST_ENABLED: bool = os.getenv("CUSTOMER_FILTER_WHITELIST_ENABLED", "false").lower() == "true"
+
     @property
     def DATABASE_URL(self) -> str:
         return (

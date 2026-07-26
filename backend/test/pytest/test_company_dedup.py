@@ -22,7 +22,7 @@ def test_evidence_scores_uses_in_not_like():
     ods_sqls = [
         s
         for s, _ in db.calls
-        if ("FROM ods_zhique_contact_day" in s
+        if ("FROM ods_zhique_contact_detail_day" in s
             or "FROM ods_crm_contact_day" in s
             or "FROM ods_marketing_lead_day" in s)
     ]

@@ -37,14 +37,10 @@ DELIMITER ;
 CALL add_idx_if_missing('app_cdp', 'ods_crm_contact_day',      'idx_crm_custname',  'customer_name');
 CALL add_idx_if_missing('app_cdp', 'ods_crm_opportunity_day',  'idx_opp_custname',  'customer_name');
 
--- 2) 智渠联系人：按 related_company 取 ICP 客户、按 mobile 取 ICP 手机号
-CALL add_idx_if_missing('app_cdp', 'ods_zhique_contact_day',    'idx_zqc_related',   'related_company');
-CALL add_idx_if_missing('app_cdp', 'ods_zhique_contact_day',    'idx_zqc_mobile',    'mobile');
-
--- 3) 天润会话按 customer_name 过滤（建 contact_mapping / 交互明细时跳过 NULL）
+-- 2) 天润会话按 customer_name 过滤（建 contact_mapping / 交互明细时跳过 NULL）
 CALL add_idx_if_missing('app_cdp', 'ods_tianrun_session_day',   'idx_tr_custname',   'customer_name');
 
--- 4) 交互明细按 (contact_name, mobile) 分组构建 dws_contact_360
+-- 3) 交互明细按 (contact_name, mobile) 分组构建 dws_contact_360
 --    （增量临时表由 LIKE 主表创建，自动继承该索引）
 CALL add_idx_if_missing('app_cdp', 'dws_interaction_detail',    'idx_contact_mobile', 'contact_name, mobile');
 

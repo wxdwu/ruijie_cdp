@@ -97,10 +97,7 @@ def _create_indexes() -> None:
     # 1) CRM 两张源表按 customer_name 分组（预聚合联系人属性、商机指标）时避免全表 filesort
     _ensure_index("ods_crm_contact_day", "idx_crm_custname", "customer_name")
     _ensure_index("ods_crm_opportunity_day", "idx_opp_custname", "customer_name")
-    # 2) 智渠联系人按 related_company 取 ICP 客户（DISTINCT）及按 mobile 取 ICP 手机号
-    _ensure_index("ods_zhique_contact_day", "idx_zqc_related", "related_company")
-    _ensure_index("ods_zhique_contact_day", "idx_zqc_mobile", "mobile")
-    # 2b) 智渠联系人明细（整理表）按 关联公司 / 手机号 取 ICP 客户与手机号
+    # 2) 智渠联系人明细（整理表，全面替代旧 ods_zhique_contact_day）按 关联公司 / 手机号 取 ICP 客户与手机号
     _ensure_index("ods_zhique_contact_detail_day", "idx_zqcd_company", "`关联公司`(191)")
     _ensure_index("ods_zhique_contact_detail_day", "idx_zqcd_mobile", "`手机号`(191)")
     # 3) 天润会话按 customer_name 过滤（建 contact_mapping 与交互明细时跳过 NULL）

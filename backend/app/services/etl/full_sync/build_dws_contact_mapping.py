@@ -24,20 +24,8 @@ def _load_contact_mapping() -> Dict[str, int]:
     logger.info("Truncating dws_contact_mapping for full reload…")
     _exec("TRUNCATE TABLE dws_contact_mapping")
 
-    # ── a. Zhique contacts first (BASE / anchor - 2.4K ICP customers) ────
-    n = _exec(
-        "INSERT IGNORE INTO dws_contact_mapping "
-        "  (customer_name, contact_name, mobile, email, department, "
-        "   position, source_table, etl_time) "
-        "SELECT "
-        "  z.related_company, z.contact_name, z.mobile, z.email, z.department, "
-        "  z.position, "
-        "  'zhique', NOW() "
-        "FROM ods_zhique_contact_day z "
-        "WHERE z.related_company IS NOT NULL AND z.related_company != ''"
-    )
-    stats["zhique"] = n
-    logger.info("[a] Zhique contacts (BASE): %d rows (anchor for ICP)", n)
+    # ── a. 智渠联系人明细（整理表，全面替代旧 ods_zhique_contact_day）作为 ICP 锚点 ────
+    # 整理表数据统一在下方 [f] 段写入 dws_contact_mapping，此处不再单独处理旧表。
 
     # ── b. CRM contacts — only those matching zhique by company or mobile ──
     role_case = " ".join(
