@@ -1,5 +1,14 @@
 <script setup>
-import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import {
+  computed,
+  nextTick,
+  onActivated,
+  onBeforeUnmount,
+  onDeactivated,
+  onMounted,
+  reactive,
+  ref,
+} from 'vue'
 import { useRouter } from 'vue-router'
 import FieldHelpTooltip from '../components/customer/FieldHelpTooltip.vue'
 import { getCampaignHelp } from '../components/campaign/campaignHelpConfig'
@@ -49,6 +58,8 @@ let customerAbortController = null
 let contentAbortController = null
 let filterOptionsAbortController = null
 let isUnmounted = false
+let isFirstActivation = true
+let savedScrollTop = 0
 
 const channelLabels = {
   web: '官网',
@@ -235,7 +246,10 @@ async function fetchBootstrap() {
     applyOverviewData(data.overview || {})
     customerData.value = data.customers || customerData.value
     customerPage.value = data.customers?.page || 1
-    void fetchContentData()
+    const bootstrapContent = data.overview?.content_effect
+    if (!bootstrapContent || bootstrapContent.deferred === true) {
+      void fetchContentData()
+    }
   } catch (error) {
     if (!abortController.signal.aborted) {
       console.error('fetchBootstrap', error)
@@ -366,12 +380,7 @@ function openCustomer(customer) {
   if (customer.id != null) router.push(`/customers/${customer.id}`)
 }
 
-onMounted(async () => {
-  await fetchBootstrap()
-})
-
-onBeforeUnmount(() => {
-  isUnmounted = true
+function cancelPendingRequests() {
   cancelScheduledCustomerFilters()
   dashboardRequestId += 1
   customerRequestId += 1
@@ -380,6 +389,46 @@ onBeforeUnmount(() => {
   dashboardAbortController?.abort()
   customerAbortController?.abort()
   contentAbortController?.abort()
+  filterOptionsAbortController = null
+  dashboardAbortController = null
+  customerAbortController = null
+  contentAbortController = null
+  loading.value = false
+  customerLoading.value = false
+  contentLoading.value = false
+}
+
+async function refreshRetainedData() {
+  await Promise.allSettled([fetchData(), fetchCustomerData()])
+}
+
+onMounted(async () => {
+  await fetchBootstrap()
+})
+
+onActivated(async () => {
+  if (isFirstActivation) {
+    isFirstActivation = false
+    return
+  }
+  await nextTick()
+  window.requestAnimationFrame(() => {
+    const scrollContainer = document.getElementById('app-main-scroll')
+    if (scrollContainer) scrollContainer.scrollTop = savedScrollTop
+  })
+  // 已保留的数据立即可见；当前筛选在后台刷新，不清空旧内容。
+  void refreshRetainedData()
+})
+
+onDeactivated(() => {
+  const scrollContainer = document.getElementById('app-main-scroll')
+  savedScrollTop = scrollContainer?.scrollTop || 0
+  cancelPendingRequests()
+})
+
+onBeforeUnmount(() => {
+  isUnmounted = true
+  cancelPendingRequests()
 })
 </script>
 

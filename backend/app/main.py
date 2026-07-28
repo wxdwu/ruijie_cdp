@@ -17,7 +17,11 @@ from fastapi.responses import HTMLResponse
 from app.routers import customer, ai_chat, campaign, review, sync, pool, es_sync, es_crud, monitor
 from app.services.etl.etl_scheduler import start_scheduler, stop_scheduler
 from app.database.engine import dispose_engine
-from app.cache import close_cache_client, get_cache_status
+from app.cache import (
+    campaign_cache_coordinator,
+    close_cache_client,
+    get_cache_status,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +35,8 @@ async def lifespan(app: FastAPI):
     """Manage application lifecycle: start scheduler on boot, stop on exit."""
     logger.info("Starting ETL scheduler …")
     start_scheduler()
+    logger.info("Scheduling campaign cache warm-up …")
+    campaign_cache_coordinator.schedule_startup_warm()
     try:
         # 确保公司合并持久化表存在（查询层按 company_merge_map 折叠别名）
         try:
@@ -56,6 +62,8 @@ async def lifespan(app: FastAPI):
     finally:
         logger.info("Stopping ETL scheduler …")
         stop_scheduler()
+        logger.info("Stopping campaign cache warm-up …")
+        campaign_cache_coordinator.stop()
         logger.info("Closing cache client …")
         close_cache_client()
         logger.info("Disposing connection pool …")
@@ -104,6 +112,7 @@ def health_check():
         "status": "ok",
         "service": "CDP ABM 360",
         "cache": get_cache_status(),
+        "campaign_cache": campaign_cache_coordinator.get_status(),
     }
 
 

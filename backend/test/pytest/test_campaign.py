@@ -119,8 +119,12 @@ def test_overview_keys(client: TestClient):
 
 
 def test_bootstrap_keys(client: TestClient):
-    body = client.get("/api/campaign/bootstrap").json()
+    response = client.get("/api/campaign/bootstrap")
+    body = response.json()
     assert set(("filter_options", "applied_filters", "overview", "customers")) <= body.keys()
+    assert body["overview"]["content_effect"].get("deferred") is not True
+    assert response.headers["X-Cache"] == "BYPASS"
+    assert response.headers["X-Data-Generation"] == "0"
 
 
 def test_overview_aggregates_rows_and_preserves_envelopes(client: TestClient, mock_db):

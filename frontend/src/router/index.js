@@ -17,6 +17,7 @@ const routes = [
     path: '/campaign',
     name: 'CampaignBoard',
     component: () => import('../views/CampaignBoard.vue'),
+    meta: { keepAlive: true },
   },
   {
     path: '/ai-chat',

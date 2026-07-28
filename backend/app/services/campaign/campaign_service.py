@@ -7,7 +7,6 @@
 
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta
 import logging
 import time
@@ -16,7 +15,6 @@ from typing import Any, Dict, List, Optional, Tuple
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from app.database.engine import get_session_factory
 from app.services.common.channel_classification import (
     CHANNEL_FILTER_ORDER,
     add_channel_filter,
@@ -965,6 +963,7 @@ def get_customers_by_stage(
     offset = (current_page - 1) * page_size
 
     query_started = time.perf_counter()
+    null_id_order = "(c.id IS NULL) ASC, " if _is_key_account_campaign(campaign_tag) else ""
     rows = db.execute(
         text(
             f"SELECT c.id, {customer_name} AS customer_name, {campaign_label} AS campaign_tag, "
@@ -975,7 +974,7 @@ def get_customers_by_stage(
             "c.product_categories, c.source_tables "
             f"FROM {customer_scope} "
             f"WHERE {where_sql} "
-            f"ORDER BY (c.id IS NULL) ASC, c.intent_score DESC, c.active_opp_amount DESC, {customer_name} ASC "
+            f"ORDER BY {null_id_order}c.intent_score DESC, c.active_opp_amount DESC, {customer_name} ASC "
             "LIMIT :page_size OFFSET :offset"
         ),
         {**params, "page_size": page_size, "offset": offset},
@@ -1062,24 +1061,6 @@ def get_customers_by_stage(
     return result
 
 
-def _get_bootstrap_defaults(db: Session) -> Dict[str, Optional[str]]:
-    row = db.execute(text(
-        "SELECT "
-        "(SELECT campaign_tag FROM dws_customer_360 "
-        " WHERE campaign_tag IS NOT NULL AND campaign_tag != '' "
-        " ORDER BY campaign_tag ASC LIMIT 1) AS campaign_tag, "
-        "(SELECT event_time FROM dws_interaction_detail "
-        " WHERE event_time IS NOT NULL ORDER BY event_time ASC LIMIT 1) AS min_date, "
-        "(SELECT event_time FROM dws_interaction_detail "
-        " WHERE event_time IS NOT NULL ORDER BY event_time DESC LIMIT 1) AS max_date"
-    )).one()
-    return {
-        "campaign_tag": row.campaign_tag,
-        "min_date": _date_iso(row.min_date),
-        "max_date": _date_iso(row.max_date),
-    }
-
-
 def get_campaign_bootstrap(
     db: Session,
     campaign_tag: Optional[str] = None,
@@ -1090,12 +1071,19 @@ def get_campaign_bootstrap(
     page: int = 1,
     page_size: int = 10,
 ) -> Dict[str, Any]:
-    """Load default filters, overview, and the first customer page in one request."""
+    """顺序加载完整首屏，避免多个重查询并发争抢同一 MySQL 实例。"""
     started_at = time.perf_counter()
-    defaults = _get_bootstrap_defaults(db)
-    applied_campaign = campaign_tag or defaults["campaign_tag"]
-    applied_start = start_date or defaults["min_date"]
-    applied_end = end_date or defaults["max_date"]
+    filter_options = get_filter_options(db)
+    applied_campaign = campaign_tag or next(
+        (
+            campaign
+            for campaign in filter_options["campaigns"]
+            if campaign != KEY_ACCOUNT_CAMPAIGN
+        ),
+        None,
+    )
+    applied_start = start_date or filter_options["min_date"]
+    applied_end = end_date or filter_options["max_date"]
 
     customer_kwargs = {
         "campaign_tag": applied_campaign,
@@ -1111,50 +1099,25 @@ def get_campaign_bootstrap(
         "include_filter_options": False,
     }
 
-    if isinstance(db, Session):
-        def with_session(loader):
-            worker_db = get_session_factory()()
-            try:
-                return loader(worker_db)
-            finally:
-                worker_db.close()
-
-        with ThreadPoolExecutor(max_workers=1, thread_name_prefix="campaign-bootstrap") as executor:
-            customer_future = executor.submit(
-                with_session,
-                lambda worker_db: get_customers_by_stage(db=worker_db, **customer_kwargs),
-            )
-            overview = get_campaign_overview(
-                db=db,
-                campaign_tag=applied_campaign,
-                start_date=applied_start,
-                end_date=applied_end,
-                channel=channel,
-                industry=industry,
-                include_content=False,
-                include_global_filter_options=True,
-            )
-            customers = customer_future.result()
-    else:
-        overview = get_campaign_overview(
-            db=db,
-            campaign_tag=applied_campaign,
-            start_date=applied_start,
-            end_date=applied_end,
-            channel=channel,
-            industry=industry,
-            include_content=False,
-            include_global_filter_options=True,
-        )
-        customers = get_customers_by_stage(db=db, **customer_kwargs)
-    global_filter_options = overview.pop("global_filter_options", {})
-    filter_options = {
-        "campaigns": global_filter_options.get("campaigns", []),
-        "industries": global_filter_options.get("industries", []),
-        "channels": global_filter_options.get("channels", []),
-        "min_date": defaults["min_date"],
-        "max_date": defaults["max_date"],
-    }
+    overview = get_campaign_overview(
+        db=db,
+        campaign_tag=applied_campaign,
+        start_date=applied_start,
+        end_date=applied_end,
+        channel=channel,
+        industry=industry,
+        include_content=False,
+        include_global_filter_options=False,
+    )
+    customers = get_customers_by_stage(db=db, **customer_kwargs)
+    overview["content_effect"] = get_content_effect(
+        db=db,
+        campaign_tag=applied_campaign,
+        start_date=applied_start,
+        end_date=applied_end,
+        channel=channel,
+        industry=industry,
+    )
     result = {
         "filter_options": filter_options,
         "applied_filters": {

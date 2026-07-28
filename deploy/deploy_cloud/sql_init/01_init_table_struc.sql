@@ -249,7 +249,9 @@ CREATE TABLE `dws_customer_360` (
   `sync_batch_id` bigint DEFAULT '0' COMMENT '同步批次ID，用于增量同步删除检测',
   `attribute` varchar(4) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci DEFAULT NULL,
   PRIMARY KEY (`id`),
-  UNIQUE KEY `uk_customer_name` (`customer_name`)
+  UNIQUE KEY `uk_customer_name` (`customer_name`),
+  KEY `idx_campaign_industry_customer` (`campaign_tag`,`industry`,`customer_name`),
+  KEY `idx_campaign_default_sort` (`campaign_tag`,`intent_score` DESC,`active_opp_amount` DESC,`customer_name`)
 ) ENGINE=InnoDB AUTO_INCREMENT=1279 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
@@ -294,7 +296,8 @@ CREATE TABLE `dws_customer_360_backup` (
   `attribute` varchar(4) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci DEFAULT NULL,
   PRIMARY KEY (`id`),
   UNIQUE KEY `uk_customer_name` (`customer_name`),
-  KEY `idx_campaign_industry_customer` (`campaign_tag`,`industry`,`customer_name`)
+  KEY `idx_campaign_industry_customer` (`campaign_tag`,`industry`,`customer_name`),
+  KEY `idx_campaign_default_sort` (`campaign_tag`,`intent_score` DESC,`active_opp_amount` DESC,`customer_name`)
 ) ENGINE=InnoDB AUTO_INCREMENT=1279 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
@@ -329,7 +332,9 @@ CREATE TABLE `dws_interaction_detail` (
   KEY `idx_time` (`event_time`),
   KEY `idx_channel` (`channel`),
   KEY `idx_id_sync_batch` (`sync_batch_id`),
-  KEY `idx_contact_mobile` (`contact_name`,`mobile`)
+  KEY `idx_contact_mobile` (`contact_name`,`mobile`),
+  KEY `idx_customer_event_time` (`customer_name`,`event_time`),
+  KEY `idx_customer_channel_event_time` (`customer_name`,`channel`,`event_time`)
 ) ENGINE=InnoDB AUTO_INCREMENT=598007 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 

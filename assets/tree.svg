@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="256" height="256" preserveAspectRatio="xMidYMid meet">
+  <!-- Transparent background -->
+  <title>Simple Tree</title>
+  <!-- Leaves -->
+  <g fill="#4CAF50">
+    <circle cx="32" cy="18" r="12" />
+    <circle cx="22" cy="26" r="9" />
+    <circle cx="42" cy="26" r="9" />
+  </g>
+  <!-- Trunk -->
+  <rect x="28" y="34" width="8" height="18" rx="1" fill="#8D6E63" />
+</svg>

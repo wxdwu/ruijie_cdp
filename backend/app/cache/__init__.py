@@ -7,6 +7,13 @@
 # Redis 客户端生命周期与健康状态。
 from app.cache.client import close_cache_client, get_cache_status
 
+# 营销看板 generation 缓存与后台预热协调器。
+from app.cache.campaign_cache import (
+    CampaignCacheCoordinator,
+    CampaignCacheResult,
+    campaign_cache_coordinator,
+)
+
 # 面向大规模客户名称集合的 Sorted Set 分页缓存。
 from app.cache.customer_name_catalog import CustomerNameCatalog, customer_name_catalog
 
@@ -17,8 +24,11 @@ from app.cache.service import CacheResult, CacheService, cache_service
 __all__ = [
     "CacheResult",
     "CacheService",
+    "CampaignCacheCoordinator",
+    "CampaignCacheResult",
     "CustomerNameCatalog",
     "cache_service",
+    "campaign_cache_coordinator",
     "customer_name_catalog",
     "close_cache_client",
     "get_cache_status",

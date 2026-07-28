@@ -16,6 +16,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 import random
 import time
 import uuid
@@ -206,6 +207,9 @@ class CacheService:
         cacheable: bool = True,
         empty_ttl_seconds: Optional[int] = None,
         endpoint: Optional[str] = None,
+        lock_ttl_ms: Optional[int] = None,
+        lock_wait_timeout_ms: int = 500,
+        lock_poll_interval_ms: int = 100,
     ) -> CacheResult:
         """优先返回缓存 JSON，未命中时调用 ``loader``，Redis 异常时自动降级。
 
@@ -217,6 +221,9 @@ class CacheService:
             cacheable: 当前请求是否允许缓存；为 False 时直接执行 loader。
             empty_ttl_seconds: 空结果专用的较短 TTL，用于降低缓存穿透风险。
             endpoint: 仅用于日志展示的接口名称。
+            lock_ttl_ms: 分布式锁有效期；不传时沿用全局配置。
+            lock_wait_timeout_ms: 未获得锁时等待其他请求回填缓存的最长时间。
+            lock_poll_interval_ms: 等待回填期间的轮询间隔。
 
         Returns:
             包含业务值、缓存状态、TTL 和参数指纹的 ``CacheResult``。
@@ -227,6 +234,15 @@ class CacheService:
         key, params_hash = self.build_key(namespace, params)
         started_at = time.perf_counter()
         endpoint_name = endpoint or namespace
+        effective_lock_ttl_ms = max(
+            1,
+            lock_ttl_ms if lock_ttl_ms is not None else settings.CACHE_LOCK_TTL_MS,
+        )
+        effective_poll_ms = max(1, lock_poll_interval_ms)
+        wait_attempts = max(
+            0,
+            math.ceil(max(0, lock_wait_timeout_ms) / effective_poll_ms),
+        )
 
         # 保存 loader 的执行状态和耗时。若“查库成功、写缓存失败”，外层异常处理可
         # 直接返回已加载的值，不会为了降级再查询一次数据库。
@@ -311,13 +327,14 @@ class CacheService:
             lock_key = f"{self._key_prefix()}:lock:{lock_hash}"
             acquired = bool(
                 # NX=仅当 key 不存在时设置；PX=锁自动过期的毫秒数，防止死锁。
-                client.set(lock_key, token.encode("ascii"), nx=True, px=settings.CACHE_LOCK_TTL_MS)
+                client.set(lock_key, token.encode("ascii"), nx=True, px=effective_lock_ttl_ms)
             )
 
             if not acquired:
-                # 另一个请求正在加载。短暂轮询它即将写入的结果，最多等待约 500ms。
-                for _ in range(5):
-                    time.sleep(0.1)
+                # 另一个请求正在加载。按业务配置轮询它即将写入的结果；营销聚合
+                # 的冷查询较慢，因此可使用比普通页面缓存更长的等待窗口。
+                for _ in range(wait_attempts):
+                    time.sleep(effective_poll_ms / 1000)
                     hit, value, ttl, value_bytes = self._read(client, key)
                     if hit:
                         logger.info(

@@ -66,4 +66,9 @@ data/
 DEPLOY.md
 
 docs/
+!docs/
+docs/*
+!docs/requirements/
+docs/requirements/*
+!docs/requirements/2026-07-23-campaign-dashboard-startup-cache.md
 AGENTS.md

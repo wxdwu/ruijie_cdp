@@ -214,3 +214,33 @@ def test_concurrent_miss_uses_one_primary_loader(monkeypatch):
 
     assert calls == 1
     assert {result.status for result in results} == {"MISS", "HIT"}
+
+
+def test_custom_lock_wait_window_prevents_slow_loader_stampede(monkeypatch):
+    cache, _ = _enabled_cache(monkeypatch)
+    calls = 0
+    calls_lock = threading.Lock()
+
+    def loader():
+        nonlocal calls
+        with calls_lock:
+            calls += 1
+        time.sleep(0.65)
+        return {"items": ["slow"]}
+
+    def request():
+        return cache.get_or_load_json(
+            "campaign:test",
+            {"p": 1},
+            120,
+            loader,
+            lock_ttl_ms=60_000,
+            lock_wait_timeout_ms=1_000,
+            lock_poll_interval_ms=25,
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(lambda _index: request(), range(2)))
+
+    assert calls == 1
+    assert {result.status for result in results} == {"MISS", "HIT"}

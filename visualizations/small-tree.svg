@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <!-- Transparent background -->
+  <g id="small-tree" transform="translate(0,0)">
+    <!-- Trunk -->
+    <rect x="236" y="320" width="40" height="120" rx="8" fill="#8B5A2B" />
+
+    <!-- Lower canopy -->
+    <ellipse cx="256" cy="260" rx="120" ry="72" fill="#2E7D32" />
+
+    <!-- Middle canopy -->
+    <ellipse cx="256" cy="200" rx="96" ry="64" fill="#43A047" />
+
+    <!-- Top canopy -->
+    <circle cx="256" cy="140" r="56" fill="#66BB6A" />
+
+    <!-- Simple highlight shapes for style -->
+    <ellipse cx="220" cy="190" rx="24" ry="16" fill="#A5D6A7" opacity="0.35" />
+    <ellipse cx="300" cy="230" rx="18" ry="12" fill="#A5D6A7" opacity="0.28" />
+  </g>
+</svg>

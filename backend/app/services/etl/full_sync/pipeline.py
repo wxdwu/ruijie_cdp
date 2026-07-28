@@ -7,6 +7,7 @@ from datetime import datetime
 from sqlalchemy import text
 
 from app.services.etl.common import *  # noqa: F401,F403
+from app.services.etl.cache_refresh import schedule_campaign_cache_refresh
 from app.services.etl.full_sync.build_dws_contact_mapping import _load_contact_mapping
 from app.services.etl.full_sync.build_dws_interaction_detail import _load_interaction_detail
 from app.services.etl.full_sync.build_dws_customer_360 import _build_customer_360
@@ -208,6 +209,10 @@ def run_full_sync(trigger_by: str = "system") -> Dict[str, Any]:
             rows_synced=sum(cm_stats.values()) + total_interaction_rows,
             details=stats["steps"],
         )
+        # 数据表已提交且审计日志已标记成功后，才构建并切换营销缓存新快照。
+        stats["steps"]["campaign_cache_refresh"] = {
+            "scheduled": schedule_campaign_cache_refresh("full")
+        }
 
         # ── 同步到 ElasticSearch（best-effort，失败不影响 ETL 主流程）──
         try:

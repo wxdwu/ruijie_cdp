@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import logging
 from sqlalchemy import text
+from sqlalchemy.engine import Engine
 
 from app.database.engine import get_engine as _get_shared_engine, execute_with_retry
 
@@ -51,17 +52,40 @@ def _exec_query(sql: str, params: dict | None = None):
         return conn.execute(text(sql), params or {}).fetchall()
 
 
-def _ensure_index(table: str, index_name: str, columns: str) -> None:
-    """Create an index if it does not already exist."""
+def _ensure_index(
+    table: str,
+    index_name: str,
+    columns: str,
+    *,
+    online: bool = False,
+) -> bool:
+    """Create an index if it does not already exist and report whether it was added."""
     rows = _exec_query(
         "SELECT 1 FROM information_schema.statistics "
-        "WHERE table_schema = 'app_cdp' "
+        "WHERE table_schema = DATABASE() "
         "  AND table_name = :t AND index_name = :idx LIMIT 1",
         {"t": table, "idx": index_name},
     )
     if not rows:
         logger.info("Creating index %s on %s(%s)", index_name, table, columns)
-        _exec(f"CREATE INDEX {index_name} ON {table} ({columns})")
+        if online:
+            _exec(
+                f"ALTER TABLE {table} ADD INDEX {index_name} ({columns}), "
+                "ALGORITHM=INPLACE, LOCK=NONE"
+            )
+        else:
+            _exec(f"CREATE INDEX {index_name} ON {table} ({columns})")
+        return True
+    return False
+
+
+def _table_exists(table: str) -> bool:
+    rows = _exec_query(
+        "SELECT 1 FROM information_schema.tables "
+        "WHERE table_schema = DATABASE() AND table_name = :t LIMIT 1",
+        {"t": table},
+    )
+    return bool(rows)
 
 
 def _table_count(table: str) -> int:
@@ -102,9 +126,46 @@ def _create_indexes() -> None:
     _ensure_index("ods_zhique_contact_detail_day", "idx_zqcd_mobile", "`手机号`(191)")
     # 3) 天润会话按 customer_name 过滤（建 contact_mapping 与交互明细时跳过 NULL）
     _ensure_index("ods_tianrun_session_day", "idx_tr_custname", "customer_name")
-    # 4) 交互明细按 (contact_name, mobile) 分组构建 dws_contact_360 时避免 filesort
-    #    （增量临时表由 LIKE 主表创建，会自动继承该索引）
-    _ensure_index("dws_interaction_detail", "idx_contact_mobile", "contact_name, mobile")
+    # 4) 营销看板读取索引同时覆盖 main / backup / temp。全量同步在主备交换后
+    #    创建索引，旧主表此时名为 _temp；三者都检查可保证下一次轮换不丢索引。
+    campaign_index_specs = {
+        "dws_customer_360": (
+            (
+                "idx_campaign_industry_customer",
+                "campaign_tag, industry, customer_name",
+            ),
+            (
+                "idx_campaign_default_sort",
+                "campaign_tag, intent_score DESC, active_opp_amount DESC, customer_name",
+            ),
+        ),
+        "dws_interaction_detail": (
+            ("idx_contact_mobile", "contact_name, mobile"),
+            ("idx_customer_event_time", "customer_name, event_time"),
+            (
+                "idx_customer_channel_event_time",
+                "customer_name, channel, event_time",
+            ),
+        ),
+    }
+    analyzed_tables = set()
+    for base_table, index_specs in campaign_index_specs.items():
+        for suffix in ("", "_backup", "_temp"):
+            table = f"{base_table}{suffix}"
+            if not _table_exists(table):
+                continue
+            for index_name, columns in index_specs:
+                if _ensure_index(
+                    table,
+                    index_name,
+                    columns,
+                    online=True,
+                ):
+                    analyzed_tables.add(table)
+
+    for table in sorted(analyzed_tables):
+        logger.info("Refreshing optimizer statistics for %s", table)
+        _exec(f"ANALYZE TABLE {table}")
 
 
 def ensure_backup_tables() -> None:

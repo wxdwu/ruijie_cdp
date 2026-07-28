@@ -7,6 +7,7 @@ from datetime import datetime
 from sqlalchemy import text
 
 from app.services.etl.common import *  # noqa: F401,F403
+from app.services.etl.cache_refresh import schedule_campaign_cache_refresh
 from app.services.etl.incremental_sync.build_dws_contact_mapping import (
     _incremental_upsert_contact_mapping, _incremental_update_icp_customers)
 from app.services.etl.incremental_sync.build_dws_interaction_detail import (
@@ -204,6 +205,10 @@ def run_incremental_sync(trigger_by: str = "system") -> Dict[str, Any]:
             rows_synced=accurate_rows_synced,
             details=stats["steps"],
         )
+        # 仅在增量数据完成原子轮换并记录成功后，安排下一营销缓存 generation。
+        stats["steps"]["campaign_cache_refresh"] = {
+            "scheduled": schedule_campaign_cache_refresh("incremental")
+        }
 
         # ── 同步到 ElasticSearch（best-effort，失败不影响 ETL 主流程）──
         try:
