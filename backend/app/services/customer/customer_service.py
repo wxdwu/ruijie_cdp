@@ -586,6 +586,17 @@ def get_customer_detail(db: Session, customer_id: str) -> Dict[str, Any]:
     if canonical_id is None:
         raise CustomerNotFound(customer_id)
 
+    # 合并源公司名：当传入的 customer_id 本身是「被合并的别名」时，
+    # 其 dws 原始公司名即为合并前的来源公司名，前端据此标注便于追溯。
+    source_row = db.execute(
+        text("SELECT customer_name FROM dws_customer_360 WHERE id = :cid"),
+        {"cid": customer_id},
+    ).mappings().fetchone()
+    source_name = source_row["customer_name"] if source_row else None
+    merge_source_name = (
+        source_name if source_name and source_name != canonical_name else None
+    )
+
     row = db.execute(
         text("SELECT * FROM dws_customer_360 WHERE id = :cid"),
         {"cid": canonical_id},
@@ -628,6 +639,8 @@ def get_customer_detail(db: Session, customer_id: str) -> Dict[str, Any]:
     result["contact_count"] = int(contact_count)
     result["interaction_count_total"] = int(interaction_count_total)
     result["interaction_count_30d"] = int(interaction_count_30d)
+    # 合并源公司名：非空表示当前数据由该来源公司合并而来，便于追溯原始归属
+    result["merge_source_name"] = merge_source_name
 
     visit_row = db.execute(
         text(

@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy import text
@@ -65,14 +66,23 @@ def ensure_review_table(db: Session) -> None:
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             INDEX idx_review_type (review_type),
-            INDEX idx_status (status),
-            INDEX idx_match_score (match_score)
+            INDEX idx_status_score (status, match_score DESC, created_at DESC)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
         COMMENT='去重审核队列表'
     """)
     db.execute(create_sql)
     db.commit()
     logger.info("Created review_candidate table")
+    # 复合索引：覆盖「按 status 过滤 + 按 match_score/created_at 排序 + LIMIT」的常用查询，
+    # 避免对全表做 filesort。表已存在时 CREATE INDEX 会报重复索引，捕获后忽略即可（幂等）。
+    try:
+        db.execute(text(
+            "CREATE INDEX idx_status_score ON review_candidate "
+            "(status, match_score DESC, created_at DESC)"
+        ))
+        db.commit()
+    except Exception:
+        db.rollback()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -142,11 +152,21 @@ _COMPANY_DETAIL_COLUMNS = (
 )
 
 
-def _interaction_30d_clause(dialect: str) -> str:
-    """近 30 天互动的时间过滤子句（兼容 MySQL 与测试用 SQLite）。"""
-    if dialect == "sqlite":
-        return "event_time >= date('now', '-30 days')"
-    return "event_time >= DATE_SUB(NOW(), INTERVAL 30 DAY)"
+def _as_dt(value: Any) -> Optional[datetime]:
+    """把 event_time（datetime / date / 字符串）归一为 datetime，便于近 30 天判定。"""
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, date):
+        return datetime(value.year, value.month, value.day)
+    if isinstance(value, str):
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
+            try:
+                return datetime.strptime(value, fmt)
+            except ValueError:
+                continue
+    return None
 
 
 def _in_clause(prefix: str, values: List[Any]) -> "tuple[str, Dict[str, Any]]":
@@ -205,9 +225,6 @@ def _enrich_with_company_details(items: List[Dict[str, Any]], db: Session) -> Li
     if not all_names:
         return items
 
-    bind = getattr(db, "bind", None) or getattr(db, "engine", None)
-    dialect = bind.dialect.name if bind else "mysql"
-
     details_map: Dict[str, Dict[str, Any]] = {}
     try:
         # 第一遍：从 dws_customer_360 取候选公司基础画像（精确 + 合并映射别名解析）
@@ -261,12 +278,12 @@ def _enrich_with_company_details(items: List[Dict[str, Any]], db: Session) -> Li
     except Exception:
         _alias_map, _roots = {}, {}
 
-    # 第二遍：用真实聚合表重新计算联系人 / 互动数，并标注各来源表真实存在性
-    presence_map: Dict[str, Dict[str, bool]] = {}
+    # 解析每个候选公司名的合并簇成员（公司名列表 + 在 360 的 id 列表）。
+    mids_by_name: Dict[str, List[Any]] = {}
+    mnames_by_name: Dict[str, List[str]] = {}
     for name, detail in details_map.items():
         if not detail:
             continue
-        # 合并簇：用预构建索引解析标准名与成员公司名（等价于 resolve_customer，索引只建一次）
         self_name = detail.get("customer_name") or name
         try:
             _canon = _resolve(self_name, _alias_map, _roots)
@@ -277,7 +294,6 @@ def _enrich_with_company_details(items: List[Dict[str, Any]], db: Session) -> Li
             member_names = [n for n in member_names if not (n in _seen or _seen.add(n))]
         except Exception:
             member_names = [self_name]
-        # 合并簇成员在 dws_customer_360 中的 id（联系人按 id 折叠用）
         member_ids: List[Any] = []
         if member_names:
             names_clause, names_params = _in_clause("mn", member_names)
@@ -286,56 +302,85 @@ def _enrich_with_company_details(items: List[Dict[str, Any]], db: Session) -> Li
                 names_params,
             ).mappings().all()
             member_ids = [r["id"] for r in id_rows]
+        mids_by_name[name] = member_ids
+        mnames_by_name[name] = member_names
 
-        # 联系人：dws_contact_360 按合并簇 customer_id 聚合，并以
-        # (contact_name, mobile) 去重（同一人在不同合并公司下只算一个联系人）。
-        contact_count_real = 0
-        if member_ids:
-            mids_clause, mids_params = _in_clause("mid", member_ids)
-            contact_count_real = db.execute(
-                text(
-                    "SELECT COUNT(*) FROM ("
-                    "  SELECT DISTINCT contact_name, mobile "
-                    f"  FROM dws_contact_360 WHERE customer_id IN {mids_clause}"
-                    ") t"
-                ),
-                mids_params,
-            ).scalar() or 0
+    # 整页所有合并簇成员的 id / 公司名，用于批量聚合查询（根除 N+1：每页仅 ~3 次查询）。
+    all_mids: set = set()
+    all_mnames: set = set()
+    for _name, mids in mids_by_name.items():
+        all_mids.update(mids)
+    for _name, mnames in mnames_by_name.items():
+        all_mnames.update(mnames)
 
-        # 互动：dws_interaction_detail 按合并簇公司名聚合，并以
-        # (contact_name, behavior_type, event_time) 去重（同一人の同一行为只算一条互动）。
-        i30 = i_total = 0
-        last_it = None
-        in_cm = False
-        if member_names:
-            i30 = db.execute(
-                text(
-                    "SELECT COUNT(*) FROM ("
-                    "  SELECT DISTINCT contact_name, behavior_type, event_time "
-                    "  FROM dws_interaction_detail "
-                    f"  WHERE customer_name IN {names_clause} "
-                    f"  AND {_interaction_30d_clause(dialect)}"
-                    ") t"
-                ),
-                names_params,
-            ).scalar() or 0
-            i_total = db.execute(
-                text(
-                    "SELECT COUNT(*) FROM ("
-                    "  SELECT DISTINCT contact_name, behavior_type, event_time "
-                    f"  FROM dws_interaction_detail WHERE customer_name IN {names_clause}"
-                    ") t"
-                ),
-                names_params,
-            ).scalar() or 0
-            last_it = db.execute(
-                text(f"SELECT MAX(event_time) FROM dws_interaction_detail WHERE customer_name IN {names_clause}"),
-                names_params,
-            ).scalar()
-            in_cm = db.execute(
-                text(f"SELECT 1 FROM dws_contact_mapping WHERE customer_name IN {names_clause} LIMIT 1"),
-                names_params,
-            ).first() is not None
+    # 批量查询 1：联系人去重元组 (customer_id, contact_name, mobile)，按公司分组去重。
+    contact_rows: Dict[Any, set] = {}
+    if all_mids:
+        mids_clause, mids_params = _in_clause("mid", list(all_mids))
+        for r in db.execute(
+            text(
+                "SELECT customer_id, contact_name, mobile "
+                f"FROM dws_contact_360 WHERE customer_id IN {mids_clause} "
+                "GROUP BY customer_id, contact_name, mobile"
+            ),
+            mids_params,
+        ).mappings().all():
+            contact_rows.setdefault(r["customer_id"], set()).add(
+                (r["contact_name"], r["mobile"])
+            )
+
+    # 批量查询 2：互动去重元组 (customer_name, contact_name, behavior_type, event_time)。
+    inter_rows: Dict[str, set] = {}
+    cm_names: set = set()
+    if all_mnames:
+        names_clause, names_params = _in_clause("mn", list(all_mnames))
+        for r in db.execute(
+            text(
+                "SELECT customer_name, contact_name, behavior_type, event_time "
+                f"FROM dws_interaction_detail WHERE customer_name IN {names_clause} "
+                "GROUP BY customer_name, contact_name, behavior_type, event_time"
+            ),
+            names_params,
+        ).mappings().all():
+            inter_rows.setdefault(r["customer_name"], set()).add(
+                (r["contact_name"], r["behavior_type"], r["event_time"])
+            )
+        # 批量查询 3：哪些公司名在 dws_contact_mapping 确有记录（用于过滤来源表标签）
+        for r in db.execute(
+            text(
+                "SELECT customer_name FROM dws_contact_mapping "
+                f"WHERE customer_name IN {names_clause} GROUP BY customer_name"
+            ),
+            names_params,
+        ).mappings().all():
+            cm_names.add(r["customer_name"])
+
+    # 近 30 天截止点：用应用侧时间（与数据库时钟差异对 30 天窗口可忽略）。
+    cutoff = datetime.now() - timedelta(days=30)
+
+    # 第二遍收尾：按各候选的合并簇在 Python 中去重，得到真实计数与来源表存在性。
+    presence_map: Dict[str, Dict[str, bool]] = {}
+    for name, detail in details_map.items():
+        if not detail:
+            continue
+        member_ids = mids_by_name.get(name, [])
+        member_names = mnames_by_name.get(name, [])
+        # 联系人：合并簇内按 (contact_name, mobile) 去重（同一人在不同合并公司下只算一个）。
+        cset: set = set()
+        for mid in member_ids:
+            cset |= contact_rows.get(mid, set())
+        contact_count_real = len(cset)
+        # 互动：合并簇内按 (contact_name, behavior_type, event_time) 去重；近 30 天按时间窗过滤。
+        iset: set = set()
+        for mn in member_names:
+            iset |= inter_rows.get(mn, set())
+        i_total = len(iset)
+        i30 = len(
+            {(cn, bt, et) for (cn, bt, et) in iset if _as_dt(et) is not None and _as_dt(et) >= cutoff}
+        )
+        last_vals = [_as_dt(et) for (_, _, et) in iset if _as_dt(et) is not None]
+        last_it = max(last_vals) if last_vals else None
+        in_cm = any(mn in cm_names for mn in member_names)
 
         # 用真实计数覆盖 360 中可能失真的聚合字段
         detail["contact_count"] = int(contact_count_real)

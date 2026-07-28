@@ -389,8 +389,8 @@ CREATE TABLE `dws_review_queue` (
   `reviewed_at` datetime DEFAULT NULL COMMENT '审核时间',
   `created_at` datetime DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
   PRIMARY KEY (`id`),
-  KEY `idx_status` (`status`),
-  KEY `idx_type` (`review_type`)
+  KEY `idx_review_type` (`review_type`),
+  KEY `idx_status_score` (`status`,`match_score`,`created_at`)
 ) ENGINE=InnoDB AUTO_INCREMENT=4 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
@@ -1438,7 +1438,7 @@ CREATE TABLE `review_candidate` (
   PRIMARY KEY (`id`),
   KEY `idx_review_type` (`review_type`),
   KEY `idx_status` (`status`),
-  KEY `idx_match_score` (`match_score`)
+  KEY `idx_status_score` (`status`,`match_score`,`created_at`)
 ) ENGINE=InnoDB AUTO_INCREMENT=961 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='Deduplication review candidates';
 /*!40101 SET character_set_client = @saved_cs_client */;
 

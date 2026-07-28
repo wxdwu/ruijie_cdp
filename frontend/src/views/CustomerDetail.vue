@@ -99,7 +99,15 @@ onMounted(() => {
       <div class="flex items-center justify-between">
         <div class="flex items-center gap-4">
           <div>
-            <h1 class="text-xl font-semibold text-[var(--text)]">{{ customer.customer_name || '加载中...' }}</h1>
+            <h1 class="text-xl font-semibold text-[var(--text)]">
+              {{ customer.customer_name || '加载中...' }}
+              <span
+                v-if="customer.merge_source_name"
+                class="ml-1 text-sm font-normal text-[var(--muted)] align-middle"
+              >
+                （合并源：{{ customer.merge_source_name }}）
+              </span>
+            </h1>
             <div class="flex items-center gap-3 mt-1">
               <span class="text-xs px-2 py-0.5 rounded bg-[var(--brand)]/10 text-[var(--brand)]">
                 {{ customer.campaign_tag || '-' }}
