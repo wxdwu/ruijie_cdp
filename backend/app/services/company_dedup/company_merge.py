@@ -1,0 +1,489 @@
+"""
+公司合并持久化层（company_merge_map）。
+
+设计要点
+--------
+合并只写映射表，不直接物理改写 DWS 四张聚合表：
+- DWS（dws_customer_360 / dws_contact_mapping / dws_contact_360 / dws_interaction_detail）
+  由 ETL 全量重建（TRUNCATE + 重载），任何物理改名/重挂都会在下次同步被 ods 源数据「还原」，
+  因此物理合并无法持久。
+- company_merge_map 是独立的持久层（ETL 不触碰它），记录「别名 -> 标准名」的合并关系，
+  查询层按此折叠别名，从而实现「一次合并、永久生效、可退回」。
+- 退回 = 删除映射行（DELETE），别名立即在查询层重新独立显示，无需重跑 ETL。
+
+字段说明（相比备份设计的增强）
+----------------------------
+- alias_name / canonical_name：核心映射（唯一键 uk_alias 保证同一别名仅一条生效映射）。
+- canonical_id：标准名在 dws_customer_360 的真实客户 id，便于联系人层按 id 折叠。
+- review_id：来源 review_candidate.id（审计/按审核项退回）。
+- merge_source：manual(人工审核) / auto(高置信自动) / branch(分支规则) / rebuild(存量回填)。
+- merged_by：操作人（人工为工号，系统为 system）。
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+from typing import Any, Dict, List, Optional, Sequence, Tuple
+
+from sqlalchemy import text
+from sqlalchemy.orm import Session
+
+logger = logging.getLogger(__name__)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 建表
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _dialect_name(db) -> str:
+    """拿到当前会话/连接所用方言名（mysql/sqlite/...）。
+
+    兼容 Session（有 .bind）与 Connection（自身即连接、无 .bind）两种传入。
+    """
+    bind = getattr(db, "bind", None)
+    if bind is None:
+        bind = db
+    return getattr(getattr(bind, "dialect", None), "name", "mysql")
+
+
+def _ensure_column(
+    db: Session,
+    table: str,
+    column: str,
+    definition: str,
+) -> None:
+    """幂等加列：老表（CREATE TABLE IF NOT EXISTS 不会补列）补齐后期新增字段。
+
+    MySQL 不支持 `ADD COLUMN IF NOT EXISTS`，故先探测列是否存在再 ALTER。
+    跨方言：MySQL 查 information_schema；SQLite 用 PRAGMA table_info（无 information_schema）。
+    """
+    dialect = _dialect_name(db)
+    if dialect == "sqlite":
+        cols = db.execute(text(f"PRAGMA table_info({table})")).fetchall()
+        exists = any(str(row[1]) == column for row in cols)
+    else:
+        exists = db.execute(
+            text(
+                "SELECT 1 FROM information_schema.columns "
+                "WHERE table_schema = DATABASE() "
+                "AND table_name = :tbl AND column_name = :col"
+            ),
+            {"tbl": table, "col": column},
+        ).first()
+    if not exists:
+        db.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {definition}"))
+        db.commit()
+
+
+def ensure_merge_map_table(db: Session) -> None:
+    """确保 company_merge_map 表存在（幂等；CREATE IF NOT EXISTS）。
+
+    并对已存在的老表做列迁移：CREATE TABLE IF NOT EXISTS 不会给已存在的表补列，
+    故后期新增的 canonical_id 需单独 ALTER 补齐，否则 record_merge 的 INSERT 会报
+    1054 Unknown column 'canonical_id'。
+    """
+    db.execute(text("""
+        CREATE TABLE IF NOT EXISTS company_merge_map (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            alias_name VARCHAR(255) NOT NULL
+                COMMENT '被合并的别名公司名',
+            canonical_name VARCHAR(255) NOT NULL
+                COMMENT '合并后的标准公司名（幸存者 / 总部主体）',
+            canonical_id BIGINT NULL
+                COMMENT '标准公司名在 dws_customer_360 的真实客户 id',
+            review_id BIGINT NULL
+                COMMENT '来源 review_candidate.id',
+            merge_source VARCHAR(32) NOT NULL DEFAULT 'manual'
+                COMMENT '合并来源: manual/auto/branch/rebuild',
+            merged_by VARCHAR(100) NULL
+                COMMENT '操作人（人工为工号，系统为 system）',
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE KEY uk_alias (alias_name),
+            KEY idx_canonical (canonical_name)
+        )
+    """))
+    db.commit()
+    # 老表补齐：CREATE TABLE IF NOT EXISTS 不会给已存在的老表补列。
+    # 真实库里 company_merge_map 可能是早期 schema（缺 canonical_id / review_id /
+    # merge_source / merged_by / created_at），故逐列幂等 ALTER，避免 upsert 报 1054。
+    _ensure_column(
+        db, "company_merge_map", "canonical_id",
+        "BIGINT NULL COMMENT '标准公司名在 dws_customer_360 的真实客户 id'",
+    )
+    _ensure_column(
+        db, "company_merge_map", "review_id",
+        "BIGINT NULL COMMENT '来源 review_candidate.id'",
+    )
+    _ensure_column(
+        db, "company_merge_map", "merge_source",
+        "VARCHAR(32) NOT NULL DEFAULT 'manual' "
+        "COMMENT '合并来源: manual/auto/branch/rebuild'",
+    )
+    _ensure_column(
+        db, "company_merge_map", "merged_by",
+        "VARCHAR(100) NULL COMMENT '操作人（人工为工号，系统为 system）'",
+    )
+    _ensure_column(
+        db, "company_merge_map", "created_at",
+        "DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '合并时间'",
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 映射图加载与传递闭包解析
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _load_map(db: Session) -> Dict[str, str]:
+    """加载全部 {alias_name: canonical_name}。"""
+    rows = db.execute(
+        text("SELECT alias_name, canonical_name FROM company_merge_map")
+    ).mappings().all()
+    return {r["alias_name"]: r["canonical_name"] for r in rows}
+
+
+def _build_roots(alias_map: Dict[str, str]) -> Dict[str, str]:
+    """把别名->标准名的映射做并查集归并，返回每个节点到其连通分量根（标准名）的映射。
+
+    根取连通分量内「作为标准名出现过」的节点；若无标准名节点（理论上不应发生），
+    退化为字典序最小者。
+    """
+    parent: Dict[str, str] = {}
+
+    def find(x: str) -> str:
+        parent.setdefault(x, x)
+        root = x
+        while parent[root] != root:
+            root = parent[root]
+        # 路径压缩
+        while parent[x] != root:
+            parent[x], x = root, parent[x]
+        return root
+
+    for alias, canonical in alias_map.items():
+        ra, rc = find(alias), find(canonical)
+        if ra != rc:
+            parent[ra] = rc
+
+    roots = {node: find(node) for node in parent}
+    return roots
+
+
+def _resolve(name: str, alias_map: Dict[str, str], roots: Dict[str, str]) -> str:
+    """解析单个名称到其标准名（传递闭包）。"""
+    if name in roots:
+        return roots[name]
+    if name in alias_map:
+        return roots.get(alias_map[name], alias_map[name])
+    return name
+
+
+def _index(db: Session) -> Tuple[Dict[str, str], Dict[str, str]]:
+    alias_map = _load_map(db)
+    roots = _build_roots(alias_map)
+    return alias_map, roots
+
+
+def _resolve_name(db: Session, name: str) -> str:
+    alias_map, roots = _index(db)
+    return _resolve(name, alias_map, roots)
+
+
+def get_member_names(db: Session, name: str) -> List[str]:
+    """返回 name 所属合并簇的全部成员公司名（含标准名本身）。"""
+    alias_map, roots = _index(db)
+    root = _resolve(name, alias_map, roots)
+    members = [n for n, r in roots.items() if r == root]
+    if root not in members:
+        members.append(root)
+    seen: set = set()
+    out: List[str] = []
+    for m in members:
+        if m not in seen:
+            seen.add(m)
+            out.append(m)
+    return out
+
+
+def _in_clause(prefix: str, values: Sequence[str]) -> Tuple[str, Dict[str, str]]:
+    """生成跨方言安全的 IN (...) 占位符与参数字典。
+
+    避免 `IN (:tuple)` 在 SQLite 上对单元素序列绑定失败（MySQL 能展开、SQLite 不能）。
+    返回 (占位符片段如 "IN (:p0, :p1)", {p0:.., p1:..})，调用方拼接到 WHERE 后。
+    """
+    params = {f"{prefix}{i}": v for i, v in enumerate(values)}
+    placeholders = ", ".join(f":{prefix}{i}" for i in range(len(values)))
+    return f"IN ({placeholders})", params
+
+
+def resolve_customer(
+    db: Session, customer_id: Any
+) -> Tuple[Optional[str], Optional[str], List[Any], List[str]]:
+    """按客户 id 解析合并上下文。
+
+    返回 (canonical_id, canonical_name, member_ids, member_names)：
+    - canonical_id：标准公司名在 dws_customer_360 的 id（联系人层按 id 折叠用）。
+    - canonical_name：标准公司名。
+    - member_ids：合并簇内所有成员在 dws_customer_360 的 id 列表。
+    - member_names：合并簇内所有成员的公司名列表。
+    未合并时返回 (customer_id, 自身名, [customer_id], [自身名])。
+    """
+    row = db.execute(
+        text("SELECT id, customer_name FROM dws_customer_360 WHERE id = :cid"),
+        {"cid": customer_id},
+    ).mappings().fetchone()
+    if not row:
+        return None, None, [], []
+
+    self_name = row["customer_name"]
+    member_names = get_member_names(db, self_name)
+    in_clause, in_params = _in_clause("mid", member_names)
+    id_rows = db.execute(
+        text(
+            f"SELECT id, customer_name FROM dws_customer_360 "
+            f"WHERE customer_name {in_clause}"
+        ),
+        in_params,
+    ).mappings().all()
+    id_by_name = {r["customer_name"]: r["id"] for r in id_rows}
+    member_ids = [id_by_name[n] for n in member_names if n in id_by_name]
+
+    canonical_name = _resolve_name(db, self_name)
+    canonical_id = id_by_name.get(canonical_name)
+    return canonical_id, canonical_name, member_ids, member_names
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 判定幸存者（标准名）
+# ─────────────────────────────────────────────────────────────────────────────
+
+def decide_survivor(name_a: str, name_b: str, db: Session) -> str:
+    """在两个公司名间挑选「幸存者 / 标准名」。
+
+    优先级：联系人数量多者 -> 手机号数量多者 -> 名称更短者（更可能是总部主体）。
+    """
+    in_clause, in_params = _in_clause("sid", (name_a, name_b))
+    rows = db.execute(
+        text(
+            "SELECT customer_name, "
+            "COALESCE(contact_count, 0) AS contact_count, "
+            "COALESCE(mobile_count, 0) AS mobile_count "
+            f"FROM dws_customer_360 WHERE customer_name {in_clause}"
+        ),
+        in_params,
+    ).mappings().all()
+    metrics = {
+        r["customer_name"]: (r["contact_count"], r["mobile_count"]) for r in rows
+    }
+    ma = metrics.get(name_a, (0, 0))
+    mb = metrics.get(name_b, (0, 0))
+    if (ma[0], ma[1]) != (mb[0], mb[1]):
+        return name_a if (ma[0], ma[1]) > (mb[0], mb[1]) else name_b
+    return name_a if len(name_a) <= len(name_b) else name_b
+
+
+def _fetch_c360_id(db: Session, name: str) -> Optional[int]:
+    row = db.execute(
+        text("SELECT id FROM dws_customer_360 WHERE customer_name = :n LIMIT 1"),
+        {"n": name},
+    ).fetchone()
+    return row[0] if row else None
+
+
+def _branch_canonical_from_evidence(evidence: Any) -> Optional[str]:
+    """从审核证据 JSON 中提取分支机构合并指定的标准名（若有）。"""
+    if not evidence:
+        return None
+    try:
+        data = json.loads(evidence) if isinstance(evidence, str) else evidence
+    except Exception:
+        return None
+    if isinstance(data, dict):
+        return data.get("branch_canonical")
+    return None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 写入 / 退回
+# ─────────────────────────────────────────────────────────────────────────────
+
+def record_merge(
+    db: Session,
+    name_a: str,
+    name_b: str,
+    *,
+    review_id: Optional[int] = None,
+    merged_by: Optional[str] = None,
+    merge_source: str = "manual",
+    force_canonical: Optional[str] = None,
+) -> Dict[str, Any]:
+    """记录一次合并：把两个公司名归并到同一标准名，写入 company_merge_map。
+
+    支持传递性：若任一名称已属某个合并簇，则整簇归并到新标准名。
+    ON DUPLICATE KEY UPDATE 保证幂等（同一别名仅保留一条生效映射）。
+    """
+    ensure_merge_map_table(db)
+
+    alias_map, roots = _index(db)
+    existing_a = _resolve(name_a, alias_map, roots)
+    existing_b = _resolve(name_b, alias_map, roots)
+    # 已在同一簇（且非本次待合并的原始名之一）-> 无需重复合并
+    if existing_a == existing_b and existing_a not in (name_a, name_b):
+        return {"merged": False, "canonical_name": existing_a, "reason": "already_merged"}
+
+    canonical = force_canonical or decide_survivor(name_a, name_b, db)
+
+    # 收集本次要重新映射到 canonical 的所有别名（含两侧簇的成员）
+    need_relink: set = set()
+    for nm in (name_a, name_b):
+        r = _resolve(nm, alias_map, roots)
+        for alias, root in roots.items():
+            if root == r and alias != canonical:
+                need_relink.add(alias)
+        if nm != canonical:
+            need_relink.add(nm)
+    need_relink.discard(canonical)
+
+    canonical_id = _fetch_c360_id(db, canonical)
+
+    # upsert 跨方言：MySQL 用 ON DUPLICATE KEY UPDATE；SQLite 用 ON CONFLICT(...)。
+    dialect = _dialect_name(db)
+    for alias in sorted(need_relink):
+        params = {
+            "alias": alias,
+            "canonical": canonical,
+            "canonical_id": canonical_id,
+            "review_id": review_id,
+            "merge_source": merge_source,
+            "merged_by": merged_by,
+        }
+        if dialect == "sqlite":
+            db.execute(
+                text("""
+                    INSERT INTO company_merge_map
+                        (alias_name, canonical_name, canonical_id,
+                         review_id, merge_source, merged_by)
+                    VALUES
+                        (:alias, :canonical, :canonical_id,
+                         :review_id, :merge_source, :merged_by)
+                    ON CONFLICT(alias_name) DO UPDATE SET
+                        canonical_name = excluded.canonical_name,
+                        canonical_id   = excluded.canonical_id,
+                        review_id      = excluded.review_id,
+                        merge_source   = excluded.merge_source,
+                        merged_by      = excluded.merged_by
+                """),
+                params,
+            )
+        else:
+            db.execute(
+                text("""
+                    INSERT INTO company_merge_map
+                        (alias_name, canonical_name, canonical_id,
+                         review_id, merge_source, merged_by)
+                    VALUES
+                        (:alias, :canonical, :canonical_id,
+                         :review_id, :merge_source, :merged_by)
+                    ON DUPLICATE KEY UPDATE
+                        canonical_name = VALUES(canonical_name),
+                        canonical_id   = VALUES(canonical_id),
+                        review_id      = VALUES(review_id),
+                        merge_source   = VALUES(merge_source),
+                        merged_by      = VALUES(merged_by),
+                        created_at     = NOW()
+                """),
+                params,
+            )
+    db.commit()
+    return {
+        "merged": True,
+        "canonical_name": canonical,
+        "canonical_id": canonical_id,
+        "relinked": sorted(need_relink),
+    }
+
+
+def rollback_merge_by_alias(db: Session, alias_name: str) -> bool:
+    """按别名退回一次合并（删除映射行）。返回是否有行被删除。"""
+    ensure_merge_map_table(db)
+    result = db.execute(
+        text("DELETE FROM company_merge_map WHERE alias_name = :alias"),
+        {"alias": alias_name},
+    )
+    db.commit()
+    return result.rowcount > 0
+
+
+def rollback_merge_by_review_id(db: Session, review_id: int) -> int:
+    """按审核项 id 退回其产生的合并（可能多条别名）。返回删除行数。"""
+    ensure_merge_map_table(db)
+    result = db.execute(
+        text("DELETE FROM company_merge_map WHERE review_id = :rid"),
+        {"rid": review_id},
+    )
+    db.commit()
+    return result.rowcount
+
+
+def list_merges(
+    db: Session,
+    *,
+    canonical_name: Optional[str] = None,
+    page: int = 1,
+    size: int = 50,
+) -> Dict[str, Any]:
+    """列出当前生效的合并映射（供管理/审计界面）。"""
+    ensure_merge_map_table(db)
+    where_parts = ["1=1"]
+    params: Dict[str, Any] = {}
+    if canonical_name:
+        where_parts.append("canonical_name LIKE :cn")
+        params["cn"] = f"%{canonical_name}%"
+    where_sql = " AND ".join(where_parts)
+
+    total = db.execute(
+        text(f"SELECT COUNT(*) FROM company_merge_map WHERE {where_sql}"),
+        params,
+    ).scalar() or 0
+    rows = db.execute(
+        text(
+            f"SELECT * FROM company_merge_map WHERE {where_sql} "
+            f"ORDER BY created_at DESC LIMIT :lim OFFSET :off"
+        ),
+        {**params, "lim": size, "off": (max(1, page) - 1) * size},
+    ).mappings().all()
+    return {
+        "items": [dict(r) for r in rows],
+        "total": total,
+        "page": page,
+        "page_size": size,
+    }
+
+
+def sync_auto_merged_to_map(db: Session) -> int:
+    """把 review_candidate 中已 auto_merged 的合并关系同步进映射表（幂等）。
+
+    用于去重主流程结束时持久化高置信自动合并；branch 合并会尊重证据里的标准名。
+    """
+    ensure_merge_map_table(db)
+    rows = db.execute(
+        text(
+            "SELECT id, candidate_a_name, candidate_b_name, evidence "
+            "FROM review_candidate WHERE status = 'auto_merged'"
+        )
+    ).mappings().all()
+    count = 0
+    for r in rows:
+        force = _branch_canonical_from_evidence(r.get("evidence"))
+        rec = record_merge(
+            db,
+            r["candidate_a_name"],
+            r["candidate_b_name"],
+            review_id=r["id"],
+            merged_by="system",
+            merge_source="auto",
+            force_canonical=force,
+        )
+        if rec.get("merged"):
+            count += 1
+    return count

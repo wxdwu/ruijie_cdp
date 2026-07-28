@@ -2,7 +2,7 @@
 统一的 LLM 调用封装，供各 service 复用，避免散落多处重复实现。
 
 设计要点：
-- 读取 app.config.settings 中的 LLM_API_KEY / LLM_BASE_URL（默认模型 deepseek-chat）
+- 读取 app.config.settings 中的 LLM_API_KEY / LLM_BASE_URL / LLM_MODEL_NAME（默认模型 ray 智能推荐(默认)）
 - 仅暴露 chat_completion()，失败时返回 None 并由调用方降级，不抛异常
 - 构造时可传入 api_key / base_url 覆盖默认值（兼容去重等独立配置场景）
 """
@@ -12,14 +12,15 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List, Optional
 
+import httpx
 from openai import OpenAI
 
 from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-# 默认 AI 模型（可在 .env 中通过 LLM_MODEL_NAME 覆盖）
-DEFAULT_MODEL_NAME = "deepseek-chat"
+# 默认 AI 模型（可在 .env 中通过 LLM_MODEL_NAME 覆盖，兜底取 settings.LLM_MODEL_NAME）
+DEFAULT_MODEL_NAME = settings.LLM_MODEL_NAME
 
 
 class LLMClient:
@@ -32,9 +33,11 @@ class LLMClient:
         base_url: Optional[str] = None,
     ) -> None:
         self.model_name = model_name or DEFAULT_MODEL_NAME
+        # 显式传入 httpx.Client 以绕过 openai 1.47 + httpx 0.28 的 proxies 参数兼容 bug
         self._client = OpenAI(
             api_key=api_key or settings.LLM_API_KEY,
             base_url=base_url or settings.LLM_BASE_URL,
+            http_client=httpx.Client(),
         )
 
     @property

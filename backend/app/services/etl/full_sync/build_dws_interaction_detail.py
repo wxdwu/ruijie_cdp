@@ -5,6 +5,9 @@ from __future__ import annotations
 import logging
 
 from app.services.etl.common import *  # noqa: F401,F403
+from app.services.etl.common.legal_filter import (
+    clean_dws_table_by_company_filter,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -214,6 +217,12 @@ def _load_interaction_detail() -> Dict[str, int]:
     stats["linkflow"] = _load_interactions_linkflow()
     stats["crm_lead"] = _load_interactions_crm_lead()
     stats["crm_opportunity"] = _load_interactions_crm_opportunity()
+
+    # 聚合完成后,按 company_filter 规则清理不合法公司名。dws_interaction_detail
+    # 无 contact_count 列,不启用保命条件。
+    clean_dws_table_by_company_filter(
+        "dws_interaction_detail", "customer_name", use_lifeline=False
+    )
 
     total = sum(stats.values())
     logger.info(

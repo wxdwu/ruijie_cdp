@@ -103,7 +103,7 @@ CREATE TABLE `dws_contact_360` (
   `updated_at` datetime DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
   `sync_batch_id` bigint DEFAULT '0' COMMENT '同步批次ID，用于增量同步删除检测',
   PRIMARY KEY (`id`),
-  UNIQUE KEY `uk_customer_mobile` (`customer_id`,`mobile`),
+  UNIQUE KEY `uk_customer_mobile` (`customer_id`,`contact_name`,`mobile`),
   KEY `idx_role` (`role_category`)
 ) ENGINE=InnoDB AUTO_INCREMENT=8192 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
@@ -138,7 +138,7 @@ CREATE TABLE `dws_contact_360_backup` (
   `updated_at` datetime DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
   `sync_batch_id` bigint DEFAULT '0' COMMENT '同步批次ID，用于增量同步删除检测',
   PRIMARY KEY (`id`),
-  UNIQUE KEY `uk_customer_mobile` (`customer_id`,`mobile`),
+  UNIQUE KEY `uk_customer_mobile` (`customer_id`,`contact_name`,`mobile`),
   KEY `idx_role` (`role_category`)
 ) ENGINE=InnoDB AUTO_INCREMENT=8192 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;

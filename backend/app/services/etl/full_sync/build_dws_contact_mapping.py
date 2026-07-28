@@ -5,6 +5,9 @@ from __future__ import annotations
 import logging
 
 from app.services.etl.common import *  # noqa: F401,F403
+from app.services.etl.common.legal_filter import (
+    clean_dws_table_by_company_filter,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -114,6 +117,12 @@ def _load_contact_mapping() -> Dict[str, int]:
     n = bulk_write_contact_mapping(rows, target_table="dws_contact_mapping")
     stats["zhique_detail"] = n
     logger.info("[f] Zhique contacts (detail): %d rows", n)
+
+    # 聚合完成后,按 company_filter 规则清理不合法公司名。dws_contact_mapping 无
+    # contact_count 列,不启用保命条件(仅按"像公司名 + 白/黑名单"判定)。
+    clean_dws_table_by_company_filter(
+        "dws_contact_mapping", "customer_name", use_lifeline=False
+    )
 
     total = sum(stats.values())
     logger.info(

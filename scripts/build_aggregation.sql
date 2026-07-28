@@ -64,7 +64,7 @@ CREATE TABLE IF NOT EXISTS dws_contact_360 (
   activity_level VARCHAR(16), intent_level VARCHAR(16), lead_stage VARCHAR(64),
   source_tables JSON, linkflow_contact_id BIGINT,
   updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  UNIQUE KEY uk_customer_mobile (customer_id, mobile),
+  UNIQUE KEY uk_customer_mobile (customer_id, contact_name, mobile),
   INDEX idx_role (role_category)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 

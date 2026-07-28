@@ -5,6 +5,9 @@ from __future__ import annotations
 import logging
 
 from app.services.etl.common import *  # noqa: F401,F403
+from app.services.etl.common.legal_filter import (
+    clean_dws_table_by_company_filter,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -185,6 +188,13 @@ def _build_customer_360() -> int:
     n = bulk_insert_key_customers(key_rows, "dws_customer_360")
     logger.info("  Inserted %d new rows by key_customer_name (filtered)", n)
     logger.info("Phase 5 done: ods_key_customer enriched")
+
+    # 聚合完成后,按 company_filter 规则清理不合法公司名(确保 dws 数据合法,
+    # 且与前端客户列表筛选口径一致)。dws_customer_360 含 contact_count /
+    # interaction_count_total 列,启用保命条件(有联系人或互动则保留)。
+    clean_dws_table_by_company_filter(
+        "dws_customer_360", "customer_name", use_lifeline=True
+    )
 
     total = _table_count("dws_customer_360")
     logger.info("Customer 360 complete: %d rows", total)

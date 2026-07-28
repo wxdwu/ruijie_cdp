@@ -79,8 +79,8 @@
               v-for="(src, idx) in (item.sources_a || [])"
               :key="idx"
               class="source-tag"
-              :title="typeof src === 'object' ? `${src.table} id=${src.record_id}` : src"
-            >{{ typeof src === 'object' ? `${src.table} id=${src.record_id}` : src }}</span>
+              :title="srcTitle(src)"
+            >{{ srcLabel(src) }}</span>
             <span v-if="!item.sources_a || item.sources_a.length === 0" class="source-tag empty">未知</span>
           </div>
         </div>
@@ -158,8 +158,8 @@
               v-for="(src, idx) in (item.sources_b || [])"
               :key="idx"
               class="source-tag"
-              :title="typeof src === 'object' ? `${src.table} id=${src.record_id}` : src"
-            >{{ typeof src === 'object' ? `${src.table} id=${src.record_id}` : src }}</span>
+              :title="srcTitle(src)"
+            >{{ srcLabel(src) }}</span>
             <span v-if="!item.sources_b || item.sources_b.length === 0" class="source-tag empty">未知</span>
           </div>
         </div>
@@ -217,7 +217,7 @@
                         <div class="tooltip-companies">
                           <span class="tooltip-label">归属公司：</span>
                           <a
-                            v-if="item.candidate_a_id"
+                            v-if="isValidId(item.candidate_a_id)"
                             class="tooltip-company-link"
                             :href="`/customers/${item.candidate_a_id}`"
                             @click.stop
@@ -225,7 +225,7 @@
                           <span v-else class="tooltip-company-text">{{ item.candidate_a_name }}</span>
                           <span class="tooltip-sep">、</span>
                           <a
-                            v-if="item.candidate_b_id"
+                            v-if="isValidId(item.candidate_b_id)"
                             class="tooltip-company-link"
                             :href="`/customers/${item.candidate_b_id}`"
                             @click.stop
@@ -295,6 +295,24 @@
 
 <script setup lang="ts">
 import { computed } from 'vue'
+
+function isValidId(id: string | number | null | undefined): boolean {
+  // 仅当候选 id 为 dws_customer_360 真实客户 id（非占位符）时才允许跳转
+  return !!id && String(id).trim() !== "" && String(id).trim() !== "default_id"
+}
+
+// 来源表标签展示：dws_contact_mapping / dws_interaction_detail 等表按 (公司名, 手机)
+// 聚集、没有单行主键，record_id 恒为 null——这种情况只展示表名，避免出现「id=null」误导。
+function srcLabel(src: unknown): string {
+  if (src && typeof src === "object" && "table" in src) {
+    const s = src as { table: string; record_id?: string | number | null }
+    return s.record_id ? `${s.table} id=${s.record_id}` : s.table
+  }
+  return String(src)
+}
+function srcTitle(src: unknown): string {
+  return srcLabel(src)
+}
 
 export interface CompanyDetail {
   industry?: string

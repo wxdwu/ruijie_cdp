@@ -35,11 +35,21 @@ class Settings(BaseModel):
     DB_USER: str = os.getenv("DB_USER", "root")
     DB_PASSWORD: str = os.getenv("DB_PASSWORD", "123456")
     DB_NAME: str = os.getenv("DB_NAME", "app_cdp")
-    LLM_API_KEY: str = os.getenv("LLM_API_KEY", "")
-    LLM_BASE_URL: str = os.getenv("LLM_BASE_URL", "")
-    # Embedding API 独立配置（DeepSeek 不支持 /embeddings，需单独配置）
+    # 默认 LLM 配置：指向锐捷内部网关 gptauth.ruijie.com.cn（OpenAI 兼容）。
+    # 默认模型 ray 智能推荐(默认) 会由网关路由到具体后端（实测为 grok-4-1-fast-reasoning）。
+    # 默认的 api_key / base_url 仅作兜底，优先取 .env.{APP_ENV} 或进程环境变量。
+    LLM_API_KEY: str = os.getenv(
+        "LLM_API_KEY", "sk-oauth-U0N752VvsSbapLAqum3IAlUSvZ7YcE1LlB1XboycYlvAbQ18"
+    )
+    LLM_BASE_URL: str = os.getenv("LLM_BASE_URL", "https://gptauth.ruijie.com.cn/v1")
+    # 默认对话模型（可在 .env 中通过 LLM_MODEL_NAME 覆盖）。
+    LLM_MODEL_NAME: str = os.getenv("LLM_MODEL_NAME", "ray 智能推荐(默认)")
+    # Embedding API 独立配置（锐捷内部网关 gptauth.ruijie.com.cn 同样支持 /embeddings，
+    # 使用 text-embedding-3-small；注：ray 路由模型不支持 embeddings，必须指定具体 embedding 模型名）。
+    # base_url 未单独配置时回退到 LLM_BASE_URL，api_key 回退到 LLM_API_KEY。
     EMBEDDING_API_KEY: str = os.getenv("EMBEDDING_API_KEY", "")
-    EMBEDDING_BASE_URL: str = os.getenv("EMBEDDING_BASE_URL", "")
+    EMBEDDING_BASE_URL: str = os.getenv("EMBEDDING_BASE_URL", "https://gptauth.ruijie.com.cn/v1")
+    EMBEDDING_MODEL: str = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
 
     # ElasticSearch 连接配置（DWS 数据检索 / 分析）
     ES_HOST: str = os.getenv("ES_HOST", "")
@@ -54,10 +64,13 @@ class Settings(BaseModel):
     # ── 客户列表筛选开关 ────────────────────────────────────────────────────
     # 全量/增量数据对齐完成前临时禁用；对齐验证通过后再开启 CUSTOMER_FILTER_ENABLED。
     # 各子项可单独控制：非法公司名/用户名剔除、黑名单、白名单。
-    CUSTOMER_FILTER_ENABLED: bool = os.getenv("CUSTOMER_FILTER_ENABLED", "false").lower() == "true"
-    CUSTOMER_FILTER_ILLEGAL_ENABLED: bool = os.getenv("CUSTOMER_FILTER_ILLEGAL_ENABLED", "true").lower() == "true"
-    CUSTOMER_FILTER_BLACKLIST_ENABLED: bool = os.getenv("CUSTOMER_FILTER_BLACKLIST_ENABLED", "false").lower() == "true"
-    CUSTOMER_FILTER_WHITELIST_ENABLED: bool = os.getenv("CUSTOMER_FILTER_WHITELIST_ENABLED", "false").lower() == "true"
+    CUSTOMER_FILTER_ENABLED: bool = os.getenv("CUSTOMER_FILTER_ENABLED", "true").lower() == "true"
+    CUSTOMER_FILTER_ILLEGAL_ENABLED: bool = os.getenv("CUSTOMER_FILTER_ILLEGAL_ENABLED", "false").lower() == "true"
+    CUSTOMER_FILTER_BLACKLIST_ENABLED: bool = os.getenv("CUSTOMER_FILTER_BLACKLIST_ENABLED", "true").lower() == "true"
+    CUSTOMER_FILTER_WHITELIST_ENABLED: bool = os.getenv("CUSTOMER_FILTER_WHITELIST_ENABLED", "true").lower() == "true"
+    # 公司名预处理：从库读出后去除异常符号（中文标点等）并校验合法性（5 条规则），
+    # 默认开启，确保客户管理界面不出现异常/口语化脏数据。
+    CUSTOMER_NAME_CLEAN_ENABLED: bool = os.getenv("CUSTOMER_NAME_CLEAN_ENABLED", "true").lower() == "true"
 
     @property
     def DATABASE_URL(self) -> str:

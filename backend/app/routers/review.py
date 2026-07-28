@@ -8,13 +8,14 @@ Review Queue API router for company name deduplication review.
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.database import get_db
+from app.services.company_dedup.company_merge import list_merges
 from app.services.company_dedup.review_service import (
     ReviewItemNotFound,
     approve_review,
@@ -23,6 +24,7 @@ from app.services.company_dedup.review_service import (
     get_review_items,
     get_review_stats,
     reject_review,
+    rollback_review_merge,
 )
 
 logger = logging.getLogger(__name__)
@@ -72,12 +74,32 @@ def get_review_stats_endpoint(db: Session = Depends(get_db)) -> ReviewStatsRespo
 
 
 @router.post("/{id}/approve")
-def approve_merge_endpoint(id: int, db: Session = Depends(get_db)) -> Dict[str, Any]:
-    """Approve a merge request and execute the actual company merge."""
+def approve_merge_endpoint(
+    id: int,
+    db: Session = Depends(get_db),
+    reviewed_by: Optional[str] = Query(None),
+) -> Dict[str, Any]:
+    """通过审核：写入 company_merge_map，持久化合并（非物理改写 DWS）。"""
     try:
-        return approve_review(db, id)
+        return approve_review(db, id, reviewed_by=reviewed_by)
     except ReviewItemNotFound:
         raise _handle_not_found(id)
+
+
+@router.post("/{id}/rollback")
+def rollback_merge_endpoint(id: int, db: Session = Depends(get_db)) -> Dict[str, Any]:
+    """退回某审核项产生的合并（删除 company_merge_map 中的映射行）。"""
+    try:
+        deleted = rollback_review_merge(db, id)
+        return {
+            "success": True,
+            "id": id,
+            "deleted": deleted,
+            "message": "合并已退回" if deleted else "未找到该合并映射",
+        }
+    except Exception as e:
+        logger.error(f"Rollback review item {id} failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Rollback failed: {str(e)}")
 
 
 @router.post("/{id}/reject")
@@ -93,12 +115,59 @@ def reject_merge_endpoint(id: int, db: Session = Depends(get_db)) -> Dict[str, A
 def batch_approve_endpoint(
     request: BatchOperationRequest,
     db: Session = Depends(get_db),
+    reviewed_by: Optional[str] = Query(None),
 ) -> Dict[str, Any]:
-    """Batch approve multiple merge requests with actual merge execution."""
+    """批量通过审核：写入 company_merge_map，持久化合并。"""
     try:
-        return batch_approve_reviews(db, request.ids)
+        return batch_approve_reviews(db, request.ids, reviewed_by=reviewed_by)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/merges")
+def list_merges_endpoint(
+    db: Session = Depends(get_db),
+    canonical_name: Optional[str] = Query(None),
+    page: int = Query(1, ge=1),
+    size: int = Query(50, ge=1, le=200),
+) -> Dict[str, Any]:
+    """列出当前生效的公司合并映射（持久化层审计/管理）。"""
+    try:
+        return list_merges(db, canonical_name=canonical_name, page=page, size=size)
+    except Exception as e:
+        logger.error(f"List merges failed: {e}")
+        raise HTTPException(status_code=500, detail=f"List merges failed: {str(e)}")
+
+
+@router.post("/merges/rollback")
+def rollback_merge_by_alias_endpoint(
+    db: Session = Depends(get_db),
+    alias_name: Optional[str] = Query(None),
+    review_id: Optional[int] = Query(None),
+) -> Dict[str, Any]:
+    """按别名或审核项退回合并。"""
+    if not alias_name and review_id is None:
+        raise HTTPException(status_code=400, detail="alias_name 与 review_id 至少提供一个")
+    from app.services.company_dedup.company_merge import rollback_merge_by_alias
+    try:
+        if alias_name:
+            deleted = rollback_merge_by_alias(db, alias_name)
+            return {
+                "success": True,
+                "alias_name": alias_name,
+                "deleted": deleted,
+                "message": "合并已退回" if deleted else "未找到该别名映射",
+            }
+        deleted = rollback_review_merge(db, review_id)
+        return {
+            "success": True,
+            "review_id": review_id,
+            "deleted": deleted,
+            "message": "合并已退回" if deleted else "未找到该合并映射",
+        }
+    except Exception as e:
+        logger.error(f"Rollback merge failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Rollback failed: {str(e)}")
 
 
 @router.post("/batch-reject")

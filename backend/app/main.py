@@ -30,6 +30,27 @@ async def lifespan(app: FastAPI):
     """Manage application lifecycle: start scheduler on boot, stop on exit."""
     logger.info("Starting ETL scheduler …")
     start_scheduler()
+
+    # 确保公司合并持久化表存在（查询层按 company_merge_map 折叠别名）
+    try:
+        from app.services.company_dedup.company_merge import ensure_merge_map_table
+        from app.database import SessionLocal
+
+        with SessionLocal() as _db:
+            ensure_merge_map_table(_db)
+        logger.info("company_merge_map 表已就绪")
+    except Exception as _e:
+        logger.warning("company_merge_map 初始化失败，将在首次使用时自动创建: %s", _e)
+
+    # 确保 DWS 聚合表查询索引存在（ETL 每日重建后兜底，避免全表扫描导致连接失活）
+    try:
+        from app.database.dws_indexes import ensure_dws_indexes
+
+        ensure_dws_indexes()
+        logger.info("DWS 聚合表查询索引已就绪")
+    except Exception as _e:
+        logger.warning("DWS 索引初始化失败，将在 ETL 全量同步后自动补齐: %s", _e)
+
     yield
     logger.info("Stopping ETL scheduler …")
     stop_scheduler()

@@ -8,10 +8,12 @@ customer_list 路由、export_service 导出等复用，避免过滤逻辑散落
 from __future__ import annotations
 
 import logging
+import time
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy import text
+from sqlalchemy.exc import OperationalError, PendingRollbackError
 from sqlalchemy.orm import Session
 
 from app.services.common.channel_classification import (
@@ -28,33 +30,22 @@ from app.services.customer.key_account_query import (
     list_key_accounts,
 )
 from app.services.utils import add_in_filter as _add_in_filter
+from app.services.common.company_name_clean import (
+    clean_company_symbols,
+    is_valid_company_name,
+)
+from app.services.common.company_filter import (
+    build_customer_filter,
+    build_company_name_preprocess,
+)
+from app.services.company_dedup.company_merge import (
+    ensure_merge_map_table,
+    get_member_names,
+    resolve_customer,
+)
 from app.config import settings
 
 logger = logging.getLogger(__name__)
-
-# 合法公司名判定：customer_name 包含任一企业特征词即视为有效公司名（保守口径，
-# 仅剔除明显非法/用户名类记录，避免误删真实公司）。正则用于 REGEXP 匹配。
-VALID_COMPANY_REGEX = (
-    "公司|集团|股份|有限公司|有限责任公司|企业|厂|局|所|院|银行|保险|证券|"
-    "医院|学校|大学|学院|电视台|出版社|报社|协会|基金会|合作社|商行|门店|"
-    "中心|科技|网络|技术|实业|控股|投资|管理|咨询|电子|信息|能源|医疗|"
-    "生物|教育|文化|传媒|贸易|物流|建设|工程|房地产|置业|酒店|旅游|食品|"
-    "服饰|汽车|机械|化工|材料|环境|智能|数据|软件|通信|金融|基金|租赁|"
-    "供应链|电子商务"
-)
-
-
-def _load_filter_name_set(db: Session, table: str) -> List[str]:
-    """从指定表读取一列公司名（表需含 customer_name 列）。
-
-    表不存在或列缺失时返回空列表（对应子筛选变为无操作），不抛异常。
-    """
-    try:
-        rows = db.execute(text(f"SELECT customer_name FROM {table}")).fetchall()
-        return [r[0] for r in rows if r[0]]
-    except Exception as exc:  # 表未创建等
-        logger.warning("读取筛选表 %s 失败（已忽略）：%s", table, exc)
-        return []
 
 
 def _apply_customer_filters(
@@ -62,45 +53,25 @@ def _apply_customer_filters(
     params: Dict[str, Any],
     db: Session,
 ) -> None:
-    """按配置开关追加客户列表筛选条件（当前默认全部禁用）。
+    """按配置开关追加客户列表筛选条件（委托给 common/company_filter 统一模块）。"""
+    where_parts.extend(build_customer_filter("customer_name", params, use_lifeline=True))
 
-    规则（均受“保命条件”保护：有联系人/互动的行始终保留，避免误删有效数据）：
-    - 非法公司名/用户名：customer_name 不含任何企业特征词且无联系人与互动的行被剔除。
-    - 黑名单（精确）：命中的公司名被剔除（当前默认禁用）。
-    - 白名单（允许名单）：仅白名单内公司名保留（当前默认禁用）。
+
+def _apply_company_name_preprocess(
+    where_parts: List[str],
+    params: Dict[str, Any],
+    db: Session,
+) -> None:
+    """公司名预处理（默认开启）：委托给 common/company_filter 统一模块在 SQL 层施加结构性准入。
+
+    strict_digits=True 与入库前口径保持一致：含阿拉伯数字的名称须为知名数字品牌或
+    数字+单位机构名，否则过滤（中文数字品牌如三星/三一不受影响）。
     """
-    if not settings.CUSTOMER_FILTER_ENABLED:
-        return
+    where_parts.extend(
+        build_company_name_preprocess("customer_name", params, strict_digits=True)
+    )
 
-    # 保命条件：有联系人或有互动的行始终保留
-    keep_data = "(contact_count > 0 OR interaction_count_total > 0)"
 
-    # 1) 非法公司名 / 用户名剔除
-    if settings.CUSTOMER_FILTER_ILLEGAL_ENABLED:
-        where_parts.append(
-            f"(customer_name REGEXP :valid_company_regex OR {keep_data})"
-        )
-        params["valid_company_regex"] = VALID_COMPANY_REGEX
-
-    # 2) 黑名单（精确匹配，当前默认禁用）
-    if settings.CUSTOMER_FILTER_BLACKLIST_ENABLED:
-        blacklist = _load_filter_name_set(db, "company_blacklist")
-        if blacklist:
-            ph = ", ".join(f":bl_{i}" for i in range(len(blacklist)))
-            for i, name in enumerate(blacklist):
-                params[f"bl_{i}"] = name
-            where_parts.append(f"(customer_name NOT IN ({ph}) OR {keep_data})")
-
-    # 3) 白名单（允许名单，当前默认禁用）
-    if settings.CUSTOMER_FILTER_WHITELIST_ENABLED:
-        whitelist = _load_filter_name_set(db, "company_whitelist")
-        if whitelist:
-            ph = ", ".join(f":wl_{i}" for i in range(len(whitelist)))
-            for i, name in enumerate(whitelist):
-                params[f"wl_{i}"] = name
-            where_parts.append(f"(customer_name IN ({ph}) OR {keep_data})")
-
-# 允许排序的字段（白名单，防止 SQL 注入）
 ALLOWED_SORT = {
     "customer_name", "industry", "intent_score", "interaction_count_30d",
     "interaction_count_total", "last_interaction_time", "active_opp_amount",
@@ -276,6 +247,13 @@ def get_customer_list(
 
     # 客户列表筛选（默认禁用，待数据对齐后开启；见 config.CUSTOMER_FILTER_*）
     _apply_customer_filters(where_parts, params, db)
+    # 公司名预处理：去除异常符号 + 合法性准入（默认开启）
+    _apply_company_name_preprocess(where_parts, params, db)
+
+    # 合并折叠：已被合并为别名的公司名不单独出现在列表中（持久化合并层，
+    # 即使 ETL 重建 DWS 也不会还原，因为映射表独立存在）
+    ensure_merge_map_table(db)
+    where_parts.append("customer_name NOT IN (SELECT alias_name FROM company_merge_map)")
 
     where_sql = " AND ".join(where_parts)
 
@@ -305,6 +283,20 @@ def get_customer_list(
         {**params, "limit": page_size, "offset": offset},
     ).mappings().all()
     items = [dict(r) for r in rows]
+
+    # 公司名预处理（结果行级）：去除异常符号得到干净显示名，并丢弃清洗后为空/非法的项。
+    # SQL 层已做结构性过滤，此处为兜底与显示清洗，正常不会额外丢弃（total 保持准确）。
+    cleaned_items: List[Dict[str, Any]] = []
+    for it in items:
+        raw_name = it.get("customer_name") or ""
+        cleaned = clean_company_symbols(raw_name)
+        if not cleaned or not is_valid_company_name(cleaned):
+            continue
+        if cleaned != raw_name:
+            it = dict(it)
+            it["customer_name"] = cleaned
+        cleaned_items.append(it)
+    items = cleaned_items
 
     filters_applied = {
         "keyword": keyword,
@@ -345,44 +337,61 @@ _FILTER_OPTION_COLUMNS = (
 )
 
 
-def _filter_option_rows(db: Session, special_projects: List[str]) -> List[Any]:
-    """返回所选专项客户群体的合并列（用于下拉选项去重）。"""
-    columns = ", ".join(f"c.{column}" for column in _FILTER_OPTION_COLUMNS)
-    rows: List[Any] = []
-    # 重客：来自重客快照表，客户名称优先取重客名称（未进入彩光的重客也能作为候选项）
+def _distinct_column(db: Session, column: str, special_projects: List[str]) -> set:
+    """按专项维度取单列去重值，配合 idx_c360_campaign_tag* 索引纯索引扫描，仅返回少量值。
+
+    改为按列 DISTINCT（而非一次性 SELECT 多列后由 Python 去重）后，每条查询命中覆盖索引、
+    返回的行数从「整表行数」降为「该列 distinct 值数」，彻底消除 get_filter_options 在 ETL
+    高负载窗口因大结果集传输触发的 (2013) 连接失活。
+    """
+    col_expr = "c.customer_name" if column == "customer_name" else f"c.{column}"
+    clauses: List[str] = []
+    params: Dict[str, Any] = {}
+    # 重客：来自重客快照表，customer_name 优先取重客名称（未进入彩光的重客也可作为候选项）
     if "重客" in special_projects:
-        ka_sql = text(
-            f"""
-            SELECT {columns}, COALESCE(ka.`重客名称`, c.customer_name) AS customer_name
-            FROM {KEY_ACCOUNT_TABLE} ka
-            LEFT JOIN dws_customer_360 c
-              ON c.customer_name = ka.`重客名称`
-             AND c.campaign_tag = :filter_source_project
-            WHERE ka.`time` = (SELECT MAX(`time`) FROM {KEY_ACCOUNT_TABLE})
-            """
+        ka_expr = ("COALESCE(ka.`重客名称`, c.customer_name)"
+                   if column == "customer_name" else col_expr)
+        clauses.append(
+            f"SELECT DISTINCT {ka_expr} FROM {KEY_ACCOUNT_TABLE} ka "
+            f"LEFT JOIN dws_customer_360 c "
+            f"ON c.customer_name = ka.`重客名称` "
+            f"AND c.campaign_tag = :ka_src "
+            f"WHERE ka.`time` = (SELECT MAX(`time`) FROM {KEY_ACCOUNT_TABLE}) "
+            f"AND {ka_expr} IS NOT NULL AND TRIM({ka_expr}) <> ''"
         )
-        rows.extend(
-            db.execute(ka_sql, {"filter_source_project": KEY_ACCOUNT_SOURCE_PROJECT}).mappings().all()
-        )
+        params["ka_src"] = KEY_ACCOUNT_SOURCE_PROJECT
     # 其余专项：来自 dws_customer_360
     others = [p for p in special_projects if p != "重客"]
     if others:
-        other_sql = text(
-            f"SELECT {columns}, c.customer_name AS customer_name FROM dws_customer_360 c "
-            f"WHERE c.campaign_tag IN :filter_other_projects"
+        clauses.append(
+            f"SELECT DISTINCT {col_expr} FROM dws_customer_360 c "
+            f"WHERE c.campaign_tag IN :others "
+            f"AND {col_expr} IS NOT NULL AND TRIM({col_expr}) <> ''"
         )
-        rows.extend(
-            db.execute(other_sql, {"filter_other_projects": tuple(others)}).mappings().all()
-        )
+        params["others"] = tuple(others)
     # 未选任何专项：返回全部客户
     if not special_projects:
-        all_sql = text(f"SELECT {columns}, c.customer_name AS customer_name FROM dws_customer_360 c")
-        rows.extend(db.execute(all_sql).mappings().all())
-    return rows
+        clauses.append(
+            f"SELECT DISTINCT {col_expr} FROM dws_customer_360 c "
+            f"WHERE {col_expr} IS NOT NULL AND TRIM({col_expr}) <> ''"
+        )
+    if not clauses:
+        return set()
+    sql = text(" UNION ".join(clauses))
+    rows = db.execute(sql, params).all()
+    return {r[0] for r in rows if r[0] not in (None, "")}
 
 
-def _facet_values(rows: List[Any], column: str) -> List[str]:
-    return sorted({str(row.get(column)).strip() for row in rows if row.get(column) not in (None, "")})
+def _filter_option_rows(db: Session, special_projects: List[str]) -> Dict[str, set]:
+    """返回所选专项客户群体的维度值集合（结构：{列名: 去重值集合}）。
+
+    逐列调用 _distinct_column，配合 dws_customer_360 上的 campaign_tag 覆盖索引做到纯索引
+    扫描，仅返回少量 distinct 值（而非整表行）。
+    """
+    result: Dict[str, set] = {}
+    for column in (*_FILTER_OPTION_COLUMNS, "customer_name"):
+        result[column] = _distinct_column(db, column, special_projects)
+    return result
 
 
 def _channel_option_rows(db: Session, special_projects: List[str]) -> List[Any]:
@@ -429,17 +438,62 @@ def get_filter_options(
     db: Session,
     special_project: Optional[List[str]] = None,
 ) -> Dict[str, List[str]]:
-    """返回与列表同口径的客户群体筛选维度（行业/区域/负责人/名称/阶段/意向/渠道）。"""
+    """返回与列表同口径的客户群体筛选维度（行业/区域/负责人/名称/阶段/意向/渠道）。
+
+    韧性：若传入会话的连接在长耗时处理/服务端回收后失活（报 2013 Lost connection 或
+    PendingRollbackError），回滚并换一个全新会话重试一次，避免一次性网络/连接抖动直接 500。
+    """
     special_project = special_project or []
-    rows = _filter_option_rows(db, special_project)
-    channel_rows = _channel_option_rows(db, special_project)
+
+    def _load(sess: Session) -> tuple:
+        _rows = _filter_option_rows(sess, special_project)
+        _channel_rows = _channel_option_rows(sess, special_project)
+        return _rows, _channel_rows
+
+    def _load_with_fold(sess: Session) -> tuple:
+        """加载筛选维度，并按合并映射过滤掉已被合并为别名的公司名。"""
+        _rows, _channel_rows = _load(sess)
+        try:
+            _alias_set = {
+                r[0]
+                for r in sess.execute(
+                    text("SELECT alias_name FROM company_merge_map")
+                ).all()
+            }
+        except Exception:
+            _alias_set = set()
+        # _rows 为 {列名: 去重值集合}，仅剔除已被合并为别名的客户名
+        _rows["customer_name"] = {
+            _n for _n in _rows["customer_name"] if _n not in _alias_set
+        }
+        return _rows, _channel_rows
+
+    try:
+        rows, channel_rows = _load_with_fold(db)
+    except (OperationalError, PendingRollbackError) as _exc:
+        logger.warning("get_filter_options 连接失活，尝试换会话重试: %s", _exc)
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        try:
+            db.close()
+        except Exception:
+            pass
+        # 短暂退避，避开瞬时高负载窗口（如 ETL 批量重建 dws_customer_360 时
+        # 全表扫描被拖慢导致连接被服务器 net_write_timeout 断开）后再换会话重试
+        time.sleep(0.3)
+        from app.database import SessionLocal
+        with SessionLocal() as _db2:
+            rows, channel_rows = _load_with_fold(_db2)
+
     return {
-        "industries": _facet_values(rows, "industry"),
-        "regions": available_region_options(row.get("region") for row in rows),
-        "owners": _facet_values(rows, "owner_name"),
-        "keywords": _facet_values(rows, "customer_name"),
-        "stages": _facet_values(rows, "purchase_stage"),
-        "intent_levels": _facet_values(rows, "intent_level"),
+        "industries": sorted(rows["industry"]),
+        "regions": available_region_options(rows["region"]),
+        "owners": sorted(rows["owner_name"]),
+        "keywords": sorted(rows["customer_name"]),
+        "stages": sorted(rows["purchase_stage"]),
+        "intent_levels": sorted(rows["intent_level"]),
         "channels": available_channel_options(row.get("channel") for row in channel_rows),
     }
 
@@ -455,6 +509,7 @@ def get_customer_statistics(db: Session) -> Dict[str, Any]:
             intent_level,
             purchase_stage
         FROM dws_customer_360
+        WHERE customer_name NOT IN (SELECT alias_name FROM company_merge_map)
         ORDER BY interaction_count_total DESC
     """)
     rows = db.execute(sql).mappings().all()
@@ -523,23 +578,55 @@ def get_customer_name(db: Session, customer_id: str) -> str:
 
 
 def get_customer_detail(db: Session, customer_id: str) -> Dict[str, Any]:
-    """返回客户 360 详情，并补充近 30 天互动数与最近拜访信息。"""
+    """返回客户 360 详情，并补充近 30 天互动数与最近拜访信息。
+
+    按合并映射折叠：传入别名 id 时解析到标准公司，并聚合整个合并簇的数据。
+    """
+    canonical_id, canonical_name, member_ids, member_names = resolve_customer(db, customer_id)
+    if canonical_id is None:
+        raise CustomerNotFound(customer_id)
+
     row = db.execute(
         text("SELECT * FROM dws_customer_360 WHERE id = :cid"),
-        {"cid": customer_id},
+        {"cid": canonical_id},
     ).mappings().fetchone()
     if not row:
         raise CustomerNotFound(customer_id)
 
     result = dict(row)
+    # 合并簇去重计数：联系人按 (contact_name, mobile)，互动按
+    # (contact_name, behavior_type, event_time) 去重，避免合并后重复计数。
+    contact_count = db.execute(
+        text(
+            "SELECT COUNT(*) FROM ("
+            "  SELECT DISTINCT contact_name, mobile "
+            "  FROM dws_contact_360 WHERE customer_id IN :mids"
+            ") t"
+        ),
+        {"mids": tuple(member_ids)},
+    ).scalar() or 0
+    interaction_count_total = db.execute(
+        text(
+            "SELECT COUNT(*) FROM ("
+            "  SELECT DISTINCT contact_name, behavior_type, event_time "
+            "  FROM dws_interaction_detail WHERE customer_name IN :members"
+            ") t"
+        ),
+        {"members": tuple(member_names)},
+    ).scalar() or 0
     interaction_count_30d = db.execute(
         text(
-            "SELECT COUNT(*) FROM dws_interaction_detail "
-            "WHERE customer_name = :cname "
-            "  AND event_time >= DATE_SUB(NOW(), INTERVAL 30 DAY)"
+            "SELECT COUNT(*) FROM ("
+            "  SELECT DISTINCT contact_name, behavior_type, event_time "
+            "  FROM dws_interaction_detail "
+            "  WHERE customer_name IN :members "
+            "    AND event_time >= DATE_SUB(NOW(), INTERVAL 30 DAY)"
+            ") t"
         ),
-        {"cname": result.get("customer_name")},
+        {"members": tuple(member_names)},
     ).scalar() or 0
+    result["contact_count"] = int(contact_count)
+    result["interaction_count_total"] = int(interaction_count_total)
     result["interaction_count_30d"] = int(interaction_count_30d)
 
     visit_row = db.execute(
@@ -547,9 +634,9 @@ def get_customer_detail(db: Session, customer_id: str) -> Dict[str, Any]:
             "SELECT MAX(last_visit_time) AS last_visit_time, "
             "       MIN(not_visit_days) AS no_visit_days "
             "FROM ods_crm_contact_day "
-            "WHERE customer_name = :cname"
+            "WHERE customer_name IN :members"
         ),
-        {"cname": result.get("customer_name")},
+        {"members": tuple(member_names)},
     ).mappings().fetchone()
 
     if visit_row:
@@ -564,17 +651,20 @@ def get_customer_detail(db: Session, customer_id: str) -> Dict[str, Any]:
 
 def get_customer_contacts(db: Session, customer_id: str) -> Dict[str, Any]:
     """返回客户联系人列表（优先 dws_contact_360，缺失时回退 dws_contact_mapping）。"""
+    canonical_id, canonical_name, member_ids, member_names = resolve_customer(db, customer_id)
+    if canonical_id is None or not member_ids:
+        raise CustomerNotFound(customer_id)
     customer_row = db.execute(
         text(
             "SELECT customer_name, purchase_stage, intent_level "
             "FROM dws_customer_360 WHERE id = :cid"
         ),
-        {"cid": customer_id},
+        {"cid": canonical_id},
     ).mappings().fetchone()
     if not customer_row:
         raise CustomerNotFound(customer_id)
 
-    customer_name = customer_row["customer_name"]
+    customer_name = canonical_name
 
     rows = db.execute(
         text(
@@ -595,7 +685,7 @@ def get_customer_contacts(db: Session, customer_id: str) -> Dict[str, Any]:
             "    SELECT contact_name, mobile, "
             "           SUM(CASE WHEN is_high_value = 1 THEN 1 ELSE 0 END) AS high_value_count "
             "    FROM dws_interaction_detail "
-            "    WHERE customer_name = :cname "
+            "    WHERE customer_name IN :members "
             "    GROUP BY contact_name, mobile "
             ") hv ON hv.contact_name <=> c.contact_name "
             "     AND hv.mobile <=> c.mobile "
@@ -608,19 +698,19 @@ def get_customer_contacts(db: Session, customer_id: str) -> Dict[str, Any]:
             "                   ORDER BY COUNT(*) DESC, MAX(event_time) DESC "
             "               ) AS rn "
             "        FROM dws_interaction_detail "
-            "        WHERE customer_name = :cname "
+            "        WHERE customer_name IN :members "
             "          AND channel IS NOT NULL AND channel != '' "
             "        GROUP BY contact_name, mobile, channel "
             "    ) preferred_ranked "
             "    WHERE rn = 1 "
             ") pc ON pc.contact_name <=> c.contact_name "
             "     AND pc.mobile <=> c.mobile "
-            "WHERE c.customer_id = :cid "
+            "WHERE c.customer_id IN :member_ids "
             "ORDER BY c.interaction_count DESC, c.contact_name"
         ),
         {
-            "cid": customer_id,
-            "cname": customer_name,
+            "member_ids": tuple(member_ids),
+            "members": tuple(member_names),
             "customer_stage": customer_row.get("purchase_stage"),
             "customer_intent_level": customer_row.get("intent_level"),
         },
@@ -649,7 +739,7 @@ def get_customer_contacts(db: Session, customer_id: str) -> Dict[str, Any]:
                 "    SELECT contact_name, mobile, "
                 "           SUM(CASE WHEN is_high_value = 1 THEN 1 ELSE 0 END) AS high_value_count "
                 "    FROM dws_interaction_detail "
-                "    WHERE customer_name = :cname "
+                "    WHERE customer_name IN :members "
                 "    GROUP BY contact_name, mobile "
                 ") hv ON hv.contact_name <=> cm.contact_name "
                 "     AND hv.mobile <=> cm.mobile "
@@ -662,28 +752,40 @@ def get_customer_contacts(db: Session, customer_id: str) -> Dict[str, Any]:
                 "                   ORDER BY COUNT(*) DESC, MAX(event_time) DESC "
                 "               ) AS rn "
                 "        FROM dws_interaction_detail "
-                "        WHERE customer_name = :cname "
+                "        WHERE customer_name IN :members "
                 "          AND channel IS NOT NULL AND channel != '' "
                 "        GROUP BY contact_name, mobile, channel "
                 "    ) preferred_ranked "
                 "    WHERE rn = 1 "
                 ") pc ON pc.contact_name <=> cm.contact_name "
                 "     AND pc.mobile <=> cm.mobile "
-                "WHERE cm.customer_name = :cname "
+                "WHERE cm.customer_name IN :members "
                 "ORDER BY cm.contact_name"
             ),
             {
-                "cname": customer_name,
+                "members": tuple(member_names),
                 "customer_stage": customer_row.get("purchase_stage"),
                 "customer_intent_level": customer_row.get("intent_level"),
             },
         ).mappings().all()
 
+    # 按 (contact_name, mobile) 去重：同一人在不同合并公司下合并为一条联系人，
+    # 保留互动更丰富的记录（避免合并簇里同一人被重复展示）。
+    seen: Dict[tuple, Any] = {}
+    for r in rows:
+        key = (r.get("contact_name"), r.get("mobile"))
+        if key in seen:
+            if (r.get("interaction_count") or 0) > (seen[key].get("interaction_count") or 0):
+                seen[key] = r
+        else:
+            seen[key] = r
+    contacts = list(seen.values())
+
     return {
-        "customer_id": customer_id,
+        "customer_id": canonical_id,
         "customer_name": customer_name,
-        "contacts": [dict(r) for r in rows],
-        "total": len(rows),
+        "contacts": [dict(c) for c in contacts],
+        "total": len(contacts),
     }
 
 
@@ -692,52 +794,84 @@ def get_customer_interactions(
     customer_id: str,
     limit: int = 50,
 ) -> Dict[str, Any]:
-    """返回客户互动时间线（按 event_time 倒序）。"""
-    customer_name = get_customer_name(db, customer_id)
+    """返回客户互动时间线（按 event_time 倒序）。
+
+    按合并映射折叠：聚合整个合并簇的互动。
+    """
+    canonical_id, canonical_name, member_ids, member_names = resolve_customer(db, customer_id)
+    if not member_names:
+        raise CustomerNotFound(customer_id)
+    members = tuple(member_names)
+    # 互动按 (contact_name, behavior_type, event_time) 去重：同一人の同一行为
+    # 只算一条互动。LIMIT 作用于去重后的结果，total 反映去重后总数。
     rows = db.execute(
         text(
-            "SELECT * FROM dws_interaction_detail "
-            "WHERE customer_name = :cname "
-            "ORDER BY event_time DESC "
+            "SELECT d.* FROM dws_interaction_detail d "
+            "INNER JOIN ("
+            "  SELECT MIN(id) AS keep_id FROM dws_interaction_detail "
+            "  WHERE customer_name IN :members "
+            "  GROUP BY contact_name, behavior_type, event_time"
+            ") g ON g.keep_id = d.id "
+            "ORDER BY d.event_time DESC "
             "LIMIT :lim"
         ),
-        {"cname": customer_name, "lim": limit},
+        {"members": members, "lim": limit},
     ).mappings().all()
+    total = db.execute(
+        text(
+            "SELECT COUNT(*) FROM ("
+            "  SELECT DISTINCT contact_name, behavior_type, event_time "
+            "  FROM dws_interaction_detail WHERE customer_name IN :members"
+            ") t"
+        ),
+        {"members": members},
+    ).scalar() or 0
     return {
-        "customer_id": customer_id,
-        "customer_name": customer_name,
+        "customer_id": canonical_id,
+        "customer_name": canonical_name,
         "interactions": [dict(r) for r in rows],
-        "total": len(rows),
+        "total": int(total),
     }
 
 
 def get_customer_opportunities(db: Session, customer_id: str) -> Dict[str, Any]:
-    """返回客户 CRM 商机（按 create_date 倒序）。"""
-    customer_name = get_customer_name(db, customer_id)
+    """返回客户 CRM 商机（按 create_date 倒序）。
+
+    按合并映射折叠：聚合整个合并簇的商机。
+    """
+    canonical_id, canonical_name, member_ids, member_names = resolve_customer(db, customer_id)
+    if not member_names:
+        raise CustomerNotFound(customer_id)
     rows = db.execute(
         text(
             "SELECT * FROM ods_crm_opportunity_day "
-            "WHERE customer_name = :cname "
+            "WHERE customer_name IN :members "
             "ORDER BY create_date DESC"
         ),
-        {"cname": customer_name},
+        {"members": tuple(member_names)},
     ).mappings().all()
     return {
-        "customer_id": customer_id,
-        "customer_name": customer_name,
+        "customer_id": canonical_id,
+        "customer_name": canonical_name,
         "opportunities": [dict(r) for r in rows],
         "total": len(rows),
     }
 
 
 def build_customer_ai_insight(db: Session, customer_id: str) -> Dict[str, Any]:
-    """构建客户 AI 洞察（规则结论 + 优先联系人推荐）。"""
+    """构建客户 AI 洞察（规则结论 + 优先联系人推荐）。
+
+    按合并映射折叠：聚合整个合并簇的数据。
+    """
     from app.services.ai.contact_recommend import recommend_priority_contacts
 
-    customer_name = get_customer_name(db, customer_id)
+    canonical_id, canonical_name, member_ids, member_names = resolve_customer(db, customer_id)
+    if canonical_id is None or not member_names:
+        raise CustomerNotFound(customer_id)
+
     customer_row = db.execute(
         text("SELECT * FROM dws_customer_360 WHERE id = :cid"),
-        {"cid": customer_id},
+        {"cid": canonical_id},
     ).mappings().fetchone()
     if not customer_row:
         raise CustomerNotFound(customer_id)
@@ -746,11 +880,14 @@ def build_customer_ai_insight(db: Session, customer_id: str) -> Dict[str, Any]:
 
     interaction_count = db.execute(
         text(
-            "SELECT COUNT(*) FROM dws_interaction_detail "
-            "WHERE customer_name = :cname "
-            "  AND event_time >= DATE_SUB(NOW(), INTERVAL 3 MONTH)"
+            "SELECT COUNT(*) FROM ("
+            "  SELECT DISTINCT contact_name, behavior_type, event_time "
+            "  FROM dws_interaction_detail "
+            "  WHERE customer_name IN :members "
+            "    AND event_time >= DATE_SUB(NOW(), INTERVAL 3 MONTH)"
+            ") t"
         ),
-        {"cname": customer_name},
+        {"members": tuple(member_names)},
     ).scalar() or 0
 
     opp_count = int(customer.get("funnel_opp_count") or 0)
@@ -787,12 +924,14 @@ def build_customer_ai_insight(db: Session, customer_id: str) -> Dict[str, Any]:
 
     priority_result = recommend_priority_contacts(
         db=db,
-        customer_id=customer_id,
-        customer_name=customer_name,
+        customer_id=canonical_id,
+        customer_name=canonical_name,
         top_n=3,
     )
 
     return {
+        "customer_id": canonical_id,
+        "customer_name": canonical_name,
         "business_conclusion": business_conclusion,
         "evidence": evidence,
         "recommendation": priority_result.get("recommendation"),

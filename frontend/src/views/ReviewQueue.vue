@@ -12,21 +12,54 @@
       </button>
 
       <div v-if="dedupRunning || dedupResults" class="dedup-progress">
+        <!-- 阶段步骤条：直观展示当前所处大阶段，杜绝进度回退带来的困惑 -->
+        <div class="phase-stepper">
+          <div
+            v-for="(p, i) in phases"
+            :key="p"
+            class="phase-step"
+            :class="{ done: i < phaseIndex, active: i === phaseIndex, pending: i > phaseIndex }"
+          >
+            <span class="phase-dot">{{ i < phaseIndex ? '✓' : i + 1 }}</span>
+            <span class="phase-label">{{ p }}</span>
+          </div>
+        </div>
+
+        <!-- 全局进度条（后端保证单调不减） -->
         <div class="progress-bar-container">
           <div class="progress-bar" :style="{ width: dedupProgress + '%' }"></div>
         </div>
         <div class="progress-text">
-          {{ dedupStep }}
+          {{ phaseName || dedupStep }}
           <span class="progress-percent">{{ formatPercent(dedupProgress) }}</span>
           <span v-if="dedupDetails && dedupDetails.completed > 0 && dedupDetails.total > 0">
             ({{ dedupDetails.completed }}/{{ dedupDetails.total }})
           </span>
         </div>
+
+        <!-- 块级子进度：分块阶段才有意义 -->
+        <div v-if="dedupDetails && dedupDetails.chunk_total" class="chunk-sub">
+          第 {{ dedupDetails.chunk_index }}/{{ dedupDetails.chunk_total }} 块 ·
+          {{ dedupDetails.chunk_phase === '证据评分' ? '证据评分中' : '写入队列中' }}
+          <span v-if="dedupDetails.chunk_total_pairs">
+            （本块 {{ dedupDetails.chunk_completed }}/{{ dedupDetails.chunk_total_pairs }} 对）
+          </span>
+        </div>
+
+        <!-- 嵌入阶段并行线程提示 -->
+        <div v-if="phaseIndex === 1 && dedupDetails && dedupDetails.workers" class="workers-hint">
+          并行线程：{{ dedupDetails.workers }} 个
+        </div>
+
         <div v-if="dedupDetails && dedupDetails.message" class="progress-details">
           {{ dedupDetails.message }}
         </div>
-        <div v-if="dedupRunning" class="progress-timer">
-          耗时: {{ formatTime(elapsedTime) }}
+
+        <!-- 耗时 / 预计剩余 / 吞吐 -->
+        <div v-if="dedupRunning" class="progress-stats">
+          <span>已耗时：{{ formatTime(elapsedTime) }}</span>
+          <span v-if="etaSeconds !== null">预计剩余：{{ formatEta(etaSeconds) }}</span>
+          <span v-if="throughput !== null">吞吐：{{ throughput }} 公司/秒</span>
         </div>
       </div>
 
@@ -143,7 +176,24 @@ const dedupProgress = ref(0)
 const dedupStep = ref('')
 const dedupStatus = ref('idle')
 const dedupResults = ref<Record<string, number> | null>(null)
-const dedupDetails = ref<{step_name: string, completed: number, total: number, message: string} | null>(null)
+const dedupDetails = ref<{
+  step_name: string
+  completed: number
+  total: number
+  message: string
+  workers?: number
+  chunk_index?: number
+  chunk_total?: number
+  chunk_phase?: string
+  chunk_completed?: number
+  chunk_total_pairs?: number
+} | null>(null)
+// 阶段化进度（后端单调模型）
+const phases = ref<string[]>([])
+const phaseIndex = ref(0)
+const phaseName = ref('')
+const etaSeconds = ref<number | null>(null)
+const throughput = ref<number | null>(null)
 let dedupPollTimer: number | null = null
 
 // Timer state (based on backend started_at, survives page refresh)
@@ -189,6 +239,18 @@ const formatPercent = (progress: number): string => {
   return progress.toFixed(2) + '%'
 }
 
+const formatEta = (seconds: number): string => {
+  if (seconds <= 0) return '即将完成'
+  const mins = Math.floor(seconds / 60)
+  const secs = seconds % 60
+  if (mins >= 60) {
+    const hrs = Math.floor(mins / 60)
+    return `约 ${hrs} 小时 ${mins % 60} 分`
+  }
+  if (mins > 0) return `约 ${mins} 分 ${secs} 秒`
+  return `约 ${secs} 秒`
+}
+
 const runDedup = async () => {
   try {
     const response = await fetch(`${BASE_URL}/api/review/run-dedup`, {
@@ -215,6 +277,12 @@ const fetchDedupProgress = async () => {
     dedupStep.value = data.step || ''
     dedupStatus.value = data.status || 'idle'
     dedupDetails.value = data.details || null
+    // 阶段化进度字段（单调模型）
+    phases.value = data.phases || []
+    phaseIndex.value = data.phase_index ?? 0
+    phaseName.value = data.phase_name || ''
+    etaSeconds.value = data.eta_seconds ?? null
+    throughput.value = data.throughput ?? null
 
     // 基于后端时间戳计算已耗时
     if (data.started_at && dedupStartedAt.value !== data.started_at) {
@@ -538,6 +606,86 @@ onUnmounted(() => {
   text-align: center;
   font-family: monospace;
   font-weight: 600;
+}
+
+.phase-stepper {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 4px;
+  margin-bottom: 10px;
+  justify-content: center;
+}
+
+.phase-step {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  padding: 3px 8px;
+  border-radius: 12px;
+  background: #313244;
+  color: #585b70;
+  transition: all 0.3s ease;
+}
+
+.phase-step.active {
+  background: rgba(137, 180, 250, 0.18);
+  color: #89b4fa;
+  font-weight: 600;
+  box-shadow: 0 0 0 1px #89b4fa;
+}
+
+.phase-step.done {
+  background: rgba(166, 227, 161, 0.15);
+  color: #a6e3a1;
+}
+
+.phase-dot {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #585b70;
+  color: #11111b;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.phase-step.active .phase-dot {
+  background: #89b4fa;
+}
+
+.phase-step.done .phase-dot {
+  background: #a6e3a1;
+}
+
+.chunk-sub {
+  margin-top: 4px;
+  font-size: 11px;
+  color: #74c7ec;
+  text-align: center;
+  font-family: monospace;
+}
+
+.workers-hint {
+  margin-top: 4px;
+  font-size: 11px;
+  color: #f5c2e7;
+  text-align: center;
+  font-family: monospace;
+}
+
+.progress-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  margin-top: 6px;
+  font-size: 11px;
+  color: #f9e2af;
+  justify-content: center;
+  font-family: monospace;
 }
 
 .dedup-results {

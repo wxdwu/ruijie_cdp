@@ -133,6 +133,18 @@ def run_full_sync(trigger_by: str = "system") -> Dict[str, Any]:
         stats["steps"]["contact_360"] = {"rows": ct360_count}
         _phase_end("Step 9: Building contact-360", t0)
 
+        # Step 9.5: 确保 DWS 聚合表查询索引存在（ETL 每日重建后保持索引，
+        # 避免重建后查询全表扫描、在批量高负载窗口触发连接失活 2013）
+        t0 = _phase_start("Step 9.5: Ensuring DWS query indexes")
+        try:
+            from app.database.dws_indexes import ensure_dws_indexes
+
+            created_idx = ensure_dws_indexes()
+            stats["steps"]["dws_indexes"] = {"created": created_idx}
+        except Exception as idx_exc:
+            logger.error("确保 DWS 查询索引失败（不影响 ETL 主流程）: %s", idx_exc)
+        _phase_end("Step 9.5: Ensuring DWS query indexes", t0)
+
         # Step 10: Validating data quality
         t0 = _phase_start("Step 10: Validating data quality")
         validation_passed = True
