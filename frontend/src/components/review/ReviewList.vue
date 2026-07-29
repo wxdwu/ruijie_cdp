@@ -22,6 +22,7 @@
         @select="onToggleSelect"
         @approve="onApprove"
         @reject="onReject"
+        @revoke="onRevoke"
       />
 
       <div v-if="items.length === 0" class="empty-state">
@@ -88,6 +89,7 @@ const emit = defineEmits<{
   (e: 'select-all', selected: boolean): void
   (e: 'approve', id: number): void
   (e: 'reject', id: number): void
+  (e: 'revoke', id: number): void
   (e: 'page-change', page: number): void
 }>()
 
@@ -138,6 +140,10 @@ const onApprove = (id: number) => {
 
 const onReject = (id: number) => {
   emit('reject', id)
+}
+
+const onRevoke = (id: number) => {
+  emit('revoke', id)
 }
 
 const onPageChange = (newPage: number) => {

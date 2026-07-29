@@ -13,6 +13,10 @@
         <span class="btn-icon">❌</span>
         批量拒绝
       </button>
+      <button class="action-btn revoke" @click="onBatchRevoke">
+        <span class="btn-icon">↩</span>
+        批量撤销审核
+      </button>
     </div>
   </div>
 </template>
@@ -25,6 +29,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: 'batch-approve', ids: number[]): void
   (e: 'batch-reject', ids: number[]): void
+  (e: 'batch-revoke', ids: number[]): void
   (e: 'clear'): void
 }>()
 
@@ -34,6 +39,10 @@ const onBatchApprove = () => {
 
 const onBatchReject = () => {
   emit('batch-reject', props.selectedIds)
+}
+
+const onBatchRevoke = () => {
+  emit('batch-revoke', props.selectedIds)
 }
 
 const onClear = () => {
@@ -133,5 +142,16 @@ const onClear = () => {
 .action-btn.reject:hover {
   transform: translateY(-2px);
   box-shadow: 0 4px 12px rgba(243, 139, 168, 0.3);
+}
+
+/* 批量撤销审核：中性琥珀色，区别于通过(绿)/拒绝(红) */
+.action-btn.revoke {
+  background: linear-gradient(135deg, #f9e2af 0%, #fab387 100%);
+  color: #1e1e2e;
+}
+
+.action-btn.revoke:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(249, 226, 175, 0.3);
 }
 </style>

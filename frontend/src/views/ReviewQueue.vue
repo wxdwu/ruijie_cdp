@@ -6,9 +6,15 @@
     </div>
 
     <div class="dedup-section">
-      <button class="dedup-btn" @click="runDedup" :disabled="dedupRunning">
+      <button
+        class="dedup-btn"
+        :class="{ 'dedup-btn-running': dedupRunning, 'dedup-btn-done': dedupCompleted }"
+        @click="runDedup"
+        :disabled="dedupRunning"
+      >
         <span v-if="dedupRunning" class="spinner"></span>
-        {{ dedupRunning ? '去重进行中...' : '运行去重分析' }}
+        <span v-else-if="dedupCompleted" class="btn-check">✓</span>
+        {{ dedupRunning ? '去重进行中...' : (dedupCompleted ? '去重分析已完成' : '运行去重分析') }}
       </button>
 
       <div v-if="dedupRunning || dedupResults" class="dedup-progress">
@@ -18,9 +24,13 @@
             v-for="(p, i) in phases"
             :key="p"
             class="phase-step"
-            :class="{ done: i < phaseIndex, active: i === phaseIndex, pending: i > phaseIndex }"
+            :class="{
+              done: i < phaseIndex || dedupStatus === 'completed',
+              active: i === phaseIndex && dedupStatus !== 'completed',
+              pending: i > phaseIndex && dedupStatus !== 'completed',
+            }"
           >
-            <span class="phase-dot">{{ i < phaseIndex ? '✓' : i + 1 }}</span>
+            <span class="phase-dot">{{ (i < phaseIndex || dedupStatus === 'completed') ? '✓' : i + 1 }}</span>
             <span class="phase-label">{{ p }}</span>
           </div>
         </div>
@@ -56,9 +66,10 @@
         </div>
 
         <!-- 耗时 / 预计剩余 / 吞吐 -->
-        <div v-if="dedupRunning" class="progress-stats">
+        <div v-if="dedupRunning || dedupStatus === 'completed'" class="progress-stats">
           <span>已耗时：{{ formatTime(elapsedTime) }}</span>
-          <span v-if="etaSeconds !== null">预计剩余：{{ formatEta(etaSeconds) }}</span>
+          <span v-if="dedupStatus === 'completed'">预计剩余：已完成</span>
+          <span v-else-if="etaSeconds !== null">预计剩余：{{ formatEta(etaSeconds) }}</span>
           <span v-if="throughput !== null">吞吐：{{ throughput }} 公司/秒</span>
         </div>
       </div>
@@ -120,6 +131,7 @@
       :selected-ids="selectedIds"
       @batch-approve="onBatchApprove"
       @batch-reject="onBatchReject"
+      @batch-revoke="onBatchRevoke"
       @clear="onClearSelection"
     />
 
@@ -133,13 +145,14 @@
       @select-all="onToggleSelectAll"
       @approve="onApprove"
       @reject="onReject"
+      @revoke="onRevoke"
       @page-change="onPageChange"
     />
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import ReviewStats from '../components/review/ReviewStats.vue'
 import BatchActionBar from '../components/review/BatchActionBar.vue'
 import ReviewList from '../components/review/ReviewList.vue'
@@ -150,8 +163,10 @@ const statsRef = ref<InstanceType<typeof ReviewStats> | null>(null)
 
 const tabs = [
   { label: '全部', value: '' },
-  { label: '待审核', value: 'pending' },
+  // 待审核与需要人工审核为同一概念，暂不需要待审核筛选，保留逻辑不删除
+  // { label: '待审核', value: 'pending' },
   { label: '自动合并', value: 'auto_merged' },
+  { label: '手动合并', value: 'merged' },
   { label: '已拒绝', value: 'rejected' },
   { label: '需人工审核', value: 'need_review' },
 ]
@@ -175,6 +190,8 @@ const dedupRunning = ref(false)
 const dedupProgress = ref(0)
 const dedupStep = ref('')
 const dedupStatus = ref('idle')
+// 去重真正完成（后端 status === 'completed'）后，按钮转绿、步骤条全部置为已完成
+const dedupCompleted = computed(() => dedupStatus.value === 'completed')
 const dedupResults = ref<Record<string, number> | null>(null)
 const dedupDetails = ref<{
   step_name: string
@@ -450,6 +467,20 @@ const onReject = async (id: number) => {
   }
 }
 
+const onRevoke = async (id: number) => {
+  try {
+    const response = await fetch(`${BASE_URL}/api/review/${id}/revoke`, {
+      method: 'POST',
+    })
+    if (response.ok) {
+      await refreshAll()
+      selectedIds.value = selectedIds.value.filter((i) => i !== id)
+    }
+  } catch (error) {
+    console.error('Failed to revoke:', error)
+  }
+}
+
 const onBatchApprove = async (ids: number[]) => {
   try {
     const response = await fetch(`${BASE_URL}/api/review/batch-approve`, {
@@ -479,6 +510,22 @@ const onBatchReject = async (ids: number[]) => {
     }
   } catch (error) {
     console.error('Failed to batch reject:', error)
+  }
+}
+
+const onBatchRevoke = async (ids: number[]) => {
+  try {
+    const response = await fetch(`${BASE_URL}/api/review/batch-revoke`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids }),
+    })
+    if (response.ok) {
+      await refreshAll()
+      selectedIds.value = []
+    }
+  } catch (error) {
+    console.error('Failed to batch revoke:', error)
   }
 }
 
@@ -539,6 +586,19 @@ onUnmounted(() => {
 .dedup-btn:disabled {
   opacity: 0.7;
   cursor: not-allowed;
+}
+
+/* 去重真正完成：按钮由蓝色（进行中）变为绿色（已完成） */
+.dedup-btn-done {
+  background: linear-gradient(135deg, #a6e3a1 0%, #94e2d5 100%);
+  box-shadow: 0 4px 12px rgba(166, 227, 161, 0.4);
+}
+.dedup-btn-done:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 16px rgba(166, 227, 161, 0.5);
+}
+.btn-check {
+  display: inline-block;
 }
 
 .spinner {

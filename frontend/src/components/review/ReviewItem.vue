@@ -25,7 +25,16 @@
             </span>
           </div>
 
-          <div class="company-name">{{ item.candidate_a_name }}</div>
+          <a
+            v-if="isValidId(item.candidate_a_id)"
+            class="company-name company-link"
+            :href="`/customers/${item.candidate_a_id}`"
+            target="_blank"
+            rel="noopener noreferrer"
+            @click.stop
+            :title="'打开 ' + item.candidate_a_name + ' 的公司详情（新标签页）'"
+          >{{ item.candidate_a_name }}</a>
+          <div v-else class="company-name">{{ item.candidate_a_name }}</div>
           <div class="company-id">ID: {{ item.candidate_a_id || '—' }}</div>
 
           <!-- 公司详细信息 -->
@@ -104,7 +113,16 @@
             <span v-if="aiSuggestion === 'merge_b_to_a'" class="ai-suggestion merge-to">→ 建议合并到 A</span>
           </div>
 
-          <div class="company-name">{{ item.candidate_b_name }}</div>
+          <a
+            v-if="isValidId(item.candidate_b_id)"
+            class="company-name company-link"
+            :href="`/customers/${item.candidate_b_id}`"
+            target="_blank"
+            rel="noopener noreferrer"
+            @click.stop
+            :title="'打开 ' + item.candidate_b_name + ' 的公司详情（新标签页）'"
+          >{{ item.candidate_b_name }}</a>
+          <div v-else class="company-name">{{ item.candidate_b_name }}</div>
           <div class="company-id">ID: {{ item.candidate_b_id || '—' }}</div>
 
           <!-- 公司详细信息 -->
@@ -220,6 +238,8 @@
                             v-if="isValidId(item.candidate_a_id)"
                             class="tooltip-company-link"
                             :href="`/customers/${item.candidate_a_id}`"
+                            target="_blank"
+                            rel="noopener noreferrer"
                             @click.stop
                           >{{ item.candidate_a_name }}</a>
                           <span v-else class="tooltip-company-text">{{ item.candidate_a_name }}</span>
@@ -228,6 +248,8 @@
                             v-if="isValidId(item.candidate_b_id)"
                             class="tooltip-company-link"
                             :href="`/customers/${item.candidate_b_id}`"
+                            target="_blank"
+                            rel="noopener noreferrer"
                             @click.stop
                           >{{ item.candidate_b_name }}</a>
                           <span v-else class="tooltip-company-text">{{ item.candidate_b_name }}</span>
@@ -284,7 +306,14 @@
           >
             ✗ 保留独立
           </button>
-          <span v-else class="reviewed-badge">
+          <button
+            v-if="isRevocable"
+            class="action-btn revoke"
+            @click="onRevoke"
+          >
+            ↩ 撤销审核
+          </button>
+          <span v-if="isRevocable" class="reviewed-badge">
             {{ item.reviewed_at ? '已审核' : '—' }}
           </span>
         </div>
@@ -366,6 +395,7 @@ const emit = defineEmits<{
   (e: 'select', id: number): void
   (e: 'approve', id: number): void
   (e: 'reject', id: number): void
+  (e: 'revoke', id: number): void
 }>()
 
 const isSelected = computed(() => props.selected)
@@ -413,6 +443,14 @@ const onApprove = () => {
 
 const onReject = () => {
   emit('reject', props.item.id)
+}
+
+// 已审核状态（自动合并 / 手动合并 / 已拒绝）可撤销回待人工审核
+const isRevocable = computed(() =>
+  ['auto_merged', 'merged', 'rejected'].includes(props.item.status),
+)
+const onRevoke = () => {
+  emit('revoke', props.item.id)
 }
 
 // 构建 AI 综合分析结论文字
@@ -499,6 +537,7 @@ const getStatusLabel = (status: string) => {
   const labels: Record<string, string> = {
     pending: '待审核',
     auto_merged: '自动合并',
+    merged: '手动合并',
     rejected: '已拒绝',
     need_review: '需人工审核',
   }
@@ -660,6 +699,19 @@ const getStatusLabel = (status: string) => {
   color: #cdd6f4;
   margin-bottom: 4px;
   word-break: break-all;
+}
+
+/* 仅公司名可点击：新标签页打开公司详情，不改变当前审核页 */
+.company-link {
+  display: inline-block;
+  cursor: pointer;
+  text-decoration: none;
+  transition: color 0.15s ease;
+}
+
+.company-link:hover {
+  text-decoration: underline;
+  color: #89b4fa;
 }
 
 .company-id {
@@ -1020,6 +1072,11 @@ const getStatusLabel = (status: string) => {
   color: #a6e3a1;
 }
 
+.status-badge.merged {
+  background: rgba(137, 180, 250, 0.2);
+  color: #89b4fa;
+}
+
 .status-badge.rejected {
   background: rgba(243, 139, 168, 0.2);
   color: #f38ba8;
@@ -1070,6 +1127,18 @@ const getStatusLabel = (status: string) => {
   box-shadow: 0 4px 12px rgba(243, 139, 168, 0.35);
 }
 
+/* 撤销审核：中性琥珀色，区别于合并(绿)/拒绝(红) */
+.action-btn.revoke {
+  background: #f9e2af;
+  color: #1e1e2e;
+}
+
+.action-btn.revoke:hover {
+  background: #fab387;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(249, 226, 175, 0.35);
+}
+
 .reviewed-badge {
   padding: 8px 16px;
   background: #313244;
@@ -1113,6 +1182,10 @@ html[data-theme="light"] .candidate-label.b {
 
 html[data-theme="light"] .company-name {
   color: #122033;
+}
+
+html[data-theme="light"] .company-link:hover {
+  color: #2962b2;
 }
 
 html[data-theme="light"] .company-id {
@@ -1306,6 +1379,11 @@ html[data-theme="light"] .status-badge.auto_merged {
   color: #159669;
 }
 
+html[data-theme="light"] .status-badge.merged {
+  background: rgba(41, 98, 178, 0.1);
+  color: #2962b2;
+}
+
 html[data-theme="light"] .status-badge.rejected {
   background: rgba(207, 73, 109, 0.1);
   color: #cf496d;
@@ -1333,6 +1411,15 @@ html[data-theme="light"] .action-btn.reject {
 
 html[data-theme="light"] .action-btn.reject:hover {
   background: #b83c5c;
+}
+
+html[data-theme="light"] .action-btn.revoke {
+  background: #c79a13;
+  color: #ffffff;
+}
+
+html[data-theme="light"] .action-btn.revoke:hover {
+  background: #a87f0e;
 }
 
 html[data-theme="light"] .reviewed-badge {

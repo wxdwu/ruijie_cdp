@@ -1,18 +1,26 @@
 <template>
   <div class="review-stats">
     <div class="stats-grid">
-      <div class="stat-card pending">
+      <!-- 待审核与需要人工审核为同一概念，暂不需要展示待审核，保留逻辑不删除 -->
+      <!-- <div class="stat-card pending">
         <div class="stat-icon">⏳</div>
         <div class="stat-content">
           <div class="stat-value">{{ stats.pending || 0 }}</div>
           <div class="stat-label">待审核</div>
         </div>
-      </div>
+      </div> -->
       <div class="stat-card auto-merged">
         <div class="stat-icon">✅</div>
         <div class="stat-content">
           <div class="stat-value">{{ stats.auto_merged || 0 }}</div>
           <div class="stat-label">自动合并</div>
+        </div>
+      </div>
+      <div class="stat-card merged">
+        <div class="stat-icon">🤝</div>
+        <div class="stat-content">
+          <div class="stat-value">{{ stats.merged || 0 }}</div>
+          <div class="stat-label">手动合并</div>
         </div>
       </div>
       <div class="stat-card rejected">
@@ -47,6 +55,7 @@ import { BASE_URL } from '../../config'
 const stats = ref({
   pending: 0,
   auto_merged: 0,
+  merged: 0,
   rejected: 0,
   need_review: 0,
   total: 0,
@@ -130,6 +139,10 @@ defineExpose({ fetchStats })
 
 .stat-card.auto-merged {
   border-left: 4px solid #a6e3a1;
+}
+
+.stat-card.merged {
+  border-left: 4px solid #89b4fa;
 }
 
 .stat-card.rejected {
