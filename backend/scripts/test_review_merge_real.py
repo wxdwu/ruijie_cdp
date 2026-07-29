@@ -5,13 +5,13 @@
 1) 回退上一次误写入的 id=37 映射（仅删 review_id=37 那一行）+ 状态改回 need_review；
 2) 筛选「need_review + 两侧都有真实联系人 + 两侧都未参与过任何合并」的纯净候选；
 3) 对第一条纯净候选走真实审核链路 approve_review，验证：
-   - review_candidate.status -> auto_merged
+   - review_candidate.status -> merged（手动合并）
    - company_merge_map 写入（含 canonical_id）
    - 客户列表折叠（别名公司不再单独出现）
    - 点开标准名详情，联系人 = 两侧并集（重叠去重 + 独有补充）
    - 合并簇成员恰好 = {A, B}（纯净，未被历史映射污染）
 
-副作用（可逆）：写入 company_merge_map 一行；review_candidate.status 变 auto_merged。
+副作用（可逆）：写入 company_merge_map 一行；review_candidate.status 变 merged（手动合并）。
 """
 import os
 import sys
@@ -172,8 +172,8 @@ def main() -> None:
         cons_all_set = {(c["contact_name"], c["mobile"]) for c in cons_all}
         expected_cons = side_cons[item["candidate_a_name"]] | side_cons[item["candidate_b_name"]]
         ok = (
-            ret["success"] and ret["status"] == "auto_merged"
-            and st == "auto_merged"
+            ret["success"] and ret["status"] == "merged"
+            and st == "merged"
             and mm
             and item["candidate_b_name"] not in after
             and item["candidate_a_name"] in after

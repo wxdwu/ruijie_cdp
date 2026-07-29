@@ -24,10 +24,13 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from sqlalchemy import text
 from sqlalchemy.orm import Session
+
+from app.database import SessionLocal
 
 logger = logging.getLogger(__name__)
 
@@ -110,6 +113,10 @@ def ensure_merge_map_table(db: Session) -> None:
     _ensure_column(
         db, "company_merge_map", "canonical_id",
         "BIGINT NULL COMMENT '标准公司名在 dws_customer_360 的真实客户 id'",
+    )
+    _ensure_column(
+        db, "company_merge_map", "alias_id",
+        "BIGINT NULL COMMENT 'merged alias company real id in dws_customer_360'",
     )
     _ensure_column(
         db, "company_merge_map", "review_id",
@@ -303,6 +310,68 @@ def _branch_canonical_from_evidence(evidence: Any) -> Optional[str]:
     return None
 
 
+def _coerce_id(value):
+    """Coerce candidate_a_id / candidate_b_id (VARCHAR, may be None / 'default_id') to int."""
+    if value is None:
+        return None
+    if isinstance(value, int):
+        return value
+    s = str(value).strip()
+    if not s or s.lower() == "default_id":
+        return None
+    try:
+        return int(s)
+    except (ValueError, TypeError):
+        return None
+
+
+def _batch_fetch_c360_metrics(db, names):
+    """Batch fetch (contact_count, mobile_count) by name for survivor decision."""
+    result = {}
+    if not names:
+        return result
+    in_clause, params = _in_clause("m", list(names))
+    rows = db.execute(
+        text(
+            "SELECT customer_name, "
+            "COALESCE(contact_count, 0) AS cc, "
+            "COALESCE(mobile_count, 0) AS mc "
+            f"FROM dws_customer_360 WHERE customer_name {in_clause}"
+        ),
+        params,
+    ).mappings().all()
+    for r in rows:
+        result[r["customer_name"]] = (r["cc"], r["mc"])
+    return result
+
+
+def _batch_fetch_c360_ids(db, names):
+    """Batch fetch dws_customer_360.id by name for alias_id / canonical_id backfill."""
+    result = {}
+    if not names:
+        return result
+    in_clause, params = _in_clause("i", list(names))
+    rows = db.execute(
+        text(
+            "SELECT id, customer_name "
+            f"FROM dws_customer_360 WHERE customer_name {in_clause}"
+        ),
+        params,
+    ).mappings().all()
+    for r in rows:
+        result[r["customer_name"]] = r["id"]
+    return result
+
+
+def _decide_survivor_metrics(name_a, name_b, metrics):
+    """Pick survivor from pre-fetched metrics (same rule as decide_survivor, no per-row query)."""
+    ma = metrics.get(name_a, (0, 0))
+    mb = metrics.get(name_b, (0, 0))
+    if (ma[0], ma[1]) != (mb[0], mb[1]):
+        return name_a if (ma[0], ma[1]) > (mb[0], mb[1]) else name_b
+    return name_a if len(name_a) <= len(name_b) else name_b
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # 写入 / 退回
 # ─────────────────────────────────────────────────────────────────────────────
@@ -345,6 +414,7 @@ def record_merge(
     need_relink.discard(canonical)
 
     canonical_id = _fetch_c360_id(db, canonical)
+    alias_id_map = _batch_fetch_c360_ids(db, sorted(need_relink))
 
     # upsert 跨方言：MySQL 用 ON DUPLICATE KEY UPDATE；SQLite 用 ON CONFLICT(...)。
     dialect = _dialect_name(db)
@@ -353,6 +423,7 @@ def record_merge(
             "alias": alias,
             "canonical": canonical,
             "canonical_id": canonical_id,
+            "alias_id": alias_id_map.get(alias),
             "review_id": review_id,
             "merge_source": merge_source,
             "merged_by": merged_by,
@@ -361,14 +432,15 @@ def record_merge(
             db.execute(
                 text("""
                     INSERT INTO company_merge_map
-                        (alias_name, canonical_name, canonical_id,
+                        (alias_name, canonical_name, canonical_id, alias_id,
                          review_id, merge_source, merged_by)
                     VALUES
-                        (:alias, :canonical, :canonical_id,
+                        (:alias, :canonical, :canonical_id, :alias_id,
                          :review_id, :merge_source, :merged_by)
                     ON CONFLICT(alias_name) DO UPDATE SET
                         canonical_name = excluded.canonical_name,
                         canonical_id   = excluded.canonical_id,
+                        alias_id       = excluded.alias_id,
                         review_id      = excluded.review_id,
                         merge_source   = excluded.merge_source,
                         merged_by      = excluded.merged_by
@@ -379,14 +451,15 @@ def record_merge(
             db.execute(
                 text("""
                     INSERT INTO company_merge_map
-                        (alias_name, canonical_name, canonical_id,
+                        (alias_name, canonical_name, canonical_id, alias_id,
                          review_id, merge_source, merged_by)
                     VALUES
-                        (:alias, :canonical, :canonical_id,
+                        (:alias, :canonical, :canonical_id, :alias_id,
                          :review_id, :merge_source, :merged_by)
                     ON DUPLICATE KEY UPDATE
                         canonical_name = VALUES(canonical_name),
                         canonical_id   = VALUES(canonical_id),
+                        alias_id       = VALUES(alias_id),
                         review_id      = VALUES(review_id),
                         merge_source   = VALUES(merge_source),
                         merged_by      = VALUES(merged_by),
@@ -460,30 +533,215 @@ def list_merges(
     }
 
 
-def sync_auto_merged_to_map(db: Session) -> int:
+def sync_auto_merged_to_map(db: Optional[Session] = None) -> int:
     """把 review_candidate 中已 auto_merged 的合并关系同步进映射表（幂等）。
 
-    用于去重主流程结束时持久化高置信自动合并；branch 合并会尊重证据里的标准名。
+    该函数是「自动合并」真正落库的入口：手动合并在 approve 时直接 record_merge，
+    不经过此函数。因此只要此处被可靠调用，自动合并的两个公司才会真正被折叠。
+
+    幂等：已存在映射会被 record_merge 识别为 already_merged 而跳过。
+    逐行容错：单条写入失败仅记日志、不影响其余候选对，避免一条脏数据导致整批
+    自动合并丢失（历史上「标记了 auto_merged 却没真正合并」缺口的根因之一）。
+    db 为 None 时自行开/关会话，便于从定时任务或修复端点独立调用。
     """
-    ensure_merge_map_table(db)
-    rows = db.execute(
-        text(
-            "SELECT id, candidate_a_name, candidate_b_name, evidence "
-            "FROM review_candidate WHERE status = 'auto_merged'"
-        )
-    ).mappings().all()
+    # 读取候选对：用独立会话（不持有写锁），避免与逐行写入共用一个长事务。
+    read_db = db if db is not None else SessionLocal()
+    try:
+        ensure_merge_map_table(read_db)
+        rows = read_db.execute(
+            text(
+                "SELECT id, candidate_a_name, candidate_b_name, evidence "
+                "FROM review_candidate WHERE status = 'auto_merged'"
+            )
+        ).mappings().all()
+    finally:
+        if db is None:
+            read_db.close()
+
+    # 逐行用独立会话落库：同一 canonical 的多个别名并发 upsert 易触发 MySQL 死锁
+    # (1213)，独立会话 + 死锁重试可隔离锁、自愈；不再用单一长事务累积锁。
     count = 0
     for r in rows:
-        force = _branch_canonical_from_evidence(r.get("evidence"))
-        rec = record_merge(
-            db,
-            r["candidate_a_name"],
-            r["candidate_b_name"],
-            review_id=r["id"],
-            merged_by="system",
-            merge_source="auto",
-            force_canonical=force,
-        )
-        if rec.get("merged"):
+        if _sync_one_auto_merge(r):
             count += 1
     return count
+
+
+def _sync_one_auto_merge(r: Dict[str, Any]) -> bool:
+    """同步单条 auto_merged 候选对进映射表；独立会话 + 死锁重试。
+
+    返回该候选对是否成功写入映射。非死锁类异常直接跳过（不影响其余候选对）。
+    """
+    max_retry = 3
+    for attempt in range(1, max_retry + 1):
+        s = SessionLocal()
+        try:
+            force = _branch_canonical_from_evidence(r.get("evidence"))
+            rec = record_merge(
+                s,
+                r["candidate_a_name"],
+                r["candidate_b_name"],
+                review_id=r["id"],
+                merged_by="system",
+                merge_source="auto",
+                force_canonical=force,
+            )
+            return bool(rec.get("merged"))
+        except Exception as _e:
+            err_str = str(_e)
+            is_deadlock = "1213" in err_str or "Deadlock" in err_str
+            logger.warning(
+                "自动合并同步单条失败（重试 %s/%s，review_id=%s，%s<->%s）: %s",
+                attempt, max_retry, r.get("id"), r.get("candidate_a_name"),
+                r.get("candidate_b_name"), _e,
+            )
+            try:
+                s.rollback()
+            except Exception:
+                pass
+            if not is_deadlock or attempt >= max_retry:
+                return False
+            # 退避后重试，错开对同一 canonical 的并发 upsert 争用
+            time.sleep(0.2 * attempt)
+        finally:
+            try:
+                s.close()
+            except Exception:
+                pass
+    return False
+
+# MARKER_TEST_PYWRITE
+
+def rebuild_merge_map_from_review(db=None, *, clear_existing=True, chunk=2000):
+    """Rebuild company_merge_map (with alias_id) entirely from review_candidate.
+
+    review_candidate (status auto_merged / merged) is the single source of truth for
+    merges: each pair already has a decided canonical/alias, and its candidate_a_id /
+    candidate_b_id are the real dws_customer_360 ids. Hence company_merge_map (including
+    the new alias_id) can be fully reconstructed from it without other tables.
+
+    Logic:
+    - load all candidate pairs with status IN ('auto_merged','merged');
+    - canonical = branch_canonical from evidence if present, else survivor by
+      (contact_count, mobile_count) then shorter name;
+    - alias_id / canonical_id prefer the pair's *_id (most accurate, already dws ids),
+      fall back to name lookup;
+    - dedup by alias_name (last write wins); clear=True truncates then refills to stay
+      strictly consistent with review_candidate;
+    - the query layer (_build_roots) already chains transitive merges via union-find at
+      read time, so writing per-pair alias->canonical here is semantically equivalent
+      without an expensive full-cluster relink.
+
+    Returns a stats dict for the API / logging.
+    """
+    read_db = db if db is not None else SessionLocal()
+    try:
+        ensure_merge_map_table(read_db)
+        before_count = read_db.execute(
+            text("SELECT COUNT(*) FROM company_merge_map")
+        ).scalar() or 0
+        rows = read_db.execute(text(
+            "SELECT id, candidate_a_id, candidate_a_name, "
+            "candidate_b_id, candidate_b_name, status, evidence "
+            "FROM review_candidate WHERE status IN ('auto_merged', 'merged')"
+        )).mappings().all()
+    finally:
+        if db is None:
+            read_db.close()
+
+    total = len(rows)
+    auto_merged = sum(1 for r in rows if r["status"] == "auto_merged")
+    manual_merged = total - auto_merged
+    names = set()
+    for r in rows:
+        names.add(r["candidate_a_name"])
+        names.add(r["candidate_b_name"])
+    name_list = list(names)
+
+    aux_db = read_db if db is not None else SessionLocal()
+    try:
+        metrics = _batch_fetch_c360_metrics(aux_db, name_list)
+        id_by_name = _batch_fetch_c360_ids(aux_db, name_list)
+    finally:
+        if db is None:
+            aux_db.close()
+
+    merged_rows = {}
+    skipped = 0
+    for r in rows:
+        a_name, b_name = r["candidate_a_name"], r["candidate_b_name"]
+        force = _branch_canonical_from_evidence(r.get("evidence"))
+        canonical = force or _decide_survivor_metrics(a_name, b_name, metrics)
+        if canonical == a_name:
+            alias = b_name
+            canonical_id = _coerce_id(r.get("candidate_a_id")) or id_by_name.get(a_name)
+            alias_id = _coerce_id(r.get("candidate_b_id")) or id_by_name.get(b_name)
+        else:
+            alias = a_name
+            canonical_id = _coerce_id(r.get("candidate_b_id")) or id_by_name.get(b_name)
+            alias_id = _coerce_id(r.get("candidate_a_id")) or id_by_name.get(a_name)
+        if alias == canonical:
+            skipped += 1
+            continue
+        merged_rows[alias] = {
+            "alias_name": alias,
+            "canonical_name": canonical,
+            "canonical_id": canonical_id,
+            "alias_id": alias_id,
+            "review_id": r["id"],
+            "merge_source": "auto" if r["status"] == "auto_merged" else "manual",
+            "merged_by": "system" if r["status"] == "auto_merged" else "rebuild",
+        }
+
+    distinct_aliases = len(merged_rows)
+    write_db = SessionLocal()
+    try:
+        ensure_merge_map_table(write_db)
+        if clear_existing:
+            write_db.execute(text("DELETE FROM company_merge_map"))
+            write_db.commit()
+        items = list(merged_rows.values())
+        insert_sql = text("""
+            INSERT INTO company_merge_map
+                (alias_name, canonical_name, canonical_id, alias_id,
+                 review_id, merge_source, merged_by)
+            VALUES
+                (:alias_name, :canonical_name, :canonical_id, :alias_id,
+                 :review_id, :merge_source, :merged_by)
+            ON DUPLICATE KEY UPDATE
+                canonical_name = VALUES(canonical_name),
+                canonical_id   = VALUES(canonical_id),
+                alias_id       = VALUES(alias_id),
+                review_id      = VALUES(review_id),
+                merge_source   = VALUES(merge_source),
+                merged_by      = VALUES(merged_by),
+                created_at     = NOW()
+        """)
+        for i in range(0, len(items), chunk):
+            write_db.execute(insert_sql, items[i:i + chunk])
+        write_db.commit()
+        after_count = write_db.execute(
+            text("SELECT COUNT(*) FROM company_merge_map")
+        ).scalar() or 0
+    finally:
+        write_db.close()
+
+    logger.info(
+        "rebuild company_merge_map from review_candidate done: "
+        "review=%s (auto=%s, manual=%s), aliases=%s, skipped=%s, "
+        "clear=%s, rows %s -> %s",
+        total, auto_merged, manual_merged, distinct_aliases, skipped,
+        clear_existing, before_count, after_count,
+    )
+    return {
+        "total_review_rows": total,
+        "auto_merged": auto_merged,
+        "manual_merged": manual_merged,
+        "distinct_aliases": distinct_aliases,
+        "skipped": skipped,
+        "before_count": before_count,
+        "after_count": after_count,
+        "clear_existing": clear_existing,
+    }
+
+# R1785298235.1143098

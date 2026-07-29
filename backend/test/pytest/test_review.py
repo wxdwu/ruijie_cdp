@@ -44,7 +44,7 @@ def test_stats_returns_envelope(client: TestClient):
     r = client.get("/api/review/stats")
     assert r.status_code == 200
     body = r.json()
-    for key in ("pending", "auto_merged", "rejected", "need_review", "total"):
+    for key in ("pending", "auto_merged", "merged", "rejected", "need_review", "total"):
         assert key in body
 
 
@@ -63,7 +63,7 @@ def test_approve_success(client: TestClient, mock_db, monkeypatch):
     assert r.status_code == 200
     body = r.json()
     assert body["success"] is True
-    assert body["status"] == "auto_merged"
+    assert body["status"] == "merged"
 
 
 def test_reject_missing_returns_404(client):

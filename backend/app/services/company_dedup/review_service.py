@@ -7,15 +7,13 @@
 from __future__ import annotations
 
 import logging
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.services.company_dedup.company_merge import (
-    _index,
-    _resolve,
     _resolve_name,
     record_merge,
     rollback_merge_by_review_id,
@@ -59,7 +57,7 @@ def ensure_review_table(db: Session) -> None:
             evidence_score DECIMAL(5,2) DEFAULT NULL COMMENT '证据得分',
             llm_score DECIMAL(5,2) DEFAULT NULL COMMENT 'LLM得分',
             status VARCHAR(20) NOT NULL DEFAULT 'pending'
-                COMMENT '状态: pending, auto_merged, rejected, need_review',
+                COMMENT '状态: pending, auto_merged(系统自动合并), merged(人工审核合并), rejected, need_review',
             evidence JSON COMMENT '匹配证据详情(含rule_score, evidence_score, llm_score等)',
             reviewed_by VARCHAR(100) DEFAULT NULL COMMENT '审核人',
             reviewed_at DATETIME COMMENT '审核时间',
@@ -208,10 +206,18 @@ def _filter_source_tags(
 def _enrich_with_company_details(items: List[Dict[str, Any]], db: Session) -> List[Dict[str, Any]]:
     """为每个审核项补充候选公司的详细字段。
 
-    联系人数量从 dws_contact_360（合并簇去重后的权威联系人清单）计算；
-    近 30 天互动 / 总互动 / 最近互动时间从 dws_interaction_detail 计算，
-    而非直接读 dws_customer_360 中可能失真的聚合字段。来源表标签仅保留
-    公司真实存在数据的表（如公司不在 dws_contact_mapping 则不展示该表）。
+    外层审核列表 = 原公司名的「原始数据」，不做跨合并簇聚合：
+    - 联系人数量从 dws_contact_360（CRM + 营销 + linkflow + 天润 + 智企明细等全部
+      来源，与详情页口径一致）按原公司名自身计数；注意 dws_customer_360.contact_count
+      仅来自 ods_crm_contact_day（CRM 单一来源），在公司有非 CRM 联系人时会偏小，
+      因此此处覆盖它以免内外不一致。
+    - 近 30 天互动 / 总互动 / 最近互动时间直接采用 dws_customer_360 中该原公司名
+      自身的值（这些数据本身即来自 dws_interaction_detail 全来源，与详情页一致）。
+      合并后的汇总数据仅出现在详情页，由 customer_service.resolve_customer 折叠，
+      不在此处借用其它公司画像；
+    - 仅当候选名不在 360 时，用合并映射把别名解析到当前仍存在的标准名再取档
+      （仍取该标准名自身的原始数据），杜绝跨公司错配；
+    - 来源表标签仅保留原公司名真实存在数据的表（不跨合并簇）。
     """
     all_names: set = set()
     for item in items:
@@ -272,136 +278,81 @@ def _enrich_with_company_details(items: List[Dict[str, Any]], db: Session) -> Li
     except Exception as e:
         logger.warning(f"Failed to enrich company details: {e}")
 
-    # 第二遍前：构建一次合并映射索引，整页候选复用，避免每个候选都全表重建索引
-    try:
-        _alias_map, _roots = _index(db)
-    except Exception:
-        _alias_map, _roots = {}, {}
-
-    # 解析每个候选公司名的合并簇成员（公司名列表 + 在 360 的 id 列表）。
-    mids_by_name: Dict[str, List[Any]] = {}
-    mnames_by_name: Dict[str, List[str]] = {}
-    for name, detail in details_map.items():
-        if not detail:
-            continue
-        self_name = detail.get("customer_name") or name
-        try:
-            _canon = _resolve(self_name, _alias_map, _roots)
-            member_names = [n for n, r in _roots.items() if r == _canon]
-            if _canon not in member_names:
-                member_names.append(_canon)
-            _seen: set = set()
-            member_names = [n for n in member_names if not (n in _seen or _seen.add(n))]
-        except Exception:
-            member_names = [self_name]
-        member_ids: List[Any] = []
-        if member_names:
-            names_clause, names_params = _in_clause("mn", member_names)
-            id_rows = db.execute(
-                text(f"SELECT id FROM dws_customer_360 WHERE customer_name IN {names_clause}"),
-                names_params,
-            ).mappings().all()
-            member_ids = [r["id"] for r in id_rows]
-        mids_by_name[name] = member_ids
-        mnames_by_name[name] = member_names
-
-    # 整页所有合并簇成员的 id / 公司名，用于批量聚合查询（根除 N+1：每页仅 ~3 次查询）。
-    all_mids: set = set()
-    all_mnames: set = set()
-    for _name, mids in mids_by_name.items():
-        all_mids.update(mids)
-    for _name, mnames in mnames_by_name.items():
-        all_mnames.update(mnames)
-
-    # 批量查询 1：联系人去重元组 (customer_id, contact_name, mobile)，按公司分组去重。
-    contact_rows: Dict[Any, set] = {}
-    if all_mids:
-        mids_clause, mids_params = _in_clause("mid", list(all_mids))
-        for r in db.execute(
-            text(
-                "SELECT customer_id, contact_name, mobile "
-                f"FROM dws_contact_360 WHERE customer_id IN {mids_clause} "
-                "GROUP BY customer_id, contact_name, mobile"
-            ),
-            mids_params,
-        ).mappings().all():
-            contact_rows.setdefault(r["customer_id"], set()).add(
-                (r["contact_name"], r["mobile"])
-            )
-
-    # 批量查询 2：互动去重元组 (customer_name, contact_name, behavior_type, event_time)。
-    inter_rows: Dict[str, set] = {}
+    # 来源表真实存在性：仅判断各原公司名自身是否在 dws_contact_mapping /
+    # dws_interaction_detail 有记录，用于过滤「数据表」标签（不跨合并簇）。
     cm_names: set = set()
-    if all_mnames:
-        names_clause, names_params = _in_clause("mn", list(all_mnames))
-        for r in db.execute(
-            text(
-                "SELECT customer_name, contact_name, behavior_type, event_time "
-                f"FROM dws_interaction_detail WHERE customer_name IN {names_clause} "
-                "GROUP BY customer_name, contact_name, behavior_type, event_time"
-            ),
-            names_params,
-        ).mappings().all():
-            inter_rows.setdefault(r["customer_name"], set()).add(
-                (r["contact_name"], r["behavior_type"], r["event_time"])
-            )
-        # 批量查询 3：哪些公司名在 dws_contact_mapping 确有记录（用于过滤来源表标签）
-        for r in db.execute(
-            text(
-                "SELECT customer_name FROM dws_contact_mapping "
-                f"WHERE customer_name IN {names_clause} GROUP BY customer_name"
-            ),
-            names_params,
-        ).mappings().all():
-            cm_names.add(r["customer_name"])
+    it_names: set = set()
+    try:
+        all_names_list = list(all_names)
+        if all_names_list:
+            names_clause, names_params = _in_clause("mn", all_names_list)
+            for r in db.execute(
+                text(
+                    "SELECT customer_name FROM dws_contact_mapping "
+                    f"WHERE customer_name IN {names_clause} GROUP BY customer_name"
+                ),
+                names_params,
+            ).mappings().all():
+                cm_names.add(r["customer_name"])
+            for r in db.execute(
+                text(
+                    "SELECT customer_name FROM dws_interaction_detail "
+                    f"WHERE customer_name IN {names_clause} GROUP BY customer_name"
+                ),
+                names_params,
+            ).mappings().all():
+                it_names.add(r["customer_name"])
+    except Exception as e:
+        logger.warning(f"Failed to compute presence map: {e}")
 
-    # 近 30 天截止点：用应用侧时间（与数据库时钟差异对 30 天窗口可忽略）。
-    cutoff = datetime.now() - timedelta(days=30)
+    # 联系人真实数量：dws_customer_360.contact_count 仅来自 ods_crm_contact_day
+    # （CRM 单一来源），而详情页从 dws_contact_360（CRM + 营销 + linkflow + 天润 +
+    # 智企明细等全部来源）计数，二者在公司有非 CRM 联系人时会不一致。为保持「外层=
+    # 原始数据」与详情页口径一致，这里改用 dws_contact_360 按原公司名自身计数（不跨
+    # 合并簇），覆盖 dws_customer_360 中偏小的 CRM-only 值。
+    contact_counts: Dict[str, int] = {}
+    try:
+        real_names = list({d.get("customer_name") for d in details_map.values() if d})
+        if real_names:
+            cc_clause, cc_params = _in_clause("ccn", real_names)
+            for r in db.execute(
+                text(
+                    "SELECT c360.customer_name, COUNT(*) AS cnt "
+                    "FROM dws_contact_360 cc "
+                    "JOIN dws_customer_360 c360 ON c360.id = cc.customer_id "
+                    f"WHERE c360.customer_name IN {cc_clause} "
+                    "GROUP BY c360.customer_name"
+                ),
+                cc_params,
+            ).mappings().all():
+                contact_counts[r["customer_name"]] = int(r["cnt"])
+    except Exception as e:
+        logger.warning(f"Failed to compute contact counts: {e}")
 
-    # 第二遍收尾：按各候选的合并簇在 Python 中去重，得到真实计数与来源表存在性。
+    # 构造来源表存在性映射；联系人 / 互动计数取 dws_contact_360 / dws_interaction_detail
+    # 中该原公司名自身的值（不跨簇聚合，与「外层=原始数据」的设计一致）。
     presence_map: Dict[str, Dict[str, bool]] = {}
     for name, detail in details_map.items():
         if not detail:
+            presence_map[name] = {"contact_mapping": False, "interaction_detail": False}
             continue
-        member_ids = mids_by_name.get(name, [])
-        member_names = mnames_by_name.get(name, [])
-        # 联系人：合并簇内按 (contact_name, mobile) 去重（同一人在不同合并公司下只算一个）。
-        cset: set = set()
-        for mid in member_ids:
-            cset |= contact_rows.get(mid, set())
-        contact_count_real = len(cset)
-        # 互动：合并簇内按 (contact_name, behavior_type, event_time) 去重；近 30 天按时间窗过滤。
-        iset: set = set()
-        for mn in member_names:
-            iset |= inter_rows.get(mn, set())
-        i_total = len(iset)
-        i30 = len(
-            {(cn, bt, et) for (cn, bt, et) in iset if _as_dt(et) is not None and _as_dt(et) >= cutoff}
-        )
-        last_vals = [_as_dt(et) for (_, _, et) in iset if _as_dt(et) is not None]
-        last_it = max(last_vals) if last_vals else None
-        in_cm = any(mn in cm_names for mn in member_names)
-
-        # 用真实计数覆盖 360 中可能失真的聚合字段
-        detail["contact_count"] = int(contact_count_real)
-        detail["interaction_count_30d"] = int(i30)
-        detail["interaction_count_total"] = int(i_total)
-        detail["last_interaction_time"] = str(last_it) if last_it else None
-
-        # 标注来源表真实存在性，供下方过滤「数据表」标签
+        # 用 dws_contact_360 全来源真实联系人数覆盖 dws_customer_360 的 CRM-only 值
+        real_name = detail.get("customer_name") or name
+        if real_name in contact_counts:
+            detail["contact_count"] = contact_counts[real_name]
+        has_cm = name in cm_names or (detail.get("contact_count") or 0) > 0
+        has_it = name in it_names or (detail.get("interaction_count_total") or 0) > 0
         presence_map[name] = {
-            "contact_mapping": in_cm,
-            "interaction_detail": i_total > 0,
+            "contact_mapping": has_cm,
+            "interaction_detail": has_it,
         }
 
-    # 第三遍：回填到每个审核项，并按真实存在性过滤来源表标签
+    # 回填到每个审核项，并按真实存在性过滤来源表标签
     for item in items:
         a_name = item.get("candidate_a_name", "")
         b_name = item.get("candidate_b_name", "")
-        a_detail = details_map.get(a_name)
-        b_detail = details_map.get(b_name)
-        item["candidate_a_detail"] = a_detail
-        item["candidate_b_detail"] = b_detail
+        item["candidate_a_detail"] = details_map.get(a_name)
+        item["candidate_b_detail"] = details_map.get(b_name)
         item["sources_a"] = _filter_source_tags(item.get("sources_a"), presence_map.get(a_name))
         item["sources_b"] = _filter_source_tags(item.get("sources_b"), presence_map.get(b_name))
 
@@ -501,7 +452,14 @@ def get_review_stats(db: Session) -> Dict[str, int]:
         GROUP BY status
     """)
     rows = db.execute(stats_sql).fetchall()
-    stats = {"pending": 0, "auto_merged": 0, "rejected": 0, "need_review": 0, "total": 0}
+    stats = {
+        "pending": 0,
+        "auto_merged": 0,
+        "merged": 0,
+        "rejected": 0,
+        "need_review": 0,
+        "total": 0,
+    }
     for status_val, count in rows:
         if status_val in stats:
             stats[status_val] = count
@@ -535,10 +493,12 @@ def approve_review(db: Session, item_id: int, reviewed_by: Optional[str] = None)
     if not item:
         raise ReviewItemNotFound(item_id)
     _merge_review_item(db, item, reviewed_by=reviewed_by)
-    _set_status(db, item_id, "auto_merged")
+    # 手动审核合并用独立的 status='merged'，与系统自动合并 status='auto_merged'
+    # 区分，便于按合并方式统计/追溯（两者都已写入 company_merge_map 真正合并）。
+    _set_status(db, item_id, "merged")
     db.commit()
     logger.info(f"Approved and merged review item {item_id}")
-    return {"success": True, "id": item_id, "status": "auto_merged", "message": "合并通过并已持久化"}
+    return {"success": True, "id": item_id, "status": "merged", "message": "合并通过并已持久化"}
 
 
 def reject_review(db: Session, item_id: int) -> Dict[str, Any]:
@@ -597,7 +557,8 @@ def batch_approve_reviews(
         if item:
             try:
                 _merge_review_item(db, item, reviewed_by=reviewed_by)
-                _set_status(db, item_id, "auto_merged")
+                # 手动批量审核合并同样用 status='merged' 区分自动合并
+                _set_status(db, item_id, "merged")
                 approved_count += 1
             except Exception as e:
                 errors.append({"id": item_id, "error": str(e)})
@@ -636,4 +597,71 @@ def batch_reject_reviews(db: Session, ids: List[int]) -> Dict[str, Any]:
         "rejected_count": affected,
         "ids": ids,
         "message": f"Successfully rejected {affected} items",
+    }
+
+
+# 可撤销回「待人工审核」的已审核状态
+_REVOCABLE_STATUSES = ("auto_merged", "merged", "rejected")
+
+
+def revoke_review(db: Session, item_id: int) -> Dict[str, Any]:
+    """撤销审核：把已审核状态（自动合并 / 手动合并 / 已拒绝）恢复为待人工审核。
+
+    - 自动合并 / 手动合并：改状态前先退回其在 company_merge_map 产生的合并映射，
+      使数据恢复独立（解除合并），再置为 need_review；
+    - 已拒绝：未写入合并映射，仅将状态改回 need_review。
+    """
+    item = _fetch_review_item(db, item_id)
+    if not item:
+        raise ReviewItemNotFound(item_id)
+    if item["status"] not in _REVOCABLE_STATUSES:
+        return {
+            "success": False,
+            "id": item_id,
+            "status": item["status"],
+            "message": "该审核项不是已审核状态，无法撤销",
+        }
+    # 曾产生合并的（自动合并/手动合并）先退回映射，真正解除数据合并
+    if item["status"] in ("auto_merged", "merged"):
+        try:
+            rollback_merge_by_review_id(db, item_id)
+        except Exception as e:
+            logger.warning(f"撤销合并时退回映射失败（状态仍改回待审核）: {e}")
+    _set_status(db, item_id, "need_review")
+    db.commit()
+    logger.info(f"Revoked review item {item_id}, status back to need_review")
+    return {
+        "success": True,
+        "id": item_id,
+        "status": "need_review",
+        "message": "已撤销审核，恢复为待人工审核",
+    }
+
+
+def batch_revoke_reviews(db: Session, ids: List[int]) -> Dict[str, Any]:
+    """批量撤销审核（逐个处理，单条失败不影响其余）。"""
+    results = []
+    revoked = 0
+    skipped = 0
+    for item_id in ids:
+        try:
+            r = revoke_review(db, item_id)
+            results.append(r)
+            if r.get("success"):
+                revoked += 1
+            else:
+                skipped += 1
+        except ReviewItemNotFound:
+            skipped += 1
+            results.append({"success": False, "id": item_id, "message": "审核项不存在"})
+        except Exception as e:
+            skipped += 1
+            logger.warning(f"批量撤销项 {item_id} 失败: {e}")
+            results.append({"success": False, "id": item_id, "message": str(e)})
+    return {
+        "success": True,
+        "revoked": revoked,
+        "skipped": skipped,
+        "total": len(ids),
+        "results": results,
     }

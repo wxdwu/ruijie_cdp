@@ -15,7 +15,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.services.company_dedup.company_merge import list_merges
+from app.services.company_dedup.company_merge import list_merges, sync_auto_merged_to_map
 from app.services.company_dedup.review_service import (
     ReviewItemNotFound,
     approve_review,
@@ -25,6 +25,8 @@ from app.services.company_dedup.review_service import (
     get_review_stats,
     reject_review,
     rollback_review_merge,
+    revoke_review,
+    batch_revoke_reviews,
 )
 
 logger = logging.getLogger(__name__)
@@ -43,6 +45,7 @@ class BatchOperationRequest(BaseModel):
 class ReviewStatsResponse(BaseModel):
     pending: int
     auto_merged: int
+    merged: int
     rejected: int
     need_review: int
     total: int
@@ -56,7 +59,7 @@ def _handle_not_found(item_id: int) -> HTTPException:
 def get_review_items_endpoint(
     db: Session = Depends(get_db),
     review_type: str = Query(None, description="Filter by review_type: company_merge, contact_merge, data_quality"),
-    status: str = Query(None, description="Filter by status: pending, auto_merged, rejected, need_review"),
+    status: str = Query(None, description="Filter by status: pending, auto_merged, merged, rejected, need_review"),
     keyword: str = Query(None, description="模糊匹配候选 A/B 公司名称 candidate_a_name / candidate_b_name"),
     page: int = Query(1, ge=1, description="Page number"),
     size: int = Query(20, ge=1, le=100, description="Page size (max 100)"),
@@ -71,6 +74,49 @@ def get_review_items_endpoint(
 def get_review_stats_endpoint(db: Session = Depends(get_db)) -> ReviewStatsResponse:
     """Get dashboard statistics for review queue."""
     return ReviewStatsResponse(**get_review_stats(db))
+
+
+@router.post("/sync-auto-merge")
+def sync_auto_merge_endpoint() -> Dict[str, Any]:
+    """修复端点：把 review_candidate 中 status='auto_merged' 但漏写 company_merge_map 的候选对补同步。
+
+    适用于历史去重运行中「标记了自动合并却没真正合并」的缺口；幂等，可反复调用。
+    """
+    try:
+        persisted = sync_auto_merged_to_map()
+        return {
+            "success": True,
+            "persisted": persisted,
+            "message": f"已将 {persisted} 个自动合并候选对同步进 company_merge_map",
+        }
+    except Exception as e:
+        logger.error(f"Sync auto-merge failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Sync failed: {str(e)}")
+
+
+@router.post("/rebuild-merge-map")
+def rebuild_merge_map_endpoint(
+    clear: bool = Query(
+        True,
+        description="truncate company_merge_map then full rebuild from review_candidate (default true, stays consistent with review_candidate); false = incremental upsert only",
+    ),
+) -> Dict[str, Any]:
+    """Rebuild company_merge_map (with alias_id) from review_candidate, for manual trigger.
+
+    review_candidate (auto_merged/merged) is the single source of truth, so the whole
+    company_merge_map can be reconstructed from it. Idempotent, safe to call repeatedly.
+    Default clears then rebuilds to stay strictly consistent with review_candidate.
+    """
+    try:
+        from app.services.company_dedup.company_merge import (
+            rebuild_merge_map_from_review,
+        )
+
+        stats = rebuild_merge_map_from_review(clear_existing=clear)
+        return {"success": True, **stats}
+    except Exception as e:
+        logger.error(f"Rebuild merge map failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Rebuild failed: {str(e)}")
 
 
 @router.post("/{id}/approve")
@@ -178,6 +224,27 @@ def batch_reject_endpoint(
     """Batch reject multiple merge requests."""
     try:
         return batch_reject_reviews(db, request.ids)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/{id}/revoke")
+def revoke_review_endpoint(id: int, db: Session = Depends(get_db)) -> Dict[str, Any]:
+    """撤销审核：把已审核状态（自动合并 / 手动合并 / 已拒绝）恢复为待人工审核。"""
+    try:
+        return revoke_review(db, id)
+    except ReviewItemNotFound:
+        raise _handle_not_found(id)
+
+
+@router.post("/batch-revoke")
+def batch_revoke_endpoint(
+    request: BatchOperationRequest,
+    db: Session = Depends(get_db),
+) -> Dict[str, Any]:
+    """批量撤销审核（自动合并 / 手动合并 / 已拒绝 -> 待人工审核）。"""
+    try:
+        return batch_revoke_reviews(db, request.ids)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 

@@ -2411,10 +2411,16 @@ def generate_review_pairs(
                     f"综合评分 avg={sum(all_final_scores)/len(all_final_scores):.2f}, "
                     f"自动合并: {auto_merged_count}, 待审核: {need_review_count}")
 
-    _set_phase_progress(4, 1.0, extra={
+    # 候选对评分与写入队列已完成（整体进度到达 99%，「评分与写入队列」步骤完成）。
+    # 注意：严禁在此处提前把阶段 4（完成）置为 100%——自动合并与落库尚未执行，
+    # 否则前端会误判为「已完成」并提前停止轮询，且用户会在合并真正落库前查看数据，
+    # 误以为自动合并未生效。阶段 4 的 100% 由 run_deduplication_background 在所有
+    # 合并落库完成后统一上报。
+    _set_phase_progress(3, 1.0, extra={
         "completed": total_pairs_found,
         "total": total_pairs_found,
-        "message": f"去重任务完成 (处理了 {total_pairs_found} 个相似对，新增 {new_pairs_count} 个待审核对)"
+        "message": f"评分与写入队列完成（共 {total_pairs_found} 个相似对，"
+                   f"新增 {new_pairs_count} 个待审核对），正在执行自动合并与落库...",
     })
 
     return {
@@ -2999,14 +3005,37 @@ def run_deduplication_background() -> None:
         # 中间的嵌入计算 / FAISS 等长耗时处理不持有任何连接，避免被服务端回收）。
         results = generate_review_pairs(incremental=False)
 
+        # 进入阶段 4（完成）的前半段：自动合并尚未落地，进度仅推进到 99.3%，
+        # 让前端明确「任务仍在运行、尚未完成」，避免提前停止轮询 / 误判完成。
+        _set_phase_progress(4, 0.3, extra={
+            "message": "评分与写入队列完成，正在自动合并高置信度候选对...",
+        })
+
         # 自动合并高置信度对：独立短生命周期会话，避免复用被长耗时处理拖垮的连接。
-        from app.database import SessionLocal
-        with SessionLocal() as db:
-            auto_merged = auto_merge_high_confidence(db)
-            # 持久化到 company_merge_map（独立于 DWS，ETL 重建后不丢，无需重合并）
+        auto_merged = 0
+        try:
+            from app.database import SessionLocal
+            with SessionLocal() as db:
+                auto_merged = auto_merge_high_confidence(db)
+        except Exception as _e:
+            logger.error("自动升级候选对失败（不影响后续落库）: %s", _e, exc_info=True)
+
+        # 阶段 4 推进到 0.6（整体 99.6%）：自动升级完成，开始落库到 company_merge_map。
+        _set_phase_progress(4, 0.6, extra={
+            "message": f"已升级 {auto_merged} 对自动合并，正在落库合并关系到 company_merge_map...",
+        })
+
+        # 关键修复：无论自动升级是否成功，都必须把 generate 直接写入的
+        # status='auto_merged' 候选对持久化进 company_merge_map。否则会出现
+        # 「标记了自动合并、却没真正合并」的缺口。sync_auto_merged_to_map 内部
+        # 自开会话、逐行容错，单条脏数据不会拖垮整批落库。
+        persisted = 0
+        try:
             from app.services.company_dedup.company_merge import sync_auto_merged_to_map
-            persisted = sync_auto_merged_to_map(db)
+            persisted = sync_auto_merged_to_map()
             logger.info(f"Persisted {persisted} auto-merges to company_merge_map")
+        except Exception as _e:
+            logger.error("自动合并落库失败: %s", _e, exc_info=True)
         results["auto_merged_final"] = auto_merged
         results["auto_merged_persisted"] = persisted
 

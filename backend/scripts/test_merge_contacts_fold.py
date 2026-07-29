@@ -9,7 +9,7 @@
 
 验证点（逐条对应客户管理界面真实代码路径）：
 1. 审核队列 review_candidate 存在 pending 候选项（即审核界面有「审核选项」）；
-2. 真实调用 review_service.approve_review 审核通过 -> 返回 success、review_candidate.status=auto_merged；
+2. 真实调用 review_service.approve_review 审核通过 -> 返回 success、review_candidate.status=merged（手动合并）；
 3. company_merge_map 写入（含 canonical_id，验证此前 1054 修复）；
 4. 客户列表折叠（对应 customer_service.get_customer_list 行255 的 NOT IN alias_name）：
    合并后别名公司不再单独出现在列表，标准名保留；
@@ -235,7 +235,7 @@ def run() -> bool:
         )
         print(f"[审核] approve_review 返回: {ret}")
         assert ret["success"] is True, "审核应通过"
-        assert ret["status"] == "auto_merged", "审核后状态应为 auto_merged"
+        assert ret["status"] == "merged", "审核后状态应为 merged（手动合并）"
 
         # ── 2. 审核队列状态已更新 ──
         st = db.execute(
@@ -243,7 +243,7 @@ def run() -> bool:
             {"id": pending["id"]},
         ).scalar()
         print(f"[审核] review_candidate.status = {st}")
-        assert st == "auto_merged", "审核项状态应置为 auto_merged"
+        assert st == "merged", "审核项状态应置为 merged（手动合并）"
 
         # ── 3. company_merge_map 已写入（含 canonical_id）──
         row = db.execute(satxt(
