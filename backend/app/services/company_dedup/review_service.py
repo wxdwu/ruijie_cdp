@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 from app.services.company_dedup.company_merge import (
     _resolve_name,
     record_merge,
+    rebuild_merge_map_from_review,
     rollback_merge_by_review_id,
 )
 from app.services.utils import safe_json_loads, to_json_safe
@@ -607,9 +608,12 @@ _REVOCABLE_STATUSES = ("auto_merged", "merged", "rejected")
 def revoke_review(db: Session, item_id: int) -> Dict[str, Any]:
     """撤销审核：把已审核状态（自动合并 / 手动合并 / 已拒绝）恢复为待人工审核。
 
-    - 自动合并 / 手动合并：改状态前先退回其在 company_merge_map 产生的合并映射，
-      使数据恢复独立（解除合并），再置为 need_review；
-    - 已拒绝：未写入合并映射，仅将状态改回 need_review。
+    - 自动合并 / 手动合并：先将该项状态改回 need_review 并提交，使 review_candidate
+      立即不再把它视为已合并；再以 review_candidate 为唯一真源重建 company_merge_map
+      （清表 + 回填）。这样即便该合并曾被后续传递合并改写过 review_id，也能被彻底
+      解除（单纯按 review_id 删除在传递合并场景下会漏删，导致前端仍聚合），无需重跑
+      ETL。
+    - 已拒绝：未写入合并映射，仅将状态改回 need_review，不动 company_merge_map。
     """
     item = _fetch_review_item(db, item_id)
     if not item:
@@ -621,14 +625,16 @@ def revoke_review(db: Session, item_id: int) -> Dict[str, Any]:
             "status": item["status"],
             "message": "该审核项不是已审核状态，无法撤销",
         }
-    # 曾产生合并的（自动合并/手动合并）先退回映射，真正解除数据合并
-    if item["status"] in ("auto_merged", "merged"):
-        try:
-            rollback_merge_by_review_id(db, item_id)
-        except Exception as e:
-            logger.warning(f"撤销合并时退回映射失败（状态仍改回待审核）: {e}")
+    was_merged = item["status"] in ("auto_merged", "merged")
+    # 先把状态改回待人工审核并提交，使 review_candidate 立即不再包含该合并项
     _set_status(db, item_id, "need_review")
     db.commit()
+    if was_merged:
+        # 以 review_candidate 为唯一真源重建映射，彻底解除该合并（含传递合并）
+        try:
+            rebuild_merge_map_from_review(db, clear_existing=True)
+        except Exception as e:
+            logger.warning(f"撤销合并后重建合并映射失败（状态已改回待审核）: {e}")
     logger.info(f"Revoked review item {item_id}, status back to need_review")
     return {
         "success": True,
@@ -639,25 +645,52 @@ def revoke_review(db: Session, item_id: int) -> Dict[str, Any]:
 
 
 def batch_revoke_reviews(db: Session, ids: List[int]) -> Dict[str, Any]:
-    """批量撤销审核（逐个处理，单条失败不影响其余）。"""
+    """批量撤销审核（逐个处理，单条失败不影响其余）。
+
+    所有改为待审核的项一次性提交后，若其中存在曾合并的项，则统一以 review_candidate
+    为唯一真源重建一次 company_merge_map（清表 + 回填），避免逐条撤销带来的 N 次重建，
+    也彻底解除传递合并造成的残留映射。
+    """
     results = []
     revoked = 0
     skipped = 0
+    need_rebuild = False
     for item_id in ids:
         try:
-            r = revoke_review(db, item_id)
-            results.append(r)
-            if r.get("success"):
-                revoked += 1
-            else:
+            item = _fetch_review_item(db, item_id)
+            if not item:
                 skipped += 1
-        except ReviewItemNotFound:
-            skipped += 1
-            results.append({"success": False, "id": item_id, "message": "审核项不存在"})
+                results.append({"success": False, "id": item_id, "message": "审核项不存在"})
+                continue
+            if item["status"] not in _REVOCABLE_STATUSES:
+                skipped += 1
+                results.append({
+                    "success": False,
+                    "id": item_id,
+                    "status": item["status"],
+                    "message": "该审核项不是已审核状态，无法撤销",
+                })
+                continue
+            if item["status"] in ("auto_merged", "merged"):
+                need_rebuild = True
+            _set_status(db, item_id, "need_review")
+            revoked += 1
+            results.append({
+                "success": True,
+                "id": item_id,
+                "status": "need_review",
+                "message": "已撤销审核，恢复为待人工审核",
+            })
         except Exception as e:
             skipped += 1
             logger.warning(f"批量撤销项 {item_id} 失败: {e}")
             results.append({"success": False, "id": item_id, "message": str(e)})
+    db.commit()
+    if need_rebuild:
+        try:
+            rebuild_merge_map_from_review(db, clear_existing=True)
+        except Exception as e:
+            logger.warning(f"批量撤销后重建合并映射失败: {e}")
     return {
         "success": True,
         "revoked": revoked,
