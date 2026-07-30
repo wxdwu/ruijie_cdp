@@ -372,6 +372,29 @@ def _decide_survivor_metrics(name_a, name_b, metrics):
     return name_a if len(name_a) <= len(name_b) else name_b
 
 
+def _decide_canonical(a_name, b_name, id_by_name, metrics):
+    """Choose canonical name for merge rebuild, guaranteeing it exists in dws_customer_360.
+
+    Using only contact/mobile metrics cannot distinguish "present in dws_customer_360 with
+    zero contacts" from "absent from dws" (both are (0,0)); a tie falls back to the shorter /
+    ordered name, which may pick a name absent from dws_customer_360 as canonical, yielding a
+    NULL canonical_id and making the detail page 404. So "exists in dws_customer_360" is the
+    top priority:
+    1) only one side present -> take the present side (canonical must have a real id);
+    2) both present -> keep _decide_survivor_metrics (more contacts/mobiles, then shorter);
+    3) neither present -> return None (caller skips; nothing to fold).
+    """
+    a_in = a_name in id_by_name
+    b_in = b_name in id_by_name
+    if a_in and not b_in:
+        return a_name
+    if b_in and not a_in:
+        return b_name
+    if not a_in and not b_in:
+        return None
+    return _decide_survivor_metrics(a_name, b_name, metrics)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # 写入 / 退回
 # ─────────────────────────────────────────────────────────────────────────────
@@ -414,6 +437,19 @@ def record_merge(
     need_relink.discard(canonical)
 
     canonical_id = _fetch_c360_id(db, canonical)
+    # ensure canonical exists in dws_customer_360: if canonical absent but alias present, swap;
+    # otherwise (both absent) skip this merge to avoid a NULL canonical_id.
+    if canonical_id is None:
+        alias_side = name_b if canonical == name_a else name_a
+        alias_side_id = _fetch_c360_id(db, alias_side)
+        if alias_side_id is not None:
+            canonical, canonical_id = alias_side, alias_side_id
+        else:
+            logger.warning(
+                "merge skipped (both names absent from dws_customer_360): %s / %s", name_a, name_b
+            )
+            db.commit()
+            return {"merged": False, "canonical_name": None, "reason": "no_c360_record"}
     alias_id_map = _batch_fetch_c360_ids(db, sorted(need_relink))
 
     # upsert 跨方言：MySQL 用 ON DUPLICATE KEY UPDATE；SQLite 用 ON CONFLICT(...)。
@@ -671,16 +707,24 @@ def rebuild_merge_map_from_review(db=None, *, clear_existing=True, chunk=2000):
     for r in rows:
         a_name, b_name = r["candidate_a_name"], r["candidate_b_name"]
         force = _branch_canonical_from_evidence(r.get("evidence"))
-        canonical = force or _decide_survivor_metrics(a_name, b_name, metrics)
-        if canonical == a_name:
-            alias = b_name
-            canonical_id = _coerce_id(r.get("candidate_a_id")) or id_by_name.get(a_name)
-            alias_id = _coerce_id(r.get("candidate_b_id")) or id_by_name.get(b_name)
-        else:
-            alias = a_name
-            canonical_id = _coerce_id(r.get("candidate_b_id")) or id_by_name.get(b_name)
-            alias_id = _coerce_id(r.get("candidate_a_id")) or id_by_name.get(a_name)
+        # if forced canonical is absent from dws_customer_360 (removed/never existed), drop force
+        if force is not None and force not in id_by_name:
+            force = None
+        canonical = force if force is not None else _decide_canonical(
+            a_name, b_name, id_by_name, metrics
+        )
+        if canonical is None:
+            skipped += 1
+            continue
+        alias = b_name if canonical == a_name else a_name
         if alias == canonical:
+            skipped += 1
+            continue
+        # canonical_id / alias_id always taken from CURRENT dws_customer_360 ids:
+        # avoids NULL canonical_id, and also fixes stale ids left by full ETL id churn.
+        canonical_id = id_by_name.get(canonical)
+        alias_id = id_by_name.get(alias)
+        if canonical_id is None:
             skipped += 1
             continue
         merged_rows[alias] = {
