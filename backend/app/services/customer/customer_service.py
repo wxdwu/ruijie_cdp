@@ -38,6 +38,10 @@ from app.services.common.company_filter import (
     build_customer_filter,
     build_company_name_preprocess,
 )
+from app.services.common.intent import (
+    compute_intent_level,
+    compute_intent_score,
+)
 from app.services.company_dedup.company_merge import (
     ensure_merge_map_table,
     get_member_names,
@@ -841,6 +845,34 @@ def get_customer_detail(db: Session, customer_id: str) -> Dict[str, Any]:
     result["contact_count"] = int(contact_count)
     result["interaction_count_total"] = int(interaction_count_total)
     result["interaction_count_30d"] = int(interaction_count_30d)
+
+    # 合并簇内商机数也需按簇聚合（各成员公司 active_opp_count 求和），
+    # 否则合并后意向分仍只取 canonical 原值，无法体现别名公司的在途商机。
+    opp_row = db.execute(
+        text(
+            "SELECT COALESCE(SUM(active_opp_count), 0) AS active_opp_count "
+            "FROM dws_customer_360 WHERE customer_name IN :members"
+        ),
+        {"members": tuple(member_names)},
+    ).mappings().fetchone()
+    cluster_active_opp = int(opp_row["active_opp_count"]) if opp_row else 0
+
+    # 合并/撤销后，按当前簇聚合出来的「联系人数 + 互动记录 + 商机数」重新计算
+    # 合作意向分与等级（规则见 app.services.common.intent，与 ETL 派生字段一致）。
+    # 合并时簇包含所有成员公司→全量数据重算；撤销时别名恢复独立、仅自身数据→重算。
+    result["active_opp_count"] = cluster_active_opp
+    result["intent_score"] = compute_intent_score(
+        contact_count=result["contact_count"],
+        interaction_count_total=result["interaction_count_total"],
+        interaction_count_30d=result["interaction_count_30d"],
+        active_opp_count=cluster_active_opp,
+    )
+    result["intent_level"] = compute_intent_level(
+        contact_count=result["contact_count"],
+        interaction_count_total=result["interaction_count_total"],
+        interaction_count_30d=result["interaction_count_30d"],
+        active_opp_count=cluster_active_opp,
+    )
     # 合并源公司名：非空表示当前数据由该来源公司合并而来，便于追溯原始归属
     result["merge_source_name"] = merge_source_name
 
