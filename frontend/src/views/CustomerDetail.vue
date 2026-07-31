@@ -162,6 +162,7 @@ onMounted(() => {
         :customer="customer"
         :contacts="contacts"
         :interactions="interactions"
+        :interactions-total="interactionsTotal"
         :ai-insight="aiInsight"
         :priority-recommendations="priorityRecommendations"
         :opportunities="opportunities"

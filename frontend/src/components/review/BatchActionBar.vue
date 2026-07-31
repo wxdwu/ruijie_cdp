@@ -5,27 +5,39 @@
       <button class="clear-btn" @click="onClear">清除选择</button>
     </div>
     <div class="batch-actions">
-      <button class="action-btn approve" :disabled="busy" @click="onBatchApprove">
-        <span class="btn-icon">✅</span>
-        {{ busy ? '处理中…' : '批量通过' }}
+      <button class="action-btn approve" :disabled="batchBusy" @click="onBatchApprove">
+        <span v-if="pendingApprove" class="btn-spinner" aria-hidden="true"></span>
+        <span v-else class="btn-icon">✅</span>
+        {{ pendingApprove ? '处理中…' : '批量通过' }}
       </button>
-      <button class="action-btn reject" :disabled="busy" @click="onBatchReject">
-        <span class="btn-icon">❌</span>
-        {{ busy ? '处理中…' : '批量拒绝' }}
+      <button class="action-btn reject" :disabled="batchBusy" @click="onBatchReject">
+        <span v-if="pendingReject" class="btn-spinner" aria-hidden="true"></span>
+        <span v-else class="btn-icon">❌</span>
+        {{ pendingReject ? '处理中…' : '批量拒绝' }}
       </button>
-      <button class="action-btn revoke" :disabled="busy" @click="onBatchRevoke">
-        <span class="btn-icon">↩</span>
-        {{ busy ? '处理中…' : '批量撤销审核' }}
+      <button class="action-btn revoke" :disabled="batchBusy" @click="onBatchRevoke">
+        <span v-if="pendingRevoke" class="btn-spinner" aria-hidden="true"></span>
+        <span v-else class="btn-icon">↩</span>
+        {{ pendingRevoke ? '处理中…' : '批量撤销审核' }}
       </button>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
+import { computed } from "vue"
 const props = defineProps<{
   selectedIds: number[]
-  busy?: boolean
+  pendingActions?: Record<string, boolean>
 }>()
+
+// 批量操作级别：仅正在进行的批量操作按钮进入 loading，其它批量按钮禁用（防重复）
+const isPending = (action: 'approve' | 'reject' | 'revoke') =>
+  !!props.pendingActions?.[`batch:${action}`]
+const pendingApprove = computed(() => isPending('approve'))
+const pendingReject = computed(() => isPending('reject'))
+const pendingRevoke = computed(() => isPending('revoke'))
+const batchBusy = computed(() => pendingApprove.value || pendingReject.value || pendingRevoke.value)
 
 const emit = defineEmits<{
   (e: 'batch-approve', ids: number[]): void
@@ -109,8 +121,9 @@ const onClear = () => {
 }
 
 .action-btn {
-  display: flex;
+  display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 8px;
   padding: 10px 20px;
   border: none;
@@ -123,6 +136,23 @@ const onClear = () => {
 
 .btn-icon {
   font-size: 16px;
+}
+
+/* 按钮内 loading 小圈：颜色跟随按钮文字色（currentColor） */
+.btn-spinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .action-btn.approve {

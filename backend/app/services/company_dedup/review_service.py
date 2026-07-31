@@ -19,6 +19,9 @@ from app.services.company_dedup.company_merge import (
     rebuild_merge_map_from_review,
     rollback_merge_by_review_id,
 )
+from app.services.company_dedup.company_dedup import (
+    batch_calculate_evidence_scores,
+)
 from app.services.utils import safe_json_loads, to_json_safe
 
 logger = logging.getLogger(__name__)
@@ -418,6 +421,26 @@ def get_review_items(
     rows = db.execute(data_sql, params).mappings().all()
     items = [_extract_score_fields(dict(r)) for r in rows]
     items = _enrich_with_company_details(items, db)
+
+    # 实时重算共享联系人，覆盖 review_candidate 表中可能过期的脏缓存。
+    # 旧逻辑/历史累积写入的 evidence.shared_contacts_count 可能与真实 dws_contact_mapping
+    # 不符（如数量虚高、详情与计数不一致），此处统一按「(姓名,电话)相同」规则重新计算，
+    # 保证前端展示的共享联系人数量始终准确，且不会含空姓名/空电话的脏数据。
+    if items:
+        pairs = [
+            (it.get("candidate_a_name", ""), it.get("candidate_b_name", ""))
+            for it in items
+        ]
+        try:
+            fresh_scores = batch_calculate_evidence_scores(pairs, db=db)
+            for it in items:
+                key = (it.get("candidate_a_name", ""), it.get("candidate_b_name", ""))
+                if key in fresh_scores:
+                    _, shared_count, shared_details = fresh_scores[key]
+                    it["shared_contacts_count"] = shared_count
+                    it["shared_contact_details"] = shared_details
+        except Exception as e:  # 重算失败不应阻断列表展示，降级沿用缓存值
+            logger.warning("实时重算共享联系人失败，降级使用缓存值: %s", e)
 
     # ── 校正候选 id 错位 ──
     # dws_customer_360 每日被 ETL 重建、AUTO_INCREMENT 主键重排，去重时写入的

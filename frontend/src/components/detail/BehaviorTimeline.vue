@@ -4,9 +4,13 @@ import FieldHelpTooltip from '../customer/FieldHelpTooltip.vue'
 
 const props = defineProps({
   interactions: { type: Array, default: () => [] },
+  total: { type: Number, default: 0 },
 })
 
-const displayedInteractions = computed(() => (props.interactions || []).slice(0, 18))
+// 标题展示的真实互动条数（取自后端 interactions 接口的 total 字段），默认 0
+const realCount = computed(() => Number(props.total || props.interactions?.length || 0))
+// 展示已拉取的全部互动（后端上限 50 条）
+const displayedInteractions = computed(() => props.interactions || [])
 
 const help = {
   title: '近期互动',
@@ -21,7 +25,7 @@ const help = {
       meaning: '行为发生时间',
       sourceTable: 'dws_interaction_detail',
       sourceFieldDisplay: 'event_time(行为发生时间)',
-      calculation: '按 event_time 倒序展示最近 18 条互动。',
+      calculation: '按 event_time 倒序展示互动，标题中的条数为后端返回的真实总数（interactions 接口的 total 字段）。',
       emptyState: '缺失时显示 -。',
     },
     {
@@ -97,7 +101,7 @@ const help = {
       emptyState: '缺失时不展示。',
     },
   ],
-  calculation: '后端按当前客户名称查询 dws_interaction_detail，ORDER BY event_time DESC，前端展示最近 18 条。',
+  calculation: '后端按当前客户名称查询 dws_interaction_detail，ORDER BY event_time DESC，前端展示已拉取的全部互动（最多为接口上限 50 条），标题条数取自真实总数。',
   emptyState: '没有互动记录时显示暂无互动记录。',
 }
 
@@ -169,7 +173,7 @@ function summaryText(item) {
         <span class="timeline-tag">TIMELINE</span>
       </div>
       <div class="timeline-sub">
-        <span>最近 18 条互动按时间线展示</span>
+        <span>最近 {{ realCount }} 条互动按时间线展示</span>
         <FieldHelpTooltip :help="help" align="end" />
       </div>
     </header>

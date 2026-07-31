@@ -129,7 +129,7 @@
 
     <BatchActionBar
       :selected-ids="selectedIds"
-      :busy="busy"
+      :pending-actions="pendingActions"
       @batch-approve="onBatchApprove"
       @batch-reject="onBatchReject"
       @batch-revoke="onBatchRevoke"
@@ -142,7 +142,7 @@
       :page="page"
       :size="size"
       :selected-ids="selectedIds"
-      :busy="busy"
+      :pending-actions="pendingActions"
       @select="onToggleSelect"
       @select-all="onToggleSelectAll"
       @approve="onApprove"
@@ -154,7 +154,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, reactive, computed, onMounted, onUnmounted } from 'vue'
 import ReviewStats from '../components/review/ReviewStats.vue'
 import BatchActionBar from '../components/review/BatchActionBar.vue'
 import ReviewList from '../components/review/ReviewList.vue'
@@ -442,19 +442,22 @@ const onClearSelection = () => {
   selectedIds.value = []
 }
 
-// 全局忙标记：任意审核操作进行中禁用所有审核按钮，防止重复点击
-const busy = ref(false)
+// 行级忙标记：只让「正在处理的某条记录的某个操作」进入 loading，
+// 其它记录与其它按钮完全不受影响（同一行内的其它按钮在处理期间禁用，防重复点击）。
+const pendingActions = reactive<Record<string, boolean>>({})
 
 // 统一的请求处理：成功给成功提示并刷新列表，失败解析后端原因给出失败提示。
 // 仅做交互反馈封装，不改变任何业务逻辑与接口调用。
+// key 形如 `${id}:approve`（单条）或 `batch:approve`（批量），用于精确控制单个按钮的 loading 态。
 async function runAction(
+  key: string,
   label: string,
   fn: () => Promise<Response>,
   successMsg: string,
   afterSuccess?: () => void,
 ): Promise<void> {
-  if (busy.value) return
-  busy.value = true
+  if (pendingActions[key]) return  // 同一操作进行中则忽略重复点击
+  pendingActions[key] = true
   let ok = false
   try {
     const response = await fn()
@@ -468,7 +471,7 @@ async function runAction(
   } catch (e) {
     toast.error(`${label}失败`, e instanceof Error ? e.message : String(e))
   } finally {
-    busy.value = false
+    delete pendingActions[key]
     if (ok) {
       try {
         await refreshAll()
@@ -486,6 +489,7 @@ async function runAction(
 
 const onApprove = async (id: number) => {
   await runAction(
+    `${id}:approve`,
     '确认合并',
     () => fetch(`${BASE_URL}/api/review/${id}/approve`, { method: 'POST' }),
     '已确认合并',
@@ -497,6 +501,7 @@ const onApprove = async (id: number) => {
 
 const onReject = async (id: number) => {
   await runAction(
+    `${id}:reject`,
     '保留独立',
     () => fetch(`${BASE_URL}/api/review/${id}/reject`, { method: 'POST' }),
     '已保留为独立公司',
@@ -508,6 +513,7 @@ const onReject = async (id: number) => {
 
 const onRevoke = async (id: number) => {
   await runAction(
+    `${id}:revoke`,
     '撤销审核',
     () => fetch(`${BASE_URL}/api/review/${id}/revoke`, { method: 'POST' }),
     '已撤销审核',
@@ -519,6 +525,7 @@ const onRevoke = async (id: number) => {
 
 const onBatchApprove = async (ids: number[]) => {
   await runAction(
+    'batch:approve',
     '批量确认合并',
     () =>
       fetch(`${BASE_URL}/api/review/batch-approve`, {
@@ -535,6 +542,7 @@ const onBatchApprove = async (ids: number[]) => {
 
 const onBatchReject = async (ids: number[]) => {
   await runAction(
+    'batch:reject',
     '批量保留独立',
     () =>
       fetch(`${BASE_URL}/api/review/batch-reject`, {
@@ -551,6 +559,7 @@ const onBatchReject = async (ids: number[]) => {
 
 const onBatchRevoke = async (ids: number[]) => {
   await runAction(
+    'batch:revoke',
     '批量撤销审核',
     () =>
       fetch(`${BASE_URL}/api/review/batch-revoke`, {

@@ -19,7 +19,7 @@
         :key="item.id"
         :item="item"
         :selected="selectedIds.includes(item.id)"
-        :busy="busy"
+        :pending-actions="pendingActions"
         @select="onToggleSelect"
         @approve="onApprove"
         @reject="onReject"
@@ -83,7 +83,7 @@ const props = defineProps<{
   page: number
   size: number
   selectedIds: number[]
-  busy?: boolean
+  pendingActions?: Record<string, boolean>
 }>()
 
 const emit = defineEmits<{

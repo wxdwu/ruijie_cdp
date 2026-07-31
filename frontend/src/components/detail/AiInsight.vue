@@ -8,6 +8,8 @@ const props = defineProps({
   businessConclusion: { type: Array, default: () => [] },
   priorityContacts: { type: Array, default: () => [] },
   evidenceChain: { type: Object, default: () => ({}) },
+  intentLevel: { type: String, default: '' },
+  intentScore: { type: [Number, String], default: null },
 })
 
 const evidenceExpanded = ref(false)
@@ -97,8 +99,11 @@ const companyInsights = computed(() => {
       : 'CRM 当前未记录漏斗内商机。',
   ]
 
-  if (evidence.intent_score != null || evidence.intent_level) {
-    insights.push(`当前合作意向为 ${evidence.intent_level || '未标注'}，意向分 ${evidence.intent_score ?? 0}/100。`)
+  // 合作意向等级/分值优先使用原始字段与新计算逻辑取最大值后的结果（来自父组件透传）
+  const shownIntentLevel = props.intentLevel || evidence.intent_level || '未标注'
+  const shownIntentScore = props.intentScore != null && props.intentScore !== '' ? props.intentScore : (evidence.intent_score ?? 0)
+  if (shownIntentLevel || shownIntentScore != null) {
+    insights.push(`当前合作意向为 ${shownIntentLevel}，意向分 ${shownIntentScore}/100。`)
   }
   return insights
 })

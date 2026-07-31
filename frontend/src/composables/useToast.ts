@@ -24,9 +24,8 @@ function remove(id: number): void {
 function push(type: ToastType, title: string, detail?: string, duration = 4000): number {
   const id = ++seq
   state.list.push({ id, type, title, detail, duration })
-  if (duration > 0) {
-    window.setTimeout(() => remove(id), duration)
-  }
+  // 自动关闭交由 ToastContainer 根据进度条动画结束（animationend）驱动，
+  // 以便支持“鼠标悬停暂停关闭”的主流交互，这里不再自管定时器。
   return id
 }
 

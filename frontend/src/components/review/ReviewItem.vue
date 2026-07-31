@@ -295,26 +295,29 @@
           <button
             v-if="item.status === 'pending' || item.status === 'need_review'"
             class="action-btn approve"
-            :disabled="busy"
+            :disabled="rowBusy"
             @click="onApprove"
           >
-            {{ busy ? '处理中…' : '✓ 确认合并' }}
+            <span v-if="pendingApprove" class="btn-spinner" aria-hidden="true"></span>
+            {{ pendingApprove ? '处理中…' : '✓ 确认合并' }}
           </button>
           <button
             v-if="item.status === 'pending' || item.status === 'need_review'"
             class="action-btn reject"
-            :disabled="busy"
+            :disabled="rowBusy"
             @click="onReject"
           >
-            {{ busy ? '处理中…' : '✗ 保留独立' }}
+            <span v-if="pendingReject" class="btn-spinner" aria-hidden="true"></span>
+            {{ pendingReject ? '处理中…' : '✗ 保留独立' }}
           </button>
           <button
             v-if="isRevocable"
             class="action-btn revoke"
-            :disabled="busy"
+            :disabled="rowBusy"
             @click="onRevoke"
           >
-            {{ busy ? '处理中…' : '↩ 撤销审核' }}
+            <span v-if="pendingRevoke" class="btn-spinner" aria-hidden="true"></span>
+            {{ pendingRevoke ? '处理中…' : '↩ 撤销审核' }}
           </button>
           <span v-if="isRevocable" class="reviewed-badge">
             {{ item.reviewed_at ? '已审核' : '—' }}
@@ -392,8 +395,16 @@ export interface ReviewItemData {
 const props = defineProps<{
   item: ReviewItemData
   selected: boolean
-  busy?: boolean
+  pendingActions?: Record<string, boolean>
 }>()
+
+// 单条记录级别：仅当前记录被点击的那个按钮进入 loading，同一行其它按钮处理期间禁用（防重复）
+const isPending = (action: 'approve' | 'reject' | 'revoke') =>
+  !!props.pendingActions?.[`${props.item.id}:${action}`]
+const pendingApprove = computed(() => isPending('approve'))
+const pendingReject = computed(() => isPending('reject'))
+const pendingRevoke = computed(() => isPending('revoke'))
+const rowBusy = computed(() => pendingApprove.value || pendingReject.value || pendingRevoke.value)
 
 const emit = defineEmits<{
   (e: 'select', id: number): void
@@ -1098,6 +1109,10 @@ const getStatusLabel = (status: string) => {
 
 /* ── 操作按钮 ── */
 .action-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
   padding: 10px 22px;
   border: none;
   border-radius: 8px;
@@ -1107,6 +1122,23 @@ const getStatusLabel = (status: string) => {
   transition: all 0.2s ease;
   min-width: 110px;
   white-space: nowrap;
+}
+
+/* 按钮内 loading 小圈：颜色跟随按钮文字色（currentColor） */
+.btn-spinner {
+  display: inline-block;
+  width: 13px;
+  height: 13px;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .action-btn:disabled {

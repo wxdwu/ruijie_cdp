@@ -1126,45 +1126,92 @@ def calculate_evidence_score(name_a: str, name_b: str, db: Session) -> tuple:
     tables_to_check = EVIDENCE_TABLES
 
     try:
-        total_shared = 0
-        
+        # 跨表收集「共享联系人身份」(归一化姓名, 归一化电话/邮箱)，用集合去重，
+        # 避免 dws_contact_mapping 与 dws_interaction_detail 两张表都把同一联系人计入，
+        # 造成跨表重复累加（如单表 3 + 单表 2 = 5，实际应为去重后的 3）。
+        shared_phone_identities: set = set()
+        shared_email_identities: set = set()
+
         for table_config in tables_to_check:
             table_name = table_config["table"]
             company_field = table_config["company_field"]
             phone_field = table_config["phone_field"]
             email_field = table_config["email_field"]
-            
-            # 检查共享电话
-            phone_sql = text(f"""
-                SELECT COUNT(DISTINCT c1.{phone_field}) as shared_phones
-                FROM {table_name} c1
-                JOIN {table_name} c2 ON c1.{phone_field} = c2.{phone_field}
-                WHERE c1.{company_field} LIKE :name_a
-                  AND c2.{company_field} LIKE :name_b
-                  AND c1.{phone_field} IS NOT NULL AND c1.{phone_field} != ''
-            """)
+            name_field = table_config.get("name_field", "contact_name")
 
-            # 检查共享邮箱（仅当该表含邮箱字段；dws_interaction_detail 无邮箱列）
-            email_result = 0
+            # 收集 A/B 两公司在该表的「(姓名,电话)」身份集合，再求交集。
+            # 必须「姓名 + 电话」同时相同才算共享联系人，仅凭电话相同不计入。
+            phone_sql = text(f"""
+                SELECT {name_field}, {phone_field}, {company_field}
+                FROM {table_name}
+                WHERE {company_field} LIKE :name
+                  AND {phone_field} IS NOT NULL AND {phone_field} != ''
+                  AND {name_field} IS NOT NULL AND {name_field} != ''
+            """)
+            rows = _safe_fetchall(
+                db, phone_sql, {"name": f"%{name_a}%"}, f"{table_name} 电话A", logger
+            ) or []
+            a_phone = set()
+            for row in rows:
+                # 列顺序固定为 (name_field, phone_field, company_field)，用位置索引
+                # 兼容 SQLAlchemy 1.4 旧风格（Row 仅支持位置索引）。
+                n_name = _normalize_contact_name(row[0])
+                n_phone = _normalize_phone(row[1])
+                if n_name and n_phone:
+                    a_phone.add((n_name, n_phone))
+
+            rows = _safe_fetchall(
+                db, phone_sql, {"name": f"%{name_b}%"}, f"{table_name} 电话B", logger
+            ) or []
+            b_phone = set()
+            for row in rows:
+                n_name = _normalize_contact_name(row[0])
+                n_phone = _normalize_phone(row[1])
+                if n_name and n_phone:
+                    b_phone.add((n_name, n_phone))
+
+            shared_phone_identities |= (a_phone & b_phone)
+
+            # 共享邮箱联系人（仅当该表含邮箱字段；dws_interaction_detail 无邮箱列），
+            # 同样要求「姓名 + 邮箱」同时相同。
             if email_field:
                 email_sql = text(f"""
-                    SELECT COUNT(DISTINCT c1.{email_field}) as shared_emails
-                    FROM {table_name} c1
-                    JOIN {table_name} c2 ON c1.{email_field} = c2.{email_field}
-                    WHERE c1.{company_field} LIKE :name_a
-                      AND c2.{company_field} LIKE :name_b
-                      AND c1.{email_field} IS NOT NULL AND c1.{email_field} != ''
+                    SELECT {name_field}, {email_field}, {company_field}
+                    FROM {table_name}
+                    WHERE {company_field} LIKE :name
+                      AND {email_field} IS NOT NULL AND {email_field} != ''
+                      AND {name_field} IS NOT NULL AND {name_field} != ''
                 """)
-                email_result = db.execute(
-                    email_sql, {"name_a": f"%{name_a}%", "name_b": f"%{name_b}%"}
-                ).scalar() or 0
+                rows = _safe_fetchall(
+                    db, email_sql, {"name": f"%{name_a}%"}, f"{table_name} 邮箱A", logger
+                ) or []
+                a_email = set()
+                for row in rows:
+                    n_name = _normalize_contact_name(row[0])
+                    n_email = _normalize_email(row[1])
+                    if n_name and n_email:
+                        a_email.add((n_name, n_email))
 
-            phone_result = db.execute(
-                phone_sql, {"name_a": f"%{name_a}%", "name_b": f"%{name_b}%"}
-            ).scalar() or 0
+                rows = _safe_fetchall(
+                    db, email_sql, {"name": f"%{name_b}%"}, f"{table_name} 邮箱B", logger
+                ) or []
+                b_email = set()
+                for row in rows:
+                    n_name = _normalize_contact_name(row[0])
+                    n_email = _normalize_email(row[1])
+                    if n_name and n_email:
+                        b_email.add((n_name, n_email))
 
-            total_shared += phone_result + email_result
-        
+                shared_email_identities |= (a_email & b_email)
+
+        # 共享联系人按「人」计数：同一个联系人可能同时被电话和邮箱两个维度识别到，
+        # 必须按姓名去重，避免「林总」既因电话匹配、又因邮箱匹配被重复计入。
+        shared_names = set()
+        for n_name, _ in shared_phone_identities:
+            shared_names.add(n_name)
+        for n_name, _ in shared_email_identities:
+            shared_names.add(n_name)
+        total_shared = len(shared_names)
         if total_shared > 0:
             evidence_score = min(100.0, total_shared * EVIDENCE_SCORE_MULTIPLIER)
             evidence_count = total_shared
@@ -1228,6 +1275,33 @@ def _match_orig_name(
     return None
 
 
+def _normalize_contact_name(name: Optional[str]) -> str:
+    """归一化联系人姓名：去空格、折叠空白、casefold；用于「姓名 + 电话/邮箱」联合判定同一联系人。"""
+    if not name:
+        return ""
+    s = str(name).strip().casefold()
+    s = re.sub(r"\s+", " ", s)
+    return s.strip()
+
+
+def _normalize_phone(phone: Optional[str]) -> str:
+    """归一化电话号码：仅保留数字；处理中国大陆手机号常见的 +86 / 86 前缀，
+    使 '8613800138000' 与 '13800138000' 视为同一号码。"""
+    if not phone:
+        return ""
+    digits = re.sub(r"\D", "", str(phone))
+    if len(digits) == 13 and digits.startswith("86"):
+        digits = digits[2:]
+    return digits
+
+
+def _normalize_email(email: Optional[str]) -> str:
+    """归一化邮箱：去空格、转小写。"""
+    if not email:
+        return ""
+    return str(email).strip().lower()
+
+
 def batch_calculate_evidence_scores(
     company_pairs: List[Tuple[str, str]],
     db: Session,
@@ -1259,12 +1333,10 @@ def batch_calculate_evidence_scores(
     # 定义要检查的表（直接使用 dws 聚合表，不再读 ods）
     tables_to_check = EVIDENCE_TABLES
 
-    # 聚合所有公司的联系信息
-    company_phones: Dict[str, set] = defaultdict(set)
-    company_emails: Dict[str, set] = defaultdict(set)
-    # 共用电话/邮箱 → 联系人姓名（取第一个非空姓名）
-    phone_to_name: Dict[str, str] = {}
-    email_to_name: Dict[str, str] = {}
+    # 聚合所有公司的「联系人身份」：身份 = (归一化姓名, 归一化电话/邮箱)。
+    # 必须姓名与电话(或邮箱)都相同，才算同一个联系人；仅电话/邮箱相同不算。
+    company_phone_contacts: Dict[str, set] = defaultdict(set)
+    company_email_contacts: Dict[str, set] = defaultdict(set)
 
     num_tables = len(tables_to_check)
     for table_idx, table_config in enumerate(tables_to_check):
@@ -1299,16 +1371,21 @@ def batch_calculate_evidence_scores(
         """)
         phone_rows = _safe_fetchall(db, phone_sql, params, f"{table_name} 电话", logger)
         if phone_rows is not None:
-            for company_name, phone, contact_name in phone_rows:
-                # 记录电话→姓名（去空格后非空才存）
-                if contact_name:
-                    cn_clean = str(contact_name).strip()
-                    if cn_clean and phone not in phone_to_name:
-                        phone_to_name[phone] = cn_clean
+            for row in phone_rows:
+                # 列顺序固定为 (company_field, phone_field, name_field)，用位置索引
+                # 兼容 SQLAlchemy 1.4 旧风格（LegacyRow 仅支持位置索引）。
+                company_name = row[0]
+                phone = row[1]
+                contact_name = row[2]
+                # 仅当「姓名 + 电话」均有效时才记录该联系人身份
+                n_name = _normalize_contact_name(contact_name)
+                n_phone = _normalize_phone(phone)
+                if not n_name or not n_phone:
+                    continue
                 # 匹配回原始公司名（精确 O(1) 快路径 + 模糊回退，语义不变）
                 orig = _match_orig_name(company_name, all_companies, name_list)
                 if orig:
-                    company_phones[orig].add(phone)
+                    company_phone_contacts[orig].add((n_name, n_phone))
 
         if progress_callback:
             progress_callback(0, total_pairs,
@@ -1327,16 +1404,21 @@ def batch_calculate_evidence_scores(
             """)
             email_rows = _safe_fetchall(db, email_sql, params, f"{table_name} 邮箱", logger) or []
         if email_rows:
-            for company_name, email, contact_name in email_rows:
-                # 记录邮箱→姓名
-                if contact_name:
-                    cn_clean = str(contact_name).strip()
-                    if cn_clean and email not in email_to_name:
-                        email_to_name[email] = cn_clean
+            for row in email_rows:
+                # 列顺序固定为 (company_field, email_field, name_field)，用位置索引
+                # 兼容 SQLAlchemy 1.4 旧风格（LegacyRow 仅支持位置索引）。
+                company_name = row[0]
+                email = row[1]
+                contact_name = row[2]
+                # 仅当「姓名 + 邮箱」均有效时才记录该联系人身份
+                n_name = _normalize_contact_name(contact_name)
+                n_email = _normalize_email(email)
+                if not n_name or not n_email:
+                    continue
                 # 匹配回原始公司名（精确 O(1) 快路径 + 模糊回退，语义不变）
                 orig = _match_orig_name(company_name, all_companies, name_list)
                 if orig:
-                    company_emails[orig].add(email)
+                    company_email_contacts[orig].add((n_name, n_email))
 
         if progress_callback:
             progress_callback(0, total_pairs,
@@ -1352,35 +1434,43 @@ def batch_calculate_evidence_scores(
         progress_callback(0, total_pairs, "正在从数据库收集证据...")
     # 每 100 对更新一次进度，并添加微小延迟让前端轮询能捕获到中间状态
     for pair_idx, (name_a, name_b) in enumerate(company_pairs):
-        phones_a = company_phones.get(name_a, set())
-        phones_b = company_phones.get(name_b, set())
-        emails_a = company_emails.get(name_a, set())
-        emails_b = company_emails.get(name_b, set())
+        # 以「(姓名, 电话)」/「(姓名, 邮箱)」身份集合求交集，
+        # 确保姓名与电话/邮箱都相同才算共享联系人（避免仅电话/邮箱相同误判）。
+        phone_contacts_a = company_phone_contacts.get(name_a, set())
+        phone_contacts_b = company_phone_contacts.get(name_b, set())
+        email_contacts_a = company_email_contacts.get(name_a, set())
+        email_contacts_b = company_email_contacts.get(name_b, set())
 
-        shared_phone_values = phones_a & phones_b
-        shared_email_values = emails_a & emails_b
-        shared_phones = len(shared_phone_values)
-        shared_emails = len(shared_email_values)
-        shared_contacts = shared_phones + shared_emails
+        shared_phone_contacts = phone_contacts_a & phone_contacts_b
+        shared_email_contacts = email_contacts_a & email_contacts_b
+        # 同一联系人可能同时被电话与邮箱两个维度识别到（如「林总」既有电话也有邮箱），
+        # 必须按姓名去重后再计数，避免同一个人被重复计入（否则 3 电话 + 2 邮箱 = 5，
+        # 实际应为去重后的 3 人）。
+        shared_names = set()
+        for n_name, _ in shared_phone_contacts:
+            shared_names.add(n_name)
+        for n_name, _ in shared_email_contacts:
+            shared_names.add(n_name)
+        shared_contacts = len(shared_names)
 
         if shared_contacts > 0:
             evidence_score = min(100.0, shared_contacts * EVIDENCE_SCORE_MULTIPLIER)
         else:
             evidence_score = 0.0
 
-        # 收集共享联系人详情（去重姓名）
+        # 收集共享联系人详情（按 类型+姓名+值 去重，避免同一人电话与邮箱重复计为两条）
         shared_details: List[Dict[str, str]] = []
-        seen_names: set = set()
-        for phone in shared_phone_values:
-            contact_name = phone_to_name.get(phone, phone)
-            if contact_name not in seen_names:
-                seen_names.add(contact_name)
-                shared_details.append({"name": contact_name, "value": phone, "type": "phone"})
-        for email in shared_email_values:
-            contact_name = email_to_name.get(email, email)
-            if contact_name not in seen_names:
-                seen_names.add(contact_name)
-                shared_details.append({"name": contact_name, "value": email, "type": "email"})
+        seen_keys: set = set()
+        for n_name, n_phone in shared_phone_contacts:
+            key = ("phone", n_name, n_phone)
+            if key not in seen_keys:
+                seen_keys.add(key)
+                shared_details.append({"name": n_name, "value": n_phone, "type": "phone"})
+        for n_name, n_email in shared_email_contacts:
+            key = ("email", n_name, n_email)
+            if key not in seen_keys:
+                seen_keys.add(key)
+                shared_details.append({"name": n_name, "value": n_email, "type": "email"})
 
         scores[(name_a, name_b)] = (round(evidence_score, 2), shared_contacts, shared_details)
 
