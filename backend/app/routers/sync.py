@@ -23,9 +23,6 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/admin/etl", tags=["etl-sync"])
 
-# Concurrency lock – prevent overlapping syncs
-_etl_lock = asyncio.Lock()
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Request / Response models
@@ -75,19 +72,27 @@ async def trigger_full_sync(
     trigger_by: str = Query("system", description="触发人"),
 ):
     """Trigger full sync (TRUNCATE + full reload)."""
-    if _etl_lock.locked():
-        raise HTTPException(status_code=409, detail="A sync run is already in progress. Please wait.")
-    async with _etl_lock:
-        try:
-            stats = await asyncio.to_thread(run_full_sync, trigger_by)
-            return {
-                "status": "ok",
-                "sync_id": stats.get("log_id", 0),
-                "message": f"Full sync completed in {stats.get('elapsed_seconds', 0)}s",
-            }
-        except Exception as exc:
-            logger.exception("Full sync failed: %s", exc)
-            raise HTTPException(status_code=500, detail=f"Full sync failed: {exc}")
+    try:
+        stats = await asyncio.to_thread(run_full_sync, trigger_by)
+    except Exception as exc:
+        logger.exception("Full sync failed: %s", exc)
+        raise HTTPException(status_code=500, detail=f"Full sync failed: {exc}")
+
+    if stats.get("status") == "skipped":
+        running = stats.get("running_sync") or {}
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"当前有同步任务正在进行（类型：{running.get('type', '未知')}，"
+                f"触发人：{running.get('trigger_by', '未知')}），请稍后重试"
+            ),
+        )
+
+    return {
+        "status": "ok",
+        "sync_id": stats.get("log_id", 0),
+        "message": f"Full sync completed in {stats.get('elapsed_seconds', 0)}s",
+    }
 
 
 @router.post("/increment", response_model=SyncTriggerResponse)
@@ -95,19 +100,27 @@ async def trigger_increment_sync(
     trigger_by: str = Query("system", description="触发人"),
 ):
     """Trigger incremental sync (UPSERT + delete detection)."""
-    if _etl_lock.locked():
-        raise HTTPException(status_code=409, detail="A sync run is already in progress. Please wait.")
-    async with _etl_lock:
-        try:
-            stats = await asyncio.to_thread(run_incremental_sync, trigger_by)
-            return {
-                "status": "ok",
-                "sync_id": stats.get("log_id", 0),
-                "message": f"Incremental sync completed in {stats.get('elapsed_seconds', 0)}s",
-            }
-        except Exception as exc:
-            logger.exception("Incremental sync failed: %s", exc)
-            raise HTTPException(status_code=500, detail=f"Incremental sync failed: {exc}")
+    try:
+        stats = await asyncio.to_thread(run_incremental_sync, trigger_by)
+    except Exception as exc:
+        logger.exception("Incremental sync failed: %s", exc)
+        raise HTTPException(status_code=500, detail=f"Incremental sync failed: {exc}")
+
+    if stats.get("status") == "skipped":
+        running = stats.get("running_sync") or {}
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"当前有同步任务正在进行（类型：{running.get('type', '未知')}，"
+                f"触发人：{running.get('trigger_by', '未知')}），请稍后重试"
+            ),
+        )
+
+    return {
+        "status": "ok",
+        "sync_id": stats.get("log_id", 0),
+        "message": f"Incremental sync completed in {stats.get('elapsed_seconds', 0)}s",
+    }
 
 
 @router.get("/status")

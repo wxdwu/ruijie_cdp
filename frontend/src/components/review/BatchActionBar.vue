@@ -5,17 +5,17 @@
       <button class="clear-btn" @click="onClear">清除选择</button>
     </div>
     <div class="batch-actions">
-      <button class="action-btn approve" @click="onBatchApprove">
+      <button class="action-btn approve" :disabled="busy" @click="onBatchApprove">
         <span class="btn-icon">✅</span>
-        批量通过
+        {{ busy ? '处理中…' : '批量通过' }}
       </button>
-      <button class="action-btn reject" @click="onBatchReject">
+      <button class="action-btn reject" :disabled="busy" @click="onBatchReject">
         <span class="btn-icon">❌</span>
-        批量拒绝
+        {{ busy ? '处理中…' : '批量拒绝' }}
       </button>
-      <button class="action-btn revoke" @click="onBatchRevoke">
+      <button class="action-btn revoke" :disabled="busy" @click="onBatchRevoke">
         <span class="btn-icon">↩</span>
-        批量撤销审核
+        {{ busy ? '处理中…' : '批量撤销审核' }}
       </button>
     </div>
   </div>
@@ -24,6 +24,7 @@
 <script setup lang="ts">
 const props = defineProps<{
   selectedIds: number[]
+  busy?: boolean
 }>()
 
 const emit = defineEmits<{

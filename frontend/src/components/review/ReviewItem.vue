@@ -295,23 +295,26 @@
           <button
             v-if="item.status === 'pending' || item.status === 'need_review'"
             class="action-btn approve"
+            :disabled="busy"
             @click="onApprove"
           >
-            ✓ 确认合并
+            {{ busy ? '处理中…' : '✓ 确认合并' }}
           </button>
           <button
             v-if="item.status === 'pending' || item.status === 'need_review'"
             class="action-btn reject"
+            :disabled="busy"
             @click="onReject"
           >
-            ✗ 保留独立
+            {{ busy ? '处理中…' : '✗ 保留独立' }}
           </button>
           <button
             v-if="isRevocable"
             class="action-btn revoke"
+            :disabled="busy"
             @click="onRevoke"
           >
-            ↩ 撤销审核
+            {{ busy ? '处理中…' : '↩ 撤销审核' }}
           </button>
           <span v-if="isRevocable" class="reviewed-badge">
             {{ item.reviewed_at ? '已审核' : '—' }}
@@ -389,6 +392,7 @@ export interface ReviewItemData {
 const props = defineProps<{
   item: ReviewItemData
   selected: boolean
+  busy?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -1103,6 +1107,13 @@ const getStatusLabel = (status: string) => {
   transition: all 0.2s ease;
   min-width: 110px;
   white-space: nowrap;
+}
+
+.action-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
 }
 
 .action-btn.approve {

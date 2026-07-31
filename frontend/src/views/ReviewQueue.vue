@@ -129,6 +129,7 @@
 
     <BatchActionBar
       :selected-ids="selectedIds"
+      :busy="busy"
       @batch-approve="onBatchApprove"
       @batch-reject="onBatchReject"
       @batch-revoke="onBatchRevoke"
@@ -141,6 +142,7 @@
       :page="page"
       :size="size"
       :selected-ids="selectedIds"
+      :busy="busy"
       @select="onToggleSelect"
       @select-all="onToggleSelectAll"
       @approve="onApprove"
@@ -158,6 +160,7 @@ import BatchActionBar from '../components/review/BatchActionBar.vue'
 import ReviewList from '../components/review/ReviewList.vue'
 import type { ReviewItemData } from '../components/review/ReviewItem.vue'
 import { BASE_URL } from '../config'
+import { useToast, extractError } from '../composables/useToast'
 
 const statsRef = ref<InstanceType<typeof ReviewStats> | null>(null)
 
@@ -439,94 +442,127 @@ const onClearSelection = () => {
   selectedIds.value = []
 }
 
-const onApprove = async (id: number) => {
+// 全局忙标记：任意审核操作进行中禁用所有审核按钮，防止重复点击
+const busy = ref(false)
+
+// 统一的请求处理：成功给成功提示并刷新列表，失败解析后端原因给出失败提示。
+// 仅做交互反馈封装，不改变任何业务逻辑与接口调用。
+async function runAction(
+  label: string,
+  fn: () => Promise<Response>,
+  successMsg: string,
+  afterSuccess?: () => void,
+): Promise<void> {
+  if (busy.value) return
+  busy.value = true
+  let ok = false
   try {
-    const response = await fetch(`${BASE_URL}/api/review/${id}/approve`, {
-      method: 'POST',
-    })
+    const response = await fn()
     if (response.ok) {
-      await refreshAll()
-      selectedIds.value = selectedIds.value.filter((i) => i !== id)
+      ok = true
+      toast.success(successMsg)
+    } else {
+      const reason = await extractError(response)
+      toast.error(`${label}失败`, reason)
     }
-  } catch (error) {
-    console.error('Failed to approve:', error)
+  } catch (e) {
+    toast.error(`${label}失败`, e instanceof Error ? e.message : String(e))
+  } finally {
+    busy.value = false
+    if (ok) {
+      try {
+        await refreshAll()
+      } catch {
+        // 刷新失败不影响已成功的操作提示
+      }
+      try {
+        afterSuccess?.()
+      } catch {
+        // 选中态清理失败不影响已成功的操作提示
+      }
+    }
   }
+}
+
+const onApprove = async (id: number) => {
+  await runAction(
+    '确认合并',
+    () => fetch(`${BASE_URL}/api/review/${id}/approve`, { method: 'POST' }),
+    '已确认合并',
+    () => {
+      selectedIds.value = selectedIds.value.filter((i) => i !== id)
+    },
+  )
 }
 
 const onReject = async (id: number) => {
-  try {
-    const response = await fetch(`${BASE_URL}/api/review/${id}/reject`, {
-      method: 'POST',
-    })
-    if (response.ok) {
-      await refreshAll()
+  await runAction(
+    '保留独立',
+    () => fetch(`${BASE_URL}/api/review/${id}/reject`, { method: 'POST' }),
+    '已保留为独立公司',
+    () => {
       selectedIds.value = selectedIds.value.filter((i) => i !== id)
-    }
-  } catch (error) {
-    console.error('Failed to reject:', error)
-  }
+    },
+  )
 }
 
 const onRevoke = async (id: number) => {
-  try {
-    const response = await fetch(`${BASE_URL}/api/review/${id}/revoke`, {
-      method: 'POST',
-    })
-    if (response.ok) {
-      await refreshAll()
+  await runAction(
+    '撤销审核',
+    () => fetch(`${BASE_URL}/api/review/${id}/revoke`, { method: 'POST' }),
+    '已撤销审核',
+    () => {
       selectedIds.value = selectedIds.value.filter((i) => i !== id)
-    }
-  } catch (error) {
-    console.error('Failed to revoke:', error)
-  }
+    },
+  )
 }
 
 const onBatchApprove = async (ids: number[]) => {
-  try {
-    const response = await fetch(`${BASE_URL}/api/review/batch-approve`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ids }),
-    })
-    if (response.ok) {
-      await refreshAll()
+  await runAction(
+    '批量确认合并',
+    () =>
+      fetch(`${BASE_URL}/api/review/batch-approve`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids }),
+      }),
+    `已批量确认合并 ${ids.length} 对`,
+    () => {
       selectedIds.value = []
-    }
-  } catch (error) {
-    console.error('Failed to batch approve:', error)
-  }
+    },
+  )
 }
 
 const onBatchReject = async (ids: number[]) => {
-  try {
-    const response = await fetch(`${BASE_URL}/api/review/batch-reject`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ids }),
-    })
-    if (response.ok) {
-      await refreshAll()
+  await runAction(
+    '批量保留独立',
+    () =>
+      fetch(`${BASE_URL}/api/review/batch-reject`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids }),
+      }),
+    `已批量保留独立 ${ids.length} 对`,
+    () => {
       selectedIds.value = []
-    }
-  } catch (error) {
-    console.error('Failed to batch reject:', error)
-  }
+    },
+  )
 }
 
 const onBatchRevoke = async (ids: number[]) => {
-  try {
-    const response = await fetch(`${BASE_URL}/api/review/batch-revoke`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ids }),
-    })
-    if (response.ok) {
-      await refreshAll()
+  await runAction(
+    '批量撤销审核',
+    () =>
+      fetch(`${BASE_URL}/api/review/batch-revoke`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids }),
+      }),
+    `已批量撤销审核 ${ids.length} 对`,
+    () => {
       selectedIds.value = []
-    }
-  } catch (error) {
-    console.error('Failed to batch revoke:', error)
-  }
+    },
+  )
 }
 
 onMounted(() => {

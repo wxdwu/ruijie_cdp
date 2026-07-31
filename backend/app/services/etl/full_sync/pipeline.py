@@ -13,6 +13,7 @@ from app.services.etl.full_sync.build_dws_interaction_detail import _load_intera
 from app.services.etl.full_sync.build_dws_customer_360 import _build_customer_360
 from app.services.etl.full_sync.build_dws_contact_360 import _build_contact_360
 from app.services.etl.common.interaction_align import align_interaction_detail_names
+from app.services.etl.sync_lock import try_begin_sync, end_sync
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +29,19 @@ def run_full_sync(trigger_by: str = "system") -> Dict[str, Any]:
     
     Uses double table rotation to ensure data availability during sync.
     """
+    # 进程级互斥：全量/增量/定时同步任一时刻只允许一个运行；若已有同步在跑则跳过。
+    acquired, running = try_begin_sync("full", trigger_by)
+    if not acquired:
+        logger.warning(
+            "跳过全量同步：当前有 %s 同步（触发人=%s）正在进行",
+            (running or {}).get("type"), (running or {}).get("trigger_by"),
+        )
+        return {
+            "status": "skipped",
+            "reason": "another_sync_running",
+            "running_sync": running,
+        }
+
     log_id = _create_sync_log("full", trigger_by)
     logger.info("Full sync started, log_id=%d, trigger_by=%s", log_id, trigger_by)
     
@@ -268,3 +282,4 @@ def run_full_sync(trigger_by: str = "system") -> Dict[str, Any]:
 
     finally:
         _drop_etl_temp_tables()
+        end_sync()

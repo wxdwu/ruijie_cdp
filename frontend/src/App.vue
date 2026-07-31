@@ -1,6 +1,7 @@
 <script setup>
 import AppSidebar from './components/layout/AppSidebar.vue'
 import AppTopbar from './components/layout/AppTopbar.vue'
+import ToastContainer from './components/common/ToastContainer.vue'
 </script>
 
 <template>
@@ -18,4 +19,5 @@ import AppTopbar from './components/layout/AppTopbar.vue'
       </main>
     </div>
   </div>
+  <ToastContainer />
 </template>

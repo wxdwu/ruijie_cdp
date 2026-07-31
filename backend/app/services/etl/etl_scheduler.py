@@ -49,9 +49,17 @@ def _scheduled_full_sync() -> None:
     # 1) 全量同步（自带 dws_sync_log 审计 + 双表原子轮换）
     try:
         stats = run_full_sync(trigger_by="scheduler")
+        status = stats.get("status") if isinstance(stats, dict) else "unknown"
+        if status == "skipped":
+            running = stats.get("running_sync") or {}
+            logger.warning(
+                "定时全量同步已跳过：当前有 %s 同步（触发人=%s）正在进行",
+                running.get("type"), running.get("trigger_by"),
+            )
+            return
         logger.info(
             "定时全量同步完成: status=%s, elapsed=%ss",
-            stats.get("status"),
+            status,
             stats.get("elapsed_seconds"),
         )
     except Exception as exc:
