@@ -100,6 +100,114 @@ def parse_sort(sort: Optional[str]) -> tuple[str, str]:
     return sort_by, sort_order
 
 
+def _enrich_list_intent_scores(db: Session, items: List[Dict[str, Any]]) -> None:
+    """对合并簇内的 canonical 公司，用簇级聚合数据重算合作意向分。
+
+    取 max(簇计算值, dws 当前字段值)，确保 /customers 列表页与
+    /customers/{id} 详情页展示的意向分和意向等级数值一致。
+    """
+    if not items:
+        return
+
+    # 收集当前页所有公司名
+    names = [item["customer_name"] for item in items if item.get("customer_name")]
+    if not names:
+        return
+
+    # 找出哪些公司是 canonical（有合并别名）
+    merge_rows = db.execute(
+        text(
+            "SELECT canonical_name, alias_name FROM company_merge_map "
+            "WHERE canonical_name IN :names"
+        ),
+        {"names": tuple(names)},
+    ).mappings().all()
+
+    if not merge_rows:
+        return
+
+    # 构建 canonical → 所有成员名（含自身别名）
+    canonical_members: dict = {}
+    for row in merge_rows:
+        cn = row["canonical_name"]
+        an = row["alias_name"]
+        if cn not in canonical_members:
+            canonical_members[cn] = {cn}
+        canonical_members[cn].add(an)
+
+    # 对每个 canonical 按簇聚合数据重算意向分
+    for item in items:
+        cn = item.get("customer_name")
+        if cn not in canonical_members:
+            continue
+        members = tuple(canonical_members[cn])
+
+        # 联系人（簇内去重）
+        cluster_contact = db.execute(
+            text(
+                "SELECT COUNT(*) FROM ("
+                "  SELECT DISTINCT contact_name, mobile "
+                "  FROM dws_contact_mapping "
+                "  WHERE customer_name IN :members"
+                ") t"
+            ),
+            {"members": members},
+        ).scalar() or 0
+
+        # 互动总数（簇内去重）
+        cluster_interaction_total = db.execute(
+            text(
+                "SELECT COUNT(*) FROM ("
+                "  SELECT DISTINCT contact_name, behavior_type, event_time "
+                "  FROM dws_interaction_detail "
+                "  WHERE customer_name IN :members"
+                ") t"
+            ),
+            {"members": members},
+        ).scalar() or 0
+
+        # 近30天互动（簇内去重）
+        cluster_interaction_30d = db.execute(
+            text(
+                "SELECT COUNT(*) FROM ("
+                "  SELECT DISTINCT contact_name, behavior_type, event_time "
+                "  FROM dws_interaction_detail "
+                "  WHERE customer_name IN :members "
+                "    AND event_time >= DATE_SUB(NOW(), INTERVAL 30 DAY)"
+                ") t"
+            ),
+            {"members": members},
+        ).scalar() or 0
+
+        # 商机数（簇内求和）
+        opp_row = db.execute(
+            text(
+                "SELECT COALESCE(SUM(active_opp_count), 0) AS s "
+                "FROM dws_customer_360 WHERE customer_name IN :members"
+            ),
+            {"members": members},
+        ).fetchone()
+        cluster_active_opp = int(opp_row[0]) if opp_row and opp_row[0] else 0
+
+        cluster_intent = compute_intent_score(
+            contact_count=cluster_contact,
+            interaction_count_total=cluster_interaction_total,
+            interaction_count_30d=cluster_interaction_30d,
+            active_opp_count=cluster_active_opp,
+        )
+        cluster_level = compute_intent_level(
+            contact_count=cluster_contact,
+            interaction_count_total=cluster_interaction_total,
+            interaction_count_30d=cluster_interaction_30d,
+            active_opp_count=cluster_active_opp,
+        )
+
+        # 取 max(簇计算值，dws 当前字段值)
+        current_intent = item.get("intent_score") or 0
+        item["intent_score"] = max(cluster_intent, current_intent)
+        item["intent_level"] = cluster_level
+
+
 def list_customers(
     db: Session,
     *,
@@ -287,6 +395,10 @@ def get_customer_list(
         {**params, "limit": page_size, "offset": offset},
     ).mappings().all()
     items = [dict(r) for r in rows]
+
+    # 对合并簇内的 canonical 公司，用簇级聚合数据重算意向分，
+    # 取 max(簇计算值, dws 当前值)，确保列表页与详情页数值一致。
+    _enrich_list_intent_scores(db, items)
 
     # 公司名预处理（结果行级）：去除异常符号得到干净显示名，并丢弃清洗后为空/非法的项。
     # SQL 层已做结构性过滤，此处为兜底与显示清洗，正常不会额外丢弃（total 保持准确）。
@@ -860,12 +972,17 @@ def get_customer_detail(db: Session, customer_id: str) -> Dict[str, Any]:
     # 合并/撤销后，按当前簇聚合出来的「联系人数 + 互动记录 + 商机数」重新计算
     # 合作意向分与等级（规则见 app.services.common.intent，与 ETL 派生字段一致）。
     # 合并时簇包含所有成员公司→全量数据重算；撤销时别名恢复独立、仅自身数据→重算。
+    # 取 max(簇计算值, dws 原始字段值)，确保合并后不会意外低估。
+    original_intent = result.get("intent_score") or 0
     result["active_opp_count"] = cluster_active_opp
-    result["intent_score"] = compute_intent_score(
-        contact_count=result["contact_count"],
-        interaction_count_total=result["interaction_count_total"],
-        interaction_count_30d=result["interaction_count_30d"],
-        active_opp_count=cluster_active_opp,
+    result["intent_score"] = max(
+        compute_intent_score(
+            contact_count=result["contact_count"],
+            interaction_count_total=result["interaction_count_total"],
+            interaction_count_30d=result["interaction_count_30d"],
+            active_opp_count=cluster_active_opp,
+        ),
+        original_intent,
     )
     result["intent_level"] = compute_intent_level(
         contact_count=result["contact_count"],
@@ -875,6 +992,11 @@ def get_customer_detail(db: Session, customer_id: str) -> Dict[str, Any]:
     )
     # 合并源公司名：非空表示当前数据由该来源公司合并而来，便于追溯原始归属
     result["merge_source_name"] = merge_source_name
+
+    # 合并链追溯信息：最终合并者展示「合并了几家 + hover 看具体成员」；
+    # 被合并者展示「从当前到最终合并者的逐步合并链」，带环检测与超长折叠。
+    from app.services.company_dedup.company_merge import get_merge_chain
+    result["merge_chain_info"] = get_merge_chain(db, customer_id)
 
     visit_row = db.execute(
         text(

@@ -261,6 +261,150 @@ def resolve_customer(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# 合并链追溯（供详情页展示）
+# ─────────────────────────────────────────────────────────────────────────────
+
+# 合并链最大展示长度：超过后折叠为「...」，避免超长链撑爆 UI（仅截断展示，不影响数据）。
+MERGE_CHAIN_MAX_LEN = 8
+
+
+def get_merge_chain(db: Session, customer_id: Any) -> Dict[str, Any]:
+    """返回客户在合并映射中的可追溯信息，供前端详情页紧凑展示。
+
+    返回结构：
+    - is_canonical：当前客户是否为「最终合并者」（簇内根节点）。
+    - canonical_id / canonical_name：最终合并者 id 与名称。
+    - merged_count：若 is_canonical，合并了几家公司（簇成员数 - 1）。
+    - merged_members：若 is_canonical，被合并成员名列表（不含 canonical 自身）。
+    - merge_chain：从当前公司逐步合并到最终合并者的路径（含当前与最终），
+      如 [当前, 中间1, ..., 最终]；带环检测，超 MERGE_CHAIN_MAX_LEN 折叠。
+
+    未合并（自身即根、且簇仅自身）时返回空结构，前端据此不渲染合并信息。
+    """
+    row = db.execute(
+        text("SELECT id, customer_name FROM dws_customer_360 WHERE id = :cid"),
+        {"cid": customer_id},
+    ).mappings().fetchone()
+    if not row:
+        return _empty_chain()
+
+    self_name = row["customer_name"]
+    self_id = row["id"]
+
+    alias_map = _load_map(db)
+    roots = _build_roots(alias_map)
+    canonical_name = _resolve(self_name, alias_map, roots)
+    # 最终合并者 id：优先从映射表取 canonical_id（最准），否则按名回查 dws。
+    canonical_id = _fetch_c360_id(db, canonical_name)
+
+    member_names = get_member_names(db, self_name)
+
+    is_canonical = self_name == canonical_name
+    merged_members = [n for n in member_names if n != canonical_name] if is_canonical else []
+    merged_count = len(merged_members) if is_canonical else 0
+
+    # 被合并成员带 id，供前端点击跳转（批量按名查 dws，避免 N+1）
+    merged_member_infos: List[Dict[str, Any]] = []
+    if merged_members:
+        in_clause, in_params = _in_clause("mm", merged_members)
+        rows = db.execute(
+            text(
+                f"SELECT id, customer_name FROM dws_customer_360 "
+                f"WHERE customer_name {in_clause}"
+            ),
+            in_params,
+        ).mappings().all()
+        id_by_name = {r["customer_name"]: r["id"] for r in rows}
+        merged_member_infos = [
+            {"name": n, "id": id_by_name.get(n)} for n in merged_members
+        ]
+
+    # 逐步合并链：从当前名沿 alias->canonical 向上溯源到根，带环检测与长度上限。
+    chain = _trace_chain(self_name, alias_map, canonical_name)
+
+    return {
+        "is_canonical": is_canonical,
+        "canonical_id": canonical_id,
+        "canonical_name": canonical_name,
+        "self_id": self_id,
+        "self_name": self_name,
+        "merged_count": merged_count,
+        "merged_members": merged_members,
+        "merged_member_infos": merged_member_infos,
+        "merge_chain": chain,
+    }
+
+
+def _trace_chain(self_name: str, alias_map: Dict[str, str], canonical_name: str) -> List[Dict[str, Any]]:
+    """从 self_name 沿映射溯源到 canonical_name，得到逐步合并路径。
+
+    返回形如 [{"name": 当前, "id": ...}, {"name": 中间, "id": ...}, {"name": 最终, "id": ...}]。
+    环检测：若遍历中遇到已访问节点，立即终止并截断，避免死循环。
+    超长截断：路径超过 MERGE_CHAIN_MAX_LEN 时，保留首尾并在中间插入折叠标记。
+    """
+    db = None  # 延迟取连接，仅在需要 id 时查询
+    visited: set = set()
+    raw_path: List[str] = []
+    cur = self_name
+    while cur and cur != canonical_name and cur not in visited:
+        visited.add(cur)
+        raw_path.append(cur)
+        nxt = alias_map.get(cur)
+        if nxt is None:
+            break
+        cur = nxt
+    if cur == canonical_name:
+        raw_path.append(canonical_name)
+
+    # 环或异常截断保护
+    if len(raw_path) > MERGE_CHAIN_MAX_LEN:
+        head = raw_path[: MERGE_CHAIN_MAX_LEN - 2]
+        tail = raw_path[-1]
+        folded = head + ["__FOLD__"] + [tail]
+    else:
+        folded = raw_path
+
+    # 解析每个节点的 dws id（按名批量查询，避免 N+1）
+    names = [n for n in folded if n != "__FOLD__"]
+    id_by_name: Dict[str, Optional[int]] = {}
+    if names:
+        from app.database import SessionLocal
+        with SessionLocal() as s:
+            in_clause2, in_params2 = _in_clause("cid", names)
+            r2 = s.execute(
+                text(
+                    f"SELECT id, customer_name FROM dws_customer_360 "
+                    f"WHERE customer_name {in_clause2}"
+                ),
+                in_params2,
+            ).mappings().all()
+            id_by_name = {r["customer_name"]: r["id"] for r in r2}
+
+    chain: List[Dict[str, Any]] = []
+    for n in folded:
+        if n == "__FOLD__":
+            chain.append({"name": "...", "id": None, "folded": True})
+        else:
+            chain.append({"name": n, "id": id_by_name.get(n), "folded": False})
+    return chain
+
+
+def _empty_chain() -> Dict[str, Any]:
+    """无合并信息时返回的空结构。"""
+    return {
+        "is_canonical": False,
+        "canonical_id": None,
+        "canonical_name": None,
+        "self_id": None,
+        "self_name": None,
+        "merged_count": 0,
+        "merged_members": [],
+        "merged_member_infos": [],
+        "merge_chain": [],
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # 判定幸存者（标准名）
 # ─────────────────────────────────────────────────────────────────────────────
 

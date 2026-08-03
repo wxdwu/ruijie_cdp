@@ -1,5 +1,5 @@
 <script setup>
-import { defineAsyncComponent, ref, onMounted } from 'vue'
+import { defineAsyncComponent, ref, onMounted, computed } from 'vue'
 import { useRoute } from 'vue-router'
 import { customerApi } from '../api'
 import OverviewTab from '../components/detail/OverviewTab.vue'
@@ -24,6 +24,32 @@ const customerStatistics = ref({})
 const priorityRecommendation = ref(null)
 const priorityRecommendations = ref([])
 const recommendSource = ref('rule')
+
+// 合并链信息（后端 get_customer_detail 已附带 merge_chain_info）；未合并/异常时给空结构，避免模板报错
+const mergeInfo = computed(() => {
+  const info = customer.value && customer.value.merge_chain_info
+  if (!info) return { is_canonical: false, merged_count: 0, merged_members: [], merged_member_infos: [], merge_chain: [] }
+  return {
+    is_canonical: !!info.is_canonical,
+    merged_count: info.merged_count || 0,
+    merged_members: info.merged_members || [],
+    merged_member_infos: info.merged_member_infos || [],
+    merge_chain: info.merge_chain || [],
+  }
+})
+
+// 新开标签页跳转到指定公司详情（绕过组件复用不刷新的问题，满足"新开界面"需求）
+function openCustomer(id) {
+  if (!id) return
+  const url = `${location.origin}/customers/${id}`
+  window.open(url, '_blank')
+}
+
+// 按成员名跳转：从 merged_member_infos 取对应 id 后新开标签页
+function openMemberByName(name) {
+  const hit = (mergeInfo.value.merged_member_infos || []).find((m) => m.name === name)
+  if (hit && hit.id) openCustomer(hit.id)
+}
 
 const tabs = [
   { key: 'overview', label: '概览' },
@@ -106,6 +132,66 @@ onMounted(() => {
                 class="ml-1 text-sm font-normal text-[var(--muted)] align-middle"
               >
                 （合并源：{{ customer.merge_source_name }}）
+              </span>
+
+              <!-- 合并信息：紧凑展示，不占用额外版面 -->
+              <span
+                v-if="mergeInfo && (mergeInfo.is_canonical ? mergeInfo.merged_count > 0 : mergeInfo.merge_chain.length)"
+                class="ml-2 inline-flex items-center align-middle text-xs"
+              >
+                <!-- 最终合并者：展示合并数量，hover 看具体成员 -->
+                <span
+                  v-if="mergeInfo.is_canonical"
+                  class="relative group inline-flex items-center gap-1 px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-600 cursor-default"
+                >
+                  <span>已合并 {{ mergeInfo.merged_count }} 家</span>
+                  <div
+                    class="pointer-events-none absolute left-0 top-full mt-1 z-20 hidden group-hover:block
+                           w-max max-w-xs rounded-md border border-[var(--line)] bg-[var(--panel)]
+                           px-3 py-2 text-xs text-[var(--text)] shadow-lg"
+                  >
+                    <div class="mb-1 font-medium text-[var(--muted)]">合并成员：</div>
+                    <div class="space-y-0.5">
+                      <a
+                        v-for="m in mergeInfo.merged_member_infos"
+                        :key="m.name"
+                        href="javascript:void(0)"
+                        class="block hover:underline text-emerald-600"
+                        :title="m.id ? '新开标签页查看该公司详情' : '无详情档案'"
+                        @click="openCustomer(m.id)"
+                      >{{ m.name }}</a>
+                    </div>
+                  </div>
+                </span>
+
+                <!-- 被合并者：hover 浮层展示从当前到最终合并者的逐步合并链 -->
+                <span
+                  v-else
+                  class="relative group inline-flex items-center gap-1 px-2 py-0.5 rounded bg-amber-500/10 text-amber-600 cursor-default"
+                >
+                  <span>已并入「{{ mergeInfo.canonical_name }}」</span>
+                  <div
+                    class="pointer-events-auto absolute left-0 top-full mt-1 z-20 hidden group-hover:block
+                           w-max max-w-sm rounded-md border border-[var(--line)] bg-[var(--panel)]
+                           px-3 py-2 text-xs text-[var(--text)] shadow-lg"
+                  >
+                    <div class="mb-1 font-medium text-[var(--muted)]">合并路径：</div>
+                    <div class="flex flex-wrap items-center gap-x-1 gap-y-1">
+                      <template v-for="(node, idx) in mergeInfo.merge_chain" :key="idx">
+                        <span v-if="node.folded" class="px-1 text-[var(--muted)]">…</span>
+                        <a
+                          v-else
+                          href="javascript:void(0)"
+                          class="hover:underline"
+                          :class="node.id ? 'text-amber-600' : 'text-[var(--muted)]'"
+                          :title="node.id ? '新开标签页查看该公司详情' : '无详情档案'"
+                          @click="openCustomer(node.id)"
+                        >{{ node.name }}</a>
+                        <span v-if="idx < mergeInfo.merge_chain.length - 1" class="px-1 text-[var(--muted)]">→</span>
+                      </template>
+                    </div>
+                  </div>
+                </span>
               </span>
             </h1>
             <div class="flex items-center gap-3 mt-1">

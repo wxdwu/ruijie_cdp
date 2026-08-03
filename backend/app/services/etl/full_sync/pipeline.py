@@ -18,6 +18,55 @@ from app.services.etl.sync_lock import try_begin_sync, end_sync
 logger = logging.getLogger(__name__)
 
 
+# 上游 ODS 就绪校验依赖的源表清单：全量同步锚点(tmp_icp_customers)与下游构建
+# 所依赖的关键 ODS 源。这些表若在定时触发窗口被上游清空，会导致数据全空。
+_UPSTREAM_SOURCE_TABLES = [
+    "ods_zhique_contact_detail_day",
+    "ods_crm_contact_day",
+    "ods_linkflow_events_day",
+    "ods_tianrun_session_day",
+]
+
+
+def _check_upstream_ready(icp_count: int) -> None:
+    """上游数据就绪校验（fail-fast）。
+
+    全量同步几乎所有下游表都依赖 Step 4 构建的锚点表 tmp_icp_customers。若上游
+    ODS 源表在定时触发窗口（如每天 12:00/00:00）正处于清空/重建，tmp_icp_customers
+    会为空，导致后续 contact_mapping / interaction_detail / contact_360 全部 0 行，
+    最终在 Step 10 校验失败回滚。此处提前熔断，给出明确错误，避免空跑几十分钟。
+
+    Args:
+        icp_count: Step 4 构建的 tmp_icp_customers 行数。
+
+    Raises:
+        RuntimeError: 锚点表为空或关键上游源表为空时，明确提示上游未就绪。
+    """
+    if icp_count <= 0:
+        raise RuntimeError(
+            "上游数据尚未就绪：锚点表 tmp_icp_customers 行数为 0"
+            "（通常因上游 ODS 源表在定时窗口被清空/重建）。"
+            "请等待上游数据就绪后重试。"
+        )
+    # 校验关键上游源表非空，避免更隐蔽的空数据来源
+    empty_sources = []
+    for src in _UPSTREAM_SOURCE_TABLES:
+        try:
+            cnt = _table_count(src)
+        except Exception:
+            # 表不存在等异常不阻断，交给正式流程报错，这里只关心“明确为空”的情况
+            continue
+        if cnt <= 0:
+            empty_sources.append(src)
+    if empty_sources:
+        raise RuntimeError(
+            "上游数据尚未就绪：以下关键 ODS 源表行数为 0：%s。"
+            "可能正处于上游清空/重建窗口，请稍后重试。"
+            % ", ".join(empty_sources)
+        )
+    logger.info("上游数据就绪校验通过（icp_count=%d）", icp_count)
+
+
 
 # 全量同步编排入口（由原 etl_sync.py 抽取，SQL 与调用语义保持不变，仅保留可审计版本）
 
@@ -108,6 +157,13 @@ def run_full_sync(trigger_by: str = "system") -> Dict[str, Any]:
         _build_tmp_icp_filters()
         stats["steps"]["icp_customers"] = {"rows": icp_count}
         _phase_end("Step 4: Building ICP customers table", t0)
+
+        # Step 4.1: 上游数据就绪校验（fail-fast）
+        # 定时同步常在固定 cron 点（如 12:00/00:00）触发，此时上游 ODS 源表
+        # 可能正处于清空/重建窗口，导致 tmp_icp_customers 为空，进而使后续
+        # contact_mapping / interaction_detail / contact_360 全部 0 行，最终在
+        # Step 10 校验失败回滚。这里提前熔断，给出明确错误，避免空跑几十分钟。
+        _check_upstream_ready(icp_count)
 
         # Step 5: Creating indexes
         t0 = _phase_start("Step 5: Creating indexes")
@@ -282,4 +338,11 @@ def run_full_sync(trigger_by: str = "system") -> Dict[str, Any]:
 
     finally:
         _drop_etl_temp_tables()
+        # tmp_icp_customers 是持久锚点表（CREATE TABLE IF NOT EXISTS，不随
+        # _ETL_TEMP_TABLES 清理），每次 run 结束后主动 DROP，避免上游空窗口导致
+        # 残留空表误导后续排查。
+        try:
+            _exec("DROP TABLE IF EXISTS tmp_icp_customers")
+        except Exception as drop_exc:
+            logger.warning("清理 tmp_icp_customers 失败（可忽略）: %s", drop_exc)
         end_sync()

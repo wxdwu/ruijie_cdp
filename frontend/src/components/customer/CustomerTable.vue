@@ -12,9 +12,19 @@ const props = defineProps({
     type: Boolean,
     default: false,
   },
+  intentSort: {
+    type: String,   // null | 'asc' | 'desc'
+    default: null,
+  },
 })
 
+const emit = defineEmits(['sort-intent'])
+
 const router = useRouter()
+
+function handleIntentSort() {
+  emit('sort-intent')
+}
 
 const stageColors = {
   '问题识别': 'bg-yellow-500/20 text-yellow-400 border-yellow-500/30',
@@ -81,8 +91,18 @@ function handleRowClick(customer) {
               关键角色覆盖
               <FieldHelpTooltip :help="customerFieldHelp.roleCoverage" />
             </th>
-            <th class="px-4 py-3 text-left text-xs font-medium text-[var(--muted)]">
-              合作意向
+            <th
+              class="px-4 py-3 text-left text-xs font-medium text-[var(--muted)] cursor-pointer select-none hover:text-[var(--text)] transition-colors"
+              @click="handleIntentSort"
+            >
+              <span class="inline-flex items-center gap-1">
+                合作意向
+                <span class="text-[var(--brand)]">
+                  <span v-if="intentSort === 'desc'">↓</span>
+                  <span v-else-if="intentSort === 'asc'">↑</span>
+                  <span v-else class="opacity-30">↕</span>
+                </span>
+              </span>
               <FieldHelpTooltip :help="customerFieldHelp.intent" align="end" />
             </th>
             <th class="px-4 py-3 text-left text-xs font-medium text-[var(--muted)]">

@@ -7,6 +7,9 @@ import CustomerTable from '../components/customer/CustomerTable.vue'
 const store = useCustomerStore()
 const pageInput = ref('')
 
+// 合作意向列排序状态：null=未排序, 'desc'=降序, 'asc'=升序
+const intentSort = ref(null)
+
 function handleApplyFilters(filters) {
   store.setFilters(filters)
   store.fetchList()
@@ -24,6 +27,21 @@ function goToPage() {
     handlePageChange(p)
     pageInput.value = ''
   }
+}
+
+// 合作意向列排序切换：null→desc→asc→null
+function handleSortIntent() {
+  if (!intentSort.value) {
+    intentSort.value = 'desc'
+    store.setFilter('sort', 'intent_score DESC')
+  } else if (intentSort.value === 'desc') {
+    intentSort.value = 'asc'
+    store.setFilter('sort', 'intent_score ASC')
+  } else {
+    intentSort.value = null
+    store.setFilter('sort', '')
+  }
+  store.fetchList()
 }
 
 // Compute visible pages: 1, 2, 3, ..., last
@@ -77,6 +95,8 @@ onBeforeUnmount(() => {
     <CustomerTable
       :customers="store.list"
       :loading="store.loading"
+      :intentSort="intentSort"
+      @sort-intent="handleSortIntent"
     />
 
     <!-- Pagination -->

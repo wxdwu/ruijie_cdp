@@ -123,6 +123,44 @@ async def trigger_increment_sync(
     }
 
 
+@router.post("/scheduler-full-test", response_model=SyncTriggerResponse)
+async def test_scheduled_full_sync(
+    no_retry: bool = Query(False, description="true=不重试，直接复现单次真实失败原因（便于定位）"),
+):
+    """测试接口：手动模拟一次「定时全量同步」的执行体（与调度器调用同一套代码）。
+
+    - 与 etl_scheduler._scheduled_full_sync 复用同一逻辑（run_full_sync +
+      上游未就绪重试 + 写 dws_sync_obs），用于验证定时链路、定位定时专属问题。
+    - no_retry=true 时关闭重试，让单次真实失败原因直接暴露（如上游窗口导致的
+      0 行校验失败），不用等重试窗口，便于快速定位。
+    注意：本接口会真实触发一次全量同步（数据写入），仅用于测试/排查，勿高频调用。
+    """
+    from app.services.etl.etl_scheduler import _run_scheduled_full_sync
+
+    try:
+        result = await asyncio.to_thread(_run_scheduled_full_sync, allow_retry=not no_retry)
+    except Exception as exc:  # 兜底，理论上 _run_scheduled_full_sync 内部已吞异常
+        logger.exception("scheduler-full-test failed: %s", exc)
+        raise HTTPException(status_code=500, detail=f"Scheduler full test failed: {exc}")
+
+    if result.get("status") == "skipped":
+        raise HTTPException(
+            status_code=409,
+            detail="当前有同步任务正在进行，请稍后重试",
+        )
+    if result.get("status") == "failed":
+        raise HTTPException(
+            status_code=500,
+            detail=f"Scheduler full test failed（attempt={result.get('attempt')}）: {result.get('error')}",
+        )
+
+    return {
+        "status": "ok",
+        "sync_id": 0,  # 测试接口不直接返回 log_id，可配合 GET /status 查看最新记录
+        "message": f"Scheduler full test passed in {result.get('attempt')} attempt(s)",
+    }
+
+
 @router.get("/status")
 async def get_sync_status_endpoint():
     """Get the latest sync status（委托 sync_status 服务查询 dws_sync_log）。"""

@@ -14,7 +14,7 @@ run_full_sync，并在每次触发后自动写入观测表 dws_sync_obs。
 
 import logging
 import os
-from typing import List
+from typing import Any, Dict, List
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -41,30 +41,68 @@ def _parse_crons() -> List[str]:
 
 
 def _scheduled_full_sync() -> None:
-    """定时任务执行体：跑一次可审计的全量同步，并写入 dws_sync_obs 观测表。"""
+    """定时任务执行体：跑一次可审计的全量同步，并写入 dws_sync_obs 观测表。
+
+    若因上游 ODS 尚未就绪（清空/重建窗口）而失败，会自动短延迟重试若干次，
+    直到上游就绪或重试耗尽，避免定时任务要等到下一个 cron 点（最长 12h）才再跑。
+    """
+    _run_scheduled_full_sync(allow_retry=True)
+
+
+def _run_scheduled_full_sync(allow_retry: bool = True) -> Dict[str, Any]:
+    """定时全量同步执行体（可被调度器与测试接口复用）。
+
+    Args:
+        allow_retry: 是否在上游未就绪时短延迟重试（调度器默认 True；
+            测试接口可传 False 以直接复现单次真实失败原因，便于定位）。
+
+    Returns:
+        dict: {"status": "ok"|"skipped"|"failed", "attempt": int, "error": str|None}
+    """
     from app.services.etl.full_sync.pipeline import run_full_sync
     from app.services.monitor.monitor_service import run_monitor
     from app.database import SessionLocal
 
-    # 1) 全量同步（自带 dws_sync_log 审计 + 双表原子轮换）
-    try:
-        stats = run_full_sync(trigger_by="scheduler")
-        status = stats.get("status") if isinstance(stats, dict) else "unknown"
-        if status == "skipped":
-            running = stats.get("running_sync") or {}
-            logger.warning(
-                "定时全量同步已跳过：当前有 %s 同步（触发人=%s）正在进行",
-                running.get("type"), running.get("trigger_by"),
+    # 上游未就绪时的重试配置（仅在“数据未就绪”类失败下重试，其它失败直接退出）
+    max_retries = int(os.getenv("ETL_SCHEDULER_RETRY", "6"))
+    retry_interval = int(os.getenv("ETL_SCHEDULER_RETRY_INTERVAL", "300"))  # 秒
+
+    attempt = 0
+    last_error: Optional[str] = None
+    while True:
+        try:
+            stats = run_full_sync(trigger_by="scheduler")
+            status = stats.get("status") if isinstance(stats, dict) else "unknown"
+            if status == "skipped":
+                running = stats.get("running_sync") or {}
+                logger.warning(
+                    "定时全量同步已跳过：当前有 %s 同步（触发人=%s）正在进行",
+                    running.get("type"), running.get("trigger_by"),
+                )
+                return {"status": "skipped", "attempt": attempt + 1, "error": None}
+            logger.info(
+                "定时全量同步完成: status=%s, elapsed=%ss（第 %d 次尝试）",
+                status, stats.get("elapsed_seconds"), attempt + 1,
             )
-            return
-        logger.info(
-            "定时全量同步完成: status=%s, elapsed=%ss",
-            status,
-            stats.get("elapsed_seconds"),
-        )
-    except Exception as exc:
-        logger.exception("定时全量同步失败: %s", exc)
-        return  # 同步失败不再写观测，避免误记
+            break
+        except RuntimeError as exc:
+            last_error = str(exc)
+            # 上游未就绪：短延迟重试（仅当 allow_retry），避免撞上游清空窗口后干等 12h
+            if allow_retry and "上游数据尚未就绪" in last_error and attempt < max_retries:
+                attempt += 1
+                logger.warning(
+                    "上游数据未就绪（第 %d/%d 次），%ds 后重试: %s",
+                    attempt, max_retries, retry_interval, last_error,
+                )
+                import time
+                time.sleep(retry_interval)
+                continue
+            logger.exception("定时全量同步失败: %s", exc)
+            return {"status": "failed", "attempt": attempt + 1, "error": last_error}
+        except Exception as exc:
+            last_error = str(exc)
+            logger.exception("定时全量同步失败: %s", exc)
+            return {"status": "failed", "attempt": attempt + 1, "error": last_error}
 
     # 2) 写入 dws_sync_obs（直接复用现成接口 run_monitor，best-effort）
     try:
@@ -74,6 +112,7 @@ def _scheduled_full_sync() -> None:
         logger.error(
             "写入 dws_sync_obs 观测表失败（不影响本次同步）: %s", exc
         )
+    return {"status": "ok", "attempt": attempt + 1, "error": None}
 
 
 def start_scheduler() -> AsyncIOScheduler:
